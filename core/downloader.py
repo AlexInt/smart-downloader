@@ -7,14 +7,18 @@ from core.utils import HEADERS, get_download_dir, create_temp_dir, clean_dir, ge
 from core.decrypter import Decrypter
 
 class M3U8Downloader:
-    def __init__(self, url, output_dir=None, max_workers=10):
+    def __init__(self, url, output_dir=None, output_filename=None, max_workers=10):
         self.url = url
         self.max_workers = max_workers
         self.download_dir = get_download_dir(custom_path=output_dir)
+        self.output_filename = output_filename
         self.key_cache = {}
 
-    def run(self):
-        """执行下载流程"""
+    def run(self, progress_callback=None):
+        """
+        执行下载流程
+        :param progress_callback: 回调函数，接收 (current, total) 参数
+        """
         temp_dir = create_temp_dir(self.download_dir)
         try:
             # 1. 解析 m3u8
@@ -22,20 +26,22 @@ class M3U8Downloader:
             
             # 2. 下载切片
             print(f"找到 {len(playlist.segments)} 个切片，开始下载...")
-            ts_files = self._download_segments(playlist.segments, base_uri, temp_dir)
+            ts_files = self._download_segments(playlist.segments, base_uri, temp_dir, progress_callback)
             
             # 3. 合并文件
             if ts_files:
                 output_path = self._merge_files(ts_files)
                 print(f"✅ 合并完成: {output_path}")
-                return str(output_path)
+                return str(output_path), None
             else:
-                print("❌ 没有下载到任何切片")
-                return None
+                msg = "❌ 没有下载到任何切片，可能是视频源不可用或解密失败"
+                print(msg)
+                return None, msg
                 
         except Exception as e:
-            print(f"\n❌ 下载过程出错: {e}")
-            return None
+            msg = f"下载过程出错: {str(e)}"
+            print(f"\n❌ {msg}")
+            return None, msg
         finally:
             clean_dir(temp_dir)
 
@@ -57,9 +63,11 @@ class M3U8Downloader:
             
         return playlist, base_uri
 
-    def _download_segments(self, segments, base_uri, temp_dir):
+    def _download_segments(self, segments, base_uri, temp_dir, progress_callback=None):
         """并发下载切片"""
         ts_files = []
+        total_segments = len(segments)
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [
                 executor.submit(self._process_segment, seg, base_uri, temp_dir) 
@@ -70,7 +78,9 @@ class M3U8Downloader:
                 path = future.result()
                 if path:
                     ts_files.append(path)
-                    print(f"\r进度: {i+1}/{len(segments)}", end="", flush=True)
+                    print(f"\r进度: {i+1}/{total_segments}", end="", flush=True)
+                    if progress_callback:
+                        progress_callback(i + 1, total_segments)
                 else:
                     print(f"\n切片 {i} 下载失败")
         print("") # 换行
@@ -120,7 +130,7 @@ class M3U8Downloader:
 
     def _merge_files(self, ts_files):
         """合并文件"""
-        output_filename = generate_filename(".mp4")
+        output_filename = generate_filename(title=self.output_filename, ext=".mp4")
         output_path = self.download_dir / output_filename
 
         with open(output_path, 'wb') as outfile:
