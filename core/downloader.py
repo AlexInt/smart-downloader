@@ -7,10 +7,10 @@ from core.utils import HEADERS, get_download_dir, create_temp_dir, clean_dir, ge
 from core.decrypter import Decrypter
 
 class M3U8Downloader:
-    def __init__(self, url, max_workers=10):
+    def __init__(self, url, output_dir=None, max_workers=10):
         self.url = url
         self.max_workers = max_workers
-        self.download_dir = get_download_dir()
+        self.download_dir = get_download_dir(custom_path=output_dir)
         self.key_cache = {}
 
     def run(self):

@@ -146,12 +146,34 @@ sequenceDiagram
 - `requests`: HTTP 请求
 - `pycryptodome`: AES 解密
 
-## 7. 使用示例
+## 7. 快速开始
 
-```bash
-# 下载网页中的视频
-python3 main.py "https://example.com/video_page.html"
+### 环境准备
 
-# 直接下载 m3u8
-python3 main.py "https://example.com/video.m3u8"
-```
+1.  **Python 版本**: 确保已安装 Python 3.8+。
+2.  **Chrome 浏览器**: 确保系统已安装 Google Chrome 浏览器（Selenium 解析需要）。
+3.  **安装依赖**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+### 启动项目
+
+支持两种输入模式，并可使用 `-o` 或 `--output` 指定下载目录：
+
+1.  **直接下载 m3u8**:
+    ```bash
+    python3 main.py "https://example.com/video/index.m3u8"
+    ```
+
+2.  **网页自动解析**:
+    ```bash
+    python3 main.py "https://example.com/page-with-video.html"
+    ```
+
+3.  **指定输出目录**:
+    ```bash
+    python3 main.py "https://example.com/video.m3u8" -o /Users/username/Movies/my_videos
+    ```
+
+默认下载目录为 `~/Downloads/tx/`。

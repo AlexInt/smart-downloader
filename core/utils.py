@@ -45,9 +45,17 @@ def validate_url(url):
 
     return True, "URL 有效"
 
-def get_download_dir(subdir="tx"):
-    """获取下载目录，确保存在"""
-    download_dir = Path.home() / "Downloads" / subdir
+def get_download_dir(custom_path=None, subdir="tx"):
+    """
+    获取下载目录，确保存在
+    :param custom_path: 用户指定的绝对或相对路径
+    :param subdir: 默认子目录（仅在无 custom_path 时生效）
+    """
+    if custom_path:
+        download_dir = Path(custom_path).expanduser().resolve()
+    else:
+        download_dir = Path.home() / "Downloads" / subdir
+        
     download_dir.mkdir(parents=True, exist_ok=True)
     return download_dir
 

@@ -7,9 +7,11 @@ from core.utils import validate_url
 def main():
     parser = argparse.ArgumentParser(description="智能 m3u8 下载器 (模块化版)")
     parser.add_argument("input", help="m3u8 URL 或 包含视频的网页 URL")
+    parser.add_argument("-o", "--output", help="指定输出目录 (默认: ~/Downloads/tx)", default=None)
     args = parser.parse_args()
     
     target_url = args.input
+    output_dir = args.output
     
     # 0. 基础有效性检测
     print("正在检查 URL 有效性...")
@@ -37,8 +39,10 @@ def main():
     # 2. 执行下载
     print("-" * 30)
     print("启动下载流程...")
+    if output_dir:
+        print(f"目标输出目录: {output_dir}")
     
-    downloader = M3U8Downloader(target_url)
+    downloader = M3U8Downloader(target_url, output_dir=output_dir)
     result = downloader.run()
     
     if result:
