@@ -4,7 +4,7 @@
 
 本项目实现了一个智能化的视频下载工具，旨在解决复杂场景下的 HLS (m3u8) 视频下载问题。它不仅支持直接的 m3u8 链接下载，还能自动解析网页中的视频地址，并具备处理加密流、伪装后缀、多级播放列表等高级功能。
 
-项目已采用模块化设计，结构清晰，易于扩展和维护。
+项目采用模块化设计，支持 CLI（命令行）和 GUI（图形界面）双模式运行，适配 macOS 及 Linux 环境。
 
 ## 2. 核心功能
 
@@ -16,13 +16,12 @@
     - **智能标题提取**: 自动提取网页标题或 H1 标签作为视频文件名。
     - **深度 URL 清洗**: 自动处理嵌套在播放器参数中的真实 m3u8 地址。
 3.  **复杂流处理**:
-    - 支持 AES-128 加密流的自动解密。
+    - 支持 AES-128 加密流的自动解密（内存中进行，无中间明文落地）。
     - 支持非标准后缀（如 .jpg, .png）的切片下载。
     - 支持多级 m3u8 播放列表（自动选择最高画质）。
 4.  **稳健下载**:
     - 多线程并发下载切片。
     - 自动重试与错误处理。
-    - 内存中解密，无中间明文落地。
     - **智能命名**: 优先使用网页标题，无标题时自动使用时间戳+序号生成唯一文件名，防止覆盖。
 5.  **双模式运行**:
     - **CLI**: 纯命令行模式，适合脚本调用。
@@ -30,15 +29,18 @@
 
 ## 3. 项目结构
 
-```
-downloader-py/
-├── main.py                # 统一入口文件
+```text
+smart-downloader/
+├── main.py                # CLI 统一入口文件
+├── streamlit_app.py       # GUI 入口文件
 ├── core/                  # 核心逻辑包
 │   ├── downloader.py      # m3u8 下载与合并逻辑 (M3U8Downloader 类)
 │   ├── extractor.py       # 网页解析逻辑 (WebExtractor 类)
 │   ├── decrypter.py       # 解密逻辑 (Decrypter 类)
 │   └── utils.py           # 通用工具 (路径处理、文件清理)
 ├── specs/                 # 需求与设计文档
+│   ├── m3u8_downloader/   # 下载核心模块设计文档
+│   └── web_m3u8_downloader/# 网页解析模块设计文档
 └── README.md              # 项目文档
 ```
 
@@ -48,11 +50,11 @@ downloader-py/
 
 ```mermaid
 graph TD
-    User[用户输入] --> Entry[入口: main.py]
+    User[用户输入] --> Entry[入口: main.py / streamlit_app.py]
 
     subgraph "输入处理"
         Entry -->|1.格式与连通性检查| Validator[core.utils.validate_url]
-        Validator -- 无效 --> Exit[报错退出]
+        Validator -- 无效 --> Exit[报错/提示]
         Validator -- 有效 --> Check{是否为 .m3u8?}
     end
 
@@ -144,26 +146,29 @@ sequenceDiagram
     - 模拟真实浏览器 User-Agent，防止服务器拒绝请求。
 4.  **内存解密**: 即使视频流被加密，解密过程也在内存中完成，写入磁盘的直接是解密后的视频数据，方便后续合并和播放。
 
-## 6. 依赖库
+## 6. 环境与依赖
 
+### 6.1 运行环境
+- **Operating System**: macOS / Linux / Windows
+- **Python**: 3.8+
+- **Browser**: Google Chrome (用于 Selenium 网页解析)
+
+### 6.2 Python 依赖
 - `selenium`: 网页自动化
 - `webdriver-manager`: 驱动管理
 - `m3u8`: 播放列表解析
 - `requests`: HTTP 请求
 - `pycryptodome`: AES 解密
+- `streamlit`: Web GUI 界面
 
-## 7. 快速开始
+安装命令:
+```bash
+pip install -r requirements.txt
+```
 
-### 环境准备
+## 7. 部署与运行
 
-1.  **Python 版本**: 确保已安装 Python 3.8+。
-2.  **Chrome 浏览器**: 确保系统已安装 Google Chrome 浏览器（Selenium 解析需要）。
-3.  **安装依赖**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-### 启动项目
+### 7.1 本地运行
 
 #### 方式一：图形界面 (GUI) - **推荐**
 
@@ -173,31 +178,57 @@ sequenceDiagram
 streamlit run streamlit_app.py
 ```
 
-- 支持实时进度条显示。
-- 自动识别网页标题。
-- 友好的错误提示与排查建议。
-- 支持原生目录选择（部分系统）或手动路径输入。
+- **特点**:
+  - 支持实时进度条显示。
+  - 自动识别网页标题。
+  - 友好的错误提示与排查建议。
+  - 自动识别用户主目录，安全保存文件。
 
 #### 方式二：命令行 (CLI)
 
 适合脚本集成或习惯命令行的用户。
 
 1.  **直接下载 m3u8**:
-
     ```bash
     python3 main.py "https://example.com/video/index.m3u8"
     ```
 
 2.  **网页自动解析**:
-
     ```bash
     python3 main.py "https://example.com/page-with-video.html"
     ```
 
 3.  **指定输出目录**:
     ```bash
-    # 注意：出于安全考虑，只允许保存至 /Users/username/ 下的目录
-    python3 main.py "https://example.com/video.m3u8" -o /Users/username/Movies/my_videos
+    # 默认下载目录为 ~/Downloads/tx/
+    # 可以使用 -o 参数指定其他目录 (必须在用户主目录下)
+    python3 main.py "https://example.com/video.m3u8" -o ~/Movies/my_videos
     ```
 
-默认下载目录为 `~/Downloads/tx/`。
+### 7.2 服务器部署 (Ubuntu 24)
+
+若需在 Ubuntu 24 服务器上运行（无头模式），需要先安装 Chrome 浏览器：
+
+```bash
+# 1. 安装 Chrome
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install ./google-chrome-stable_current_amd64.deb
+
+# 2. 安装 Python 依赖
+pip install -r requirements.txt
+
+# 3. 运行 (CLI 模式)
+python3 main.py "YOUR_URL"
+```
+
+注意：服务器环境通常没有图形界面，建议使用 CLI 模式。如果需要使用 Streamlit GUI，需要配置防火墙开放 8501 端口。
+
+## 8. 项目测试
+
+目前项目主要依赖手动测试。
+
+1.  **单元测试**: 暂无。
+2.  **功能验证**:
+    - **测试直接 m3u8 下载**: 找一个公开的 m3u8 链接 (如 Apple HLS 示例流) 运行 `main.py`。
+    - **测试网页解析**: 找一个包含 video 标签的网页运行 `main.py`。
+    - **测试 GUI**: 运行 `streamlit_app.py` 并进行交互操作。

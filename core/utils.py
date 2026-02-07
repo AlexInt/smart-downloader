@@ -86,8 +86,8 @@ def get_download_dir(custom_path=None, subdir="tx"):
     else:
         download_dir = Path.home() / "Downloads" / subdir
 
-    # 安全检查：限制在 /Users/firefish (用户主目录) 下
-    allowed_root = Path("/Users/firefish").resolve()
+    # 安全检查：限制在用户主目录下
+    allowed_root = Path.home().resolve()
     try:
         # 使用 is_relative_to (Python 3.9+) 或 relative_to
         download_dir.relative_to(allowed_root)

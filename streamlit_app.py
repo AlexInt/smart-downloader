@@ -24,12 +24,12 @@ with st.container():
     
     with col2:
         # 显示当前目录，允许手动修改
-        st.text_input("保存目录", key="output_dir", help="安全限制：只能选择 /Users/abc 下的目录")
+        st.text_input("保存目录", key="output_dir", help=f"安全限制：只能选择 {Path.home()} 下的目录")
     
     with col3:
         st.write("") # 占位，让按钮对齐
         st.write("") 
-        st.caption("⚠️ 仅限用户目录\n\n例如：\n- /Users/abc/Downloads\n- /Users/abc/Movies")
+        st.caption(f"⚠️ 仅限用户目录\n\n例如：\n- {Path.home()}/Downloads\n- {Path.home()}/Movies")
         # macOS 上 Streamlit 运行在子线程，直接调用 Tkinter 会导致 crash (NSWindow should only be instantiated on the main thread)
         # 临时移除 Tkinter 目录选择功能，改用手动输入
         # if st.button("📂 选择文件夹"): ... 
