@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Project specific
+# 忽略下载的视频文件（防止意外下载到项目目录）
+*.mp4
+*.ts
+*.m3u8
+
+# 忽略运行时产生的临时目录
+temp_*/
+
+# Logs
+*.log
