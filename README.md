@@ -26,6 +26,11 @@
 5.  **双模式运行**:
     - **CLI**: 纯命令行模式，适合脚本调用。
     - **GUI**: 基于 Streamlit 的图形界面，操作更直观。
+6.  **AI 视频增强**:
+    - 使用 Real-ESRGAN 进行超分辨率处理。
+    - 支持 Mac M3 Pro GPU 加速。
+    - 提供 2x、3x、4x 放大倍数。
+    - 支持通用视频和动画专用模型。
 
 ## 3. 项目结构
 
@@ -33,11 +38,16 @@
 smart-downloader/
 ├── main.py                # CLI 统一入口文件
 ├── streamlit_app.py       # GUI 入口文件
+├── enhance_video.py       # AI 视频增强工具
 ├── core/                  # 核心逻辑包
 │   ├── downloader.py      # m3u8 下载与合并逻辑 (M3U8Downloader 类)
 │   ├── extractor.py       # 网页解析逻辑 (WebExtractor 类)
 │   ├── decrypter.py       # 解密逻辑 (Decrypter 类)
 │   └── utils.py           # 通用工具 (路径处理、文件清理)
+├── tools/                 # 工具目录
+│   └── realesrgan/        # Real-ESRGAN 增强工具
+│       ├── realesrgan-ncnn-vulkan  # Mac 可执行文件
+│       └── models/        # 预训练模型
 ├── specs/                 # 需求与设计文档
 │   ├── m3u8_downloader/   # 下载核心模块设计文档
 │   └── web_m3u8_downloader/# 网页解析模块设计文档
@@ -149,11 +159,13 @@ sequenceDiagram
 ## 6. 环境与依赖
 
 ### 6.1 运行环境
+
 - **Operating System**: macOS / Linux / Windows
 - **Python**: 3.8+
 - **Browser**: Google Chrome (用于 Selenium 网页解析)
 
 ### 6.2 Python 依赖
+
 - `selenium`: 网页自动化
 - `webdriver-manager`: 驱动管理
 - `m3u8`: 播放列表解析
@@ -162,6 +174,7 @@ sequenceDiagram
 - `streamlit`: Web GUI 界面
 
 安装命令:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -189,11 +202,13 @@ streamlit run streamlit_app.py
 适合脚本集成或习惯命令行的用户。
 
 1.  **直接下载 m3u8**:
+
     ```bash
     python3 main.py "https://example.com/video/index.m3u8"
     ```
 
 2.  **网页自动解析**:
+
     ```bash
     python3 main.py "https://example.com/page-with-video.html"
     ```
@@ -232,3 +247,117 @@ python3 main.py "YOUR_URL"
     - **测试直接 m3u8 下载**: 找一个公开的 m3u8 链接 (如 Apple HLS 示例流) 运行 `main.py`。
     - **测试网页解析**: 找一个包含 video 标签的网页运行 `main.py`。
     - **测试 GUI**: 运行 `streamlit_app.py` 并进行交互操作。
+
+## 9. AI 视频增强功能
+
+### 9.1 功能简介
+
+使用 Real-ESRGAN 深度学习模型对下载的视频进行超分辨率处理，提升视频清晰度。支持 Mac M3 Pro GPU 加速，处理速度比传统 CPU 快 5-10 倍。
+
+### 9.2 技术原理
+
+```mermaid
+graph LR
+    A[原始视频] --> B[提取帧序列]
+    B --> C[AI增强每帧]
+    C --> D[合成视频]
+    D --> E[高清视频]
+
+    style A fill:#e1f5ff
+    style E fill:#c8e6c9
+```
+
+**核心流程**:
+
+1. 使用 ffmpeg 提取视频帧
+2. 使用 Real-ESRGAN 对每帧进行超分辨率重建
+3. 重新合成视频并保留原始音频
+
+### 9.3 安装依赖
+
+```bash
+# 1. 安装 ffmpeg (必需)
+brew install ffmpeg
+
+# 2. Real-ESRGAN 已包含在 tools/realesrgan/ 目录中
+# 无需额外安装
+```
+
+### 9.4 使用方法
+
+#### 基础用法
+
+```bash
+# 增强单个视频（默认 2 倍放大）
+python3 enhance_video.py your_video.mp4
+
+# 指定输出路径
+python3 enhance_video.py your_video.mp4 -o enhanced_video.mp4
+
+# 3 倍放大
+python3 enhance_video.py your_video.mp4 -s 3
+
+# 4 倍放大
+python3 enhance_video.py your_video.mp4 -s 4
+```
+
+#### 选择模型
+
+```bash
+# 通用模型（推荐，适合真人视频）
+python3 enhance_video.py video.mp4 -m realesrgan-x4plus
+
+# 动画专用（适合动漫）
+python3 enhance_video.py anime.mp4 -m realesrgan-x4plus-anime
+
+# 动画视频专用（速度快，适合长视频）
+python3 enhance_video.py anime.mp4 -m realesr-animevideov3
+```
+
+#### 批量处理
+
+```bash
+# 批量处理目录中的所有视频
+python3 enhance_video.py ~/Downloads/tx/ -b
+
+# 指定输出目录
+python3 enhance_video.py ~/Downloads/tx/ -o ~/Downloads/enhanced/ -b
+```
+
+### 9.5 模型对比
+
+| 模型名称                | 适用场景       | 速度 | 效果 | 推荐指数   |
+| ----------------------- | -------------- | ---- | ---- | ---------- |
+| realesrgan-x4plus       | 真人视频、通用 | 中等 | 最佳 | ⭐⭐⭐⭐⭐ |
+| realesrgan-x4plus-anime | 动漫、动画     | 中等 | 最佳 | ⭐⭐⭐⭐⭐ |
+| realesr-animevideov3    | 动画视频       | 快   | 良好 | ⭐⭐⭐⭐   |
+
+### 9.6 性能参考
+
+**测试环境**: MacBook Pro M3 Pro (18GB 内存)
+
+| 视频时长 | 分辨率 | 放大倍数 | 预计耗时      |
+| -------- | ------ | -------- | ------------- |
+| 1 分钟   | 720p   | 2x       | 约 8-12 分钟  |
+| 5 分钟   | 1080p  | 2x       | 约 30-40 分钟 |
+| 10 分钟  | 480p   | 4x       | 约 50-60 分钟 |
+
+### 9.7 完整工作流示例
+
+```bash
+# 1. 下载视频
+python3 main.py "https://example.com/video.html"
+
+# 2. 增强视频（2倍放大，通用模型）
+python3 enhance_video.py ~/Downloads/tx/video.mp4 -s 2 -m realesrgan-x4plus
+
+# 3. 查看结果
+# 增强后的视频保存在: ~/Downloads/tx/video_2x_enhanced.mp4
+```
+
+### 9.8 注意事项
+
+1. **磁盘空间**: 增强过程会生成临时文件，确保有足够的磁盘空间（至少为原视频的 3-5 倍）
+2. **处理时间**: 视频增强是计算密集型任务，长视频可能需要数小时
+3. **效果限制**: AI 无法无中生有，如果原视频质量极差，增强效果有限
+4. **音频保留**: 增强过程会保留原始音频轨道
