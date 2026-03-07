@@ -5,3 +5,4 @@ pycryptodome
 selenium
 webdriver-manager
 streamlit
+tenacity
