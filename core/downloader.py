@@ -25,9 +25,14 @@ class M3U8Downloader:
             # 1. 解析 m3u8
             playlist, base_uri = self._load_playlist(self.url)
             
-            # 2. 下载切片
+            # 2. 下载 fMP4 初始化段 (EXT-X-MAP，若存在)
+            init_file = self._download_init_section(playlist, base_uri, temp_dir)
+
+            # 3. 下载切片
             print(f"找到 {len(playlist.segments)} 个切片，开始下载...")
             ts_files = self._download_segments(playlist.segments, base_uri, temp_dir, progress_callback)
+            if init_file:
+                ts_files.insert(0, init_file)
             
             # 3. 合并文件
             if ts_files:
@@ -112,6 +117,24 @@ class M3U8Downloader:
         
         ts_files.sort(key=lambda x: x[0])
         return [path for _, path in ts_files]
+
+    def _download_init_section(self, playlist, base_uri, temp_dir):
+        """下载 fMP4 初始化段 (EXT-X-MAP)，返回本地路径；不存在则返回 None"""
+        init_section = next(
+            (s.init_section for s in playlist.segments if s.init_section), None
+        )
+        if not init_section:
+            return None
+
+        print("检测到 fMP4 流 (EXT-X-MAP)，下载初始化段...")
+        init_url = urljoin(base_uri, init_section.uri)
+        response = requests.get(init_url, headers=HEADERS, timeout=15, verify=False)
+        response.raise_for_status()
+
+        init_path = temp_dir / "seg_init.mp4"
+        with open(init_path, 'wb') as f:
+            f.write(response.content)
+        return init_path
 
     @retry(
         stop=stop_after_attempt(3),
