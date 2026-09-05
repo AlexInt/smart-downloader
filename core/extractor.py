@@ -1,5 +1,6 @@
 import time
 import re
+import html
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -78,7 +79,7 @@ class WebExtractor:
         """清洗 URL，处理嵌套情况"""
         # 如果 URL 包含参数且参数本身也是 url (如 ?url=http...)，提取真实地址
         if "url=" in url:
-            match = re.search(r'url=(https?://.+?\.m3u8)', url)
+            match = re.search(r'url=(https?://.+?\.m3u8(?:\?[^"\']+?)?)(?=&|["\'<>\s]|$)', url)
             if match:
                 cleaned = match.group(1)
                 print(f"清洗 URL: 从参数中提取 -> {cleaned}")
@@ -109,20 +110,21 @@ class WebExtractor:
     def _find_in_source(self, driver):
         """正则匹配源码"""
         print("尝试从页面源码正则匹配...")
-        page_source = driver.page_source
-        
-        # 标准匹配
-        match = re.search(r'(https?://[^\s"\'<>]+?\.m3u8)', page_source)
+        # 先做 HTML 反转义，还原 &quot; &amp; 等实体，避免 URL 被转义引号"续期"
+        page_source = html.unescape(driver.page_source)
+
+        # 标准匹配（保留 ?auth_key=... 等查询参数）
+        match = re.search(r'(https?://[^\s"\'<>]+?\.m3u8(?:\?[^\s"\'<>]*)?)', page_source)
         if match:
             found = match.group(1)
             print(f"正则匹配找到: {found}")
             return self._clean_url(found)
-            
-        # 转义匹配
-        match_escaped = re.search(r'(https?:\\?/\\?/[^\s"\'<>]+?\.m3u8)', page_source)
+
+        # 转义匹配 (JSON 中的 \/)
+        match_escaped = re.search(r'(https?:\\?/\\?/[^\s"\'<>]+?\.m3u8(?:\?[^\s"\'<>]*)?)', page_source)
         if match_escaped:
             found = match_escaped.group(1).replace('\\/', '/')
             print(f"正则匹配找到(转义): {found}")
             return self._clean_url(found)
-            
+
         return None

@@ -1,5 +1,7 @@
 import m3u8
 import requests
+import shutil
+import subprocess
 import concurrent.futures
 from urllib.parse import urljoin
 from pathlib import Path
@@ -193,4 +195,32 @@ class M3U8Downloader:
             for ts_path in ts_files:
                 with open(ts_path, 'rb') as infile:
                     outfile.write(infile.read())
+
+        # TS 流重封装为标准 MP4（Preview/QuickTime 不支持裸 TS 流）
+        self._remux_if_ts(output_path)
         return output_path
+
+    def _remux_if_ts(self, output_path):
+        """若合并结果是 MPEG-TS 流，用 ffmpeg 无损重封装为 MP4"""
+        with open(output_path, 'rb') as f:
+            head = f.read(189)
+        if len(head) < 189 or head[0] != 0x47 or head[188] != 0x47:
+            return  # 不是 TS 流（如 fMP4），无需处理
+
+        ffmpeg = shutil.which('ffmpeg')
+        if not ffmpeg:
+            print("⚠️ 未检测到 ffmpeg，输出为 TS 流，Preview/QuickTime 可能无法播放 (brew install ffmpeg)")
+            return
+
+        print("检测到 TS 流，使用 ffmpeg 无损重封装为 MP4...")
+        tmp_path = output_path.with_name(output_path.stem + "_remux.mp4")
+        cmd = [ffmpeg, '-y', '-loglevel', 'error', '-i', str(output_path),
+               '-c', 'copy', '-bsf:a', 'aac_adtstoasc', str(tmp_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
+            tmp_path.replace(output_path)
+            print("✅ 重封装完成，可被 Preview/QuickTime 直接播放")
+        else:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            print(f"⚠️ ffmpeg 重封装失败，保留原始拼接结果: {result.stderr[:200]}")
