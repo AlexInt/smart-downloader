@@ -2,33 +2,36 @@
 
 ## 1. 项目简介
 
-本项目实现了一个智能化的视频下载工具，旨在解决复杂场景下的 HLS (m3u8) 视频下载问题。它不仅支持直接的 m3u8 链接下载，还能自动解析网页中的视频地址，并具备处理加密流、伪装后缀、多级播放列表等高级功能。
+本项目实现了一个智能化的视频下载工具，旨在解决复杂场景下的 HLS (m3u8) 视频下载问题。它不仅支持直接的 m3u8 链接下载，还能自动解析网页中的视频地址，并具备处理加密流、伪装后缀、多级播放列表、fMP4 初始化段、TS 流重封装等高级功能。
 
-项目采用模块化设计，支持 CLI（命令行）和 GUI（图形界面）双模式运行，适配 macOS 及 Linux 环境。
+项目采用模块化设计，支持 CLI（命令行）和 GUI（图形界面）双模式运行。下载核心功能跨 macOS、Linux 及 Windows 平台；AI 视频增强功能目前仅提供 Mac 可执行文件，仅支持 macOS。
 
 ## 2. 核心功能
 
 1.  **智能输入识别与检测**:
     - 自动区分用户输入的是 m3u8 地址还是网页地址。
-    - **预检测机制**: 在启动任务前自动验证 URL 的格式和连通性（支持自动处理 SSL 错误、超时重试和反爬放行）。
+    - **预检测机制**: 在启动任务前自动验证 URL 的格式和连通性（SSL 错误、连接超时时放行，交由后续流程继续尝试；403 反爬场景对网页地址放行）。
 2.  **网页自动解析**:
     - 使用 Selenium 模拟浏览器环境。
     - **智能标题提取**: 自动提取网页标题或 H1 标签作为视频文件名。
     - **深度 URL 清洗**: 自动处理嵌套在播放器参数中的真实 m3u8 地址。
+    - **签名 URL 完整提取**: 保留 m3u8 地址中的 `auth_key` 等时效性签名参数，并自动还原页面中的 HTML 转义实体（`&amp;`、`&quot;` 等），避免签名被截断导致 400 错误。
 3.  **复杂流处理**:
-    - 支持 AES-128 加密流的自动解密（内存中进行，无中间明文落地）。
+    - 支持 AES-128 加密流的自动解密（解密后的切片临时存放于本地，任务结束后自动清理）。
     - 支持非标准后缀（如 .jpg, .png）的切片下载。
     - 支持多级 m3u8 播放列表（自动选择最高画质）。
+    - 支持 fMP4 格式 HLS 流（`EXT-X-MAP`）：自动下载初始化段并置于合并文件头部。
 4.  **稳健下载**:
     - 多线程并发下载切片。
-    - 自动重试与错误处理。
+    - 自动重试与错误处理（基于 tenacity 指数退避）。
     - **智能命名**: 优先使用网页标题，无标题时自动使用时间戳+序号生成唯一文件名，防止覆盖。
+    - **TS 流自动重封装**: 检测到 MPEG-TS 合并结果时，自动调用 ffmpeg 无损重封装（`-c copy`）为标准 MP4，确保 Preview/QuickTime 等原生播放器可播放；未安装 ffmpeg 时保留原始拼接结果并给出提示。
 5.  **双模式运行**:
     - **CLI**: 纯命令行模式，适合脚本调用。
     - **GUI**: 基于 Streamlit 的图形界面，操作更直观。
 6.  **AI 视频增强**:
     - 使用 Real-ESRGAN 进行超分辨率处理。
-    - 支持 Mac M3 Pro GPU 加速。
+    - 通过 Vulkan 接口支持 GPU 加速（仅 macOS）。
     - 提供 2x、3x、4x 放大倍数。
     - 支持通用视频和动画专用模型。
 
@@ -59,50 +62,63 @@ smart-downloader/
 ### 4.1 模块交互图
 
 ```mermaid
+%%{init: {"theme": "default", "themeVariables": {"textColor": "#1a1a1a", "primaryTextColor": "#1a1a1a", "edgeLabelTextColor": "#1a1a1a", "edgeLabelBackground": "#ffffff"}}}%%
 graph TD
-    User[用户输入] --> Entry[入口: main.py / streamlit_app.py]
+    User["用户输入"] --> Entry["入口: main.py / streamlit_app.py"]
 
-    subgraph "输入处理"
-        Entry -->|1.格式与连通性检查| Validator[core.utils.validate_url]
-        Validator -- 无效 --> Exit[报错/提示]
-        Validator -- 有效 --> Check{是否为 .m3u8?}
+    subgraph InputProcess["输入处理"]
+        Entry -->|"1.格式与连通性检查"| Validator["core.utils.validate_url"]
+        Validator -->|"无效"| Exit["报错/提示"]
+        Validator -->|"有效"| Check{"是否为 .m3u8?"}
     end
 
-    subgraph "网页解析模块 (core/extractor.py)"
-        Check -- No (是网页) --> WebParser[WebExtractor.extract_m3u8]
-        WebParser -->|1.加载页面| Driver[Chrome Headless]
-        Driver -->|2.DOM查找| FindDOM[查找 video/source 标签]
-        Driver -->|3.源码匹配| FindRegex[正则匹配 m3u8 字符串]
-        FindDOM -->|找到| ResultURL
-        FindRegex -->|找到| ResultURL
+    subgraph WebParse["网页解析模块 core/extractor.py"]
+        Check -->|"No 是网页"| WebParser["WebExtractor.extract_m3u8"]
+        WebParser -->|"1.加载页面"| Driver["Chrome Headless"]
+        Driver -->|"2.DOM查找"| FindDOM["查找 video/source 标签"]
+        Driver -->|"3.源码匹配"| FindRegex["正则匹配 m3u8 字符串"]
+        FindDOM -->|"找到"| ResultURL
+        FindRegex -->|"找到"| ResultURL
     end
 
-    Check -- Yes --> ResultURL[目标 m3u8 URL]
+    Check -->|"Yes"| ResultURL["目标 m3u8 URL"]
 
-    subgraph "下载核心模块 (core/downloader.py)"
-        ResultURL --> Downloader[M3U8Downloader.run]
-        Downloader -->|1.解析 m3u8| PlaylistParser[m3u8.load]
-        PlaylistParser -->|2.检查多级列表| VariantCheck{是多级列表?}
-        VariantCheck -- Yes --> SelectBest[选择最高带宽流]
+    subgraph DownloadCore["下载核心模块 core/downloader.py"]
+        ResultURL --> Downloader["M3U8Downloader.run"]
+        Downloader -->|"1.解析 m3u8"| PlaylistParser["m3u8.load"]
+        PlaylistParser -->|"2.检查多级列表"| VariantCheck{"是多级列表?"}
+        VariantCheck -->|"Yes"| SelectBest["选择最高带宽流"]
         SelectBest --> PlaylistParser
-        VariantCheck -- No --> SegmentQueue[切片队列]
+        VariantCheck -->|"No"| MapCheck{"有 EXT-X-MAP?"}
 
-        SegmentQueue -->|3.并发下载| Workers[线程池 Executor]
+        MapCheck -->|"Yes fMP4流"| InitSection["下载初始化段"]
+        MapCheck -->|"No"| SegmentQueue["切片队列"]
+        InitSection --> SegmentQueue
 
-        subgraph "切片处理单元 (core/downloader.py)"
-            Workers -->|下载| Request[requests.get]
-            Request -->|获取内容| Content
-            Content -->|检查加密| KeyCheck{有加密 Key?}
-            KeyCheck -- Yes --> DecryptWrapper[调用 core.decrypter]
-            DecryptWrapper --> DecryptAlgo["AES 解密 (pycryptodome)"]
-            KeyCheck -- No --> Raw[原始数据]
-            DecryptAlgo --> SaveTemp[保存临时文件]
+        SegmentQueue -->|"3.并发下载"| Workers["线程池 Executor"]
+
+        subgraph SegmentUnit["切片处理单元 core/downloader.py"]
+            Workers -->|"下载"| Request["requests.get"]
+            Request -->|"获取内容"| Content
+            Content -->|"检查加密"| KeyCheck{"有加密 Key?"}
+            KeyCheck -->|"Yes"| DecryptWrapper["调用 core.decrypter"]
+            DecryptWrapper --> DecryptAlgo["AES 解密"]
+            KeyCheck -->|"No"| Raw["原始数据"]
+            DecryptAlgo --> SaveTemp["保存临时文件"]
             Raw --> SaveTemp
         end
 
-        SaveTemp -->|4.合并| Merger[二进制合并]
-        Merger --> Output[输出 .mp4 文件]
+        SaveTemp -->|"4.合并 init段置首"| Merger["二进制合并"]
+        Merger --> TsCheck{"是 MPEG-TS 流?"}
+        TsCheck -->|"Yes"| Remux["ffmpeg 无损重封装"]
+        TsCheck -->|"No"| Output["输出 .mp4 文件"]
+        Remux --> Output
     end
+
+    style InputProcess fill:#eef4ff,stroke:#3b5bdb,color:#1a1a1a
+    style WebParse fill:#eefaf0,stroke:#2f9e44,color:#1a1a1a
+    style DownloadCore fill:#fff5ee,stroke:#e8590c,color:#1a1a1a
+    style SegmentUnit fill:#f7f7f7,stroke:#888888,color:#1a1a1a
 ```
 
 ### 4.2 详细处理流程
@@ -110,6 +126,7 @@ graph TD
 #### A. 网页解析流程
 
 ```mermaid
+%%{init: {"theme": "default", "themeVariables": {"textColor": "#1a1a1a", "primaryTextColor": "#1a1a1a", "actorTextColor": "#1a1a1a", "actorLineColor": "#666666", "signalColor": "#666666", "signalTextColor": "#1a1a1a", "labelBoxBkgColor": "#ffffff", "labelBoxBorderColor": "#cccccc"}}}%%
 sequenceDiagram
     participant User
     participant Main as main.py
@@ -135,9 +152,10 @@ sequenceDiagram
 
         alt 未找到
             loop 策略2: 源码正则
-                Chrome->>Chrome: re.search(https?://...m3u8)
+                Chrome->>Chrome: html.unescape 还原 HTML 转义
+                Chrome->>Chrome: re.search(https?://...m3u8?查询串)
                 alt 匹配成功
-                    Chrome-->>Extractor: 返回 URL
+                    Chrome-->>Extractor: 返回 URL (含 auth_key 等签名参数)
                 end
             end
         end
@@ -151,18 +169,28 @@ sequenceDiagram
 
 1.  **WebDriver 自动管理**: 使用 `webdriver_manager` 库，在运行时动态下载与本地 Chrome 版本匹配的 ChromeDriver，彻底解决了版本不一致导致的 `SessionNotCreatedException` 错误。
 2.  **鲁棒的 URL 拼接**: 使用 `urllib.parse.urljoin` 处理 m3u8 中的相对路径，确保无论是 `/` 开头的绝对路径还是相对当前目录的路径都能正确转换。
-3.  **对抗混淆**:
+3.  **签名 URL 提取**: 页面中的 m3u8 地址常带 `auth_key` 等时效性签名参数，且在 HTML 中经过实体转义。提取时先做 HTML 反转义（`html.unescape`），再用正则完整保留查询串，避免签名被截断导致 400 Bad Request。
+4.  **fMP4 初始化段处理**: 对含 `EXT-X-MAP` 的 fMP4 格式 HLS 流，自动下载初始化段（含 `moov` box 的轨道信息）并置于合并文件头部；缺失该段会导致文件无法解码播放。
+5.  **TS 流检测与重封装**: 合并完成后通过文件头同步字节（`0x47`）识别 MPEG-TS 流，调用 ffmpeg 无损重封装（`-c copy`，不重新编码）为标准 MP4 容器，解决 Preview/QuickTime 不支持裸 TS 流的问题。
+6.  **对抗混淆**:
     - 不依赖文件后缀判断文件类型，直接处理二进制流，有效应对将 `.ts` 伪装成 `.jpg` 的反爬策略。
     - 模拟真实浏览器 User-Agent，防止服务器拒绝请求。
-4.  **内存解密**: 即使视频流被加密，解密过程也在内存中完成，写入磁盘的直接是解密后的视频数据，方便后续合并和播放。
+7.  **切片级解密**: 加密切片下载后逐个解密再写入临时文件，任务结束自动清理临时目录。
+
+### 5.1 已知限制
+
+- **AES-128 IV 缺省场景**: 播放列表未声明 IV 时，当前以全 0 兜底解密；部分视频源要求从切片序列号（media sequence）推导 IV，此类流会解密失败。
+- **ffmpeg 缺失时的降级**: 未安装 ffmpeg 时，TS 格式源输出的文件为裸 TS 流拼接结果，需要 VLC/IINA 等基于 ffmpeg 的播放器才能播放。
+- **签名 URL 时效性**: 从网页提取的 `auth_key` 签名有时效限制，提取后应尽快开始下载；过期后需重新运行以获取新签名。
 
 ## 6. 环境与依赖
 
 ### 6.1 运行环境
 
-- **Operating System**: macOS / Linux / Windows
+- **Operating System**: 下载核心功能支持 macOS / Linux / Windows；AI 视频增强目前仅提供 Mac 可执行文件 (realesrgan-ncnn-vulkan)，仅支持 macOS
 - **Python**: 3.8+
 - **Browser**: Google Chrome (用于 Selenium 网页解析)
+- **ffmpeg** (可选，推荐安装): 用于将 TS 格式源的合并结果无损重封装为标准 MP4；未安装时保留 TS 流拼接结果并提示。AI 视频增强功能则必需 ffmpeg
 
 ### 6.2 Python 依赖
 
@@ -171,6 +199,7 @@ sequenceDiagram
 - `m3u8`: 播放列表解析
 - `requests`: HTTP 请求
 - `pycryptodome`: AES 解密
+- `tenacity`: 切片下载自动重试（指数退避）
 - `streamlit`: Web GUI 界面
 
 安装命令:
@@ -257,14 +286,15 @@ python3 main.py "YOUR_URL"
 ### 9.2 技术原理
 
 ```mermaid
+%%{init: {"theme": "default", "themeVariables": {"textColor": "#1a1a1a", "primaryTextColor": "#1a1a1a", "edgeLabelTextColor": "#1a1a1a", "edgeLabelBackground": "#ffffff"}}}%%
 graph LR
     A[原始视频] --> B[提取帧序列]
     B --> C[AI增强每帧]
     C --> D[合成视频]
     D --> E[高清视频]
 
-    style A fill:#e1f5ff
-    style E fill:#c8e6c9
+    style A fill:#e1f5ff,color:#1a1a1a
+    style E fill:#c8e6c9,color:#1a1a1a
 ```
 
 **核心流程**:
@@ -334,7 +364,7 @@ python3 enhance_video.py ~/Downloads/tx/ -o ~/Downloads/enhanced/ -b
 
 ### 9.6 性能参考
 
-**测试环境**: MacBook Pro M3 Pro (18GB 内存)
+**测试环境**: MacBook Pro M3 Pro (18GB 内存)。以下为该单一机型的实测参考值，不同硬件配置与视频内容下偏差较大，仅供参考。
 
 | 视频时长 | 分辨率 | 放大倍数 | 预计耗时      |
 | -------- | ------ | -------- | ------------- |
