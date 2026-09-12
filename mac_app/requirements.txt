@@ -1,0 +1,9 @@
+# Mac App (pywebview) 运行与打包依赖
+# 运行: python3 main.py
+# 打包: python3 setup.py py2app
+requests
+m3u8
+pycryptodome
+tenacity
+pywebview
+py2app

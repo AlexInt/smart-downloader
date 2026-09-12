@@ -42,6 +42,14 @@ smart-downloader/
 ├── main.py                # CLI 统一入口文件
 ├── streamlit_app.py       # GUI 入口文件
 ├── enhance_video.py       # AI 视频增强工具
+├── mac_app/               # Mac 桌面 App (pywebview 内嵌浏览器)
+│   ├── main.py            # App 入口 (创建窗口、注入嗅探脚本)
+│   ├── api.py             # JS <-> Python 桥接层 (导航/下载/进度)
+│   ├── index.html         # App 首页 (地址输入与使用引导)
+│   ├── sniffer.js         # 注入页面的 m3u8 嗅探脚本 + 悬浮下载工具栏
+│   ├── setup.py           # py2app 打包配置
+│   ├── build_app.sh       # 一键构建脚本 (py2app + 动态库补齐)
+│   └── requirements.txt   # App 依赖
 ├── core/                  # 核心逻辑包
 │   ├── downloader.py      # m3u8 下载与合并逻辑 (M3U8Downloader 类)
 │   ├── extractor.py       # 网页解析逻辑 (WebExtractor 类)
@@ -212,7 +220,7 @@ pip install -r requirements.txt
 
 ### 7.1 本地运行
 
-#### 方式一：图形界面 (GUI) - **推荐**
+#### 方式一：Web 图形界面 (Streamlit)
 
 无需记忆复杂命令，直接在浏览器中操作。
 
@@ -226,7 +234,34 @@ streamlit run streamlit_app.py
   - 友好的错误提示与排查建议。
   - 自动识别用户主目录，安全保存文件。
 
-#### 方式二：命令行 (CLI)
+#### 方式二：Mac 桌面 App（内嵌浏览器，一键下载）- **推荐**
+
+App 内置浏览器，直接访问视频网页，自动嗅探 m3u8 后点击悬浮工具栏的「下载视频」即可，无需复制链接。
+
+```bash
+# 安装依赖
+pip install -r mac_app/requirements.txt
+
+# 开发模式运行
+python3 mac_app/main.py
+```
+
+打包为独立 .app（可双击分发，无需安装 Python）：
+
+```bash
+cd mac_app && ./build_app.sh
+# 产物: mac_app/dist/Smart Downloader.app
+```
+
+> 说明: 构建脚本在 py2app 之后会自动补齐 conda 环境的动态库（libssl/libffi 等），py2app 不会自动打包它们。
+
+- **工作原理**:
+  - pywebview (WKWebView) 内嵌浏览器，用户在 App 内正常访问视频网页
+  - 每个页面自动注入嗅探脚本：Hook XHR/fetch 捕获播放器请求的 m3u8（含签名参数）、扫描 video/source 标签
+  - 嗅探到视频后，悬浮工具栏的下载按钮激活，点击调用 Python 侧 M3U8Downloader 下载
+  - 复用下载核心的全部能力（AES-128 解密、多级列表、fMP4、TS 重封装）
+
+#### 方式三：命令行 (CLI)
 
 适合脚本集成或习惯命令行的用户。
 

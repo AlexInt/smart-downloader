@@ -26,5 +26,9 @@ venv/
 # 忽略运行时产生的临时目录
 temp_*/
 
+# Mac App 构建产物 (可用 build_app.sh 重建)
+mac_app/build/
+mac_app/dist/
+
 # Logs
 *.log

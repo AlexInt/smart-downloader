@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Smart Downloader</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif; background: #f5f5f7; margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+  .card { background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.08); padding: 40px 44px; width: min(560px, 90vw); }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  p.sub { color: #86868b; margin: 0 0 24px; font-size: 14px; }
+  .row { display: flex; gap: 10px; }
+  input { flex: 1; border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; }
+  input:focus { border-color: #0a84ff; }
+  button { border: 0; border-radius: 8px; padding: 10px 20px; font-size: 14px; background: #0a84ff; color: #fff; cursor: pointer; }
+  button:hover { background: #0071e3; }
+  ol { color: #48484a; font-size: 13px; line-height: 1.9; padding-left: 20px; margin: 24px 0 0; }
+  .tip { color: #86868b; font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎬 Smart Downloader</h1>
+  <p class="sub">在下方输入视频网页地址，进入页面后点击「下载视频」按钮</p>
+  <div class="row">
+    <input id="url" type="text" placeholder="https://example.com/video-page.html" autofocus>
+    <button onclick="go()">访问</button>
+  </div>
+  <ol>
+    <li>输入包含视频的网页地址并访问</li>
+    <li>在页面中播放视频，App 会自动嗅探 m3u8 地址</li>
+    <li>点击页面顶部工具栏中的「⬇ 下载视频」</li>
+    <li>下载完成后文件保存至 ~/Downloads/tx/</li>
+  </ol>
+  <p class="tip">支持 AES-128 加密流、多级播放列表、fMP4 初始化段与 TS 流自动重封装</p>
+</div>
+<script>
+function go() {
+  var u = document.getElementById('url').value.trim();
+  if (!u) return;
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  pywebview.api.navigate(u);
+}
+document.getElementById('url').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') go();
+});
+</script>
+</body>
+</html>
