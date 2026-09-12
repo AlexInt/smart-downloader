@@ -123,22 +123,37 @@ from pathlib import Path
 # 全局计数器，用于防止同一秒内文件名冲突
 _filename_counter = 0
 
-def generate_filename(title=None, ext=".mp4"):
+def generate_filename(title=None, ext=".mp4", output_dir=None):
     """
     生成文件名
     :param title: 网页标题（可选）
     :param ext: 扩展名
+    :param output_dir: 输出目录（提供时启用同名查重，冲突自动加 (1)/(2) 后缀）
     """
     global _filename_counter
-    
+
+    base = None
     # 1. 如果有标题，优先使用标题
     if title:
         # 确保标题中没有非法字符 (在 extractor 中已经处理过一部分，这里兜底)
         safe_title = "".join([c for c in title if c.isalnum() or c in "._- "]).strip()
         if safe_title:
-            return f"{safe_title}{ext}"
-            
+            base = safe_title
+
     # 2. 如果没有标题，使用时间戳+序号 (YYYYMMDD_HHMMSS_001)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    _filename_counter = (_filename_counter + 1) % 1000
-    return f"{timestamp}_{_filename_counter:03d}{ext}"
+    if not base:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        _filename_counter = (_filename_counter + 1) % 1000
+        base = f"{timestamp}_{_filename_counter:03d}"
+
+    # 3. 同名查重: 已存在同名文件时加 (1)/(2)... 后缀，避免静默覆盖
+    if output_dir:
+        output_dir = Path(output_dir)
+        candidate = f"{base}{ext}"
+        counter = 0
+        while (output_dir / candidate).exists():
+            counter += 1
+            candidate = f"{base}({counter}){ext}"
+        return candidate
+
+    return f"{base}{ext}"

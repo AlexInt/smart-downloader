@@ -1,112 +1,108 @@
 import streamlit as st
-import time
-import tkinter as tk
-from tkinter import filedialog
-from core.extractor import WebExtractor
-from core.downloader import M3U8Downloader
-from core.utils import validate_url
 from pathlib import Path
+
+from core.extractor import WebExtractor
+from core.queue import DownloadQueue
+from core.utils import validate_url
 
 st.set_page_config(page_title="M3U8 智能下载器", page_icon="🎬")
 
 st.title("🎬 M3U8 智能下载器")
-st.markdown("输入视频 m3u8 地址或网页地址，一键下载视频到本地。")
+st.markdown("输入视频 m3u8 地址或网页地址（支持多行批量），一键下载视频到本地。")
 
 # 初始化 session state
 if 'output_dir' not in st.session_state:
     st.session_state.output_dir = str(Path.home() / "Downloads" / "tx")
+if 'queue' not in st.session_state:
+    st.session_state.queue = None
 
 # 1. 参数设置
 with st.container():
-    col1, col2, col3 = st.columns([3, 2, 1])
+    col1, col2 = st.columns([3, 2])
     with col1:
-        url = st.text_input("视频地址 (必填)", placeholder="https://example.com/video.m3u8 或 网页URL")
-    
+        url_text = st.text_area(
+            "视频地址 (必填，每行一个，支持批量)",
+            placeholder="https://example.com/video.m3u8\nhttps://example.com/page.html",
+            height=120,
+        )
     with col2:
-        # 显示当前目录，允许手动修改
-        st.text_input("保存目录", key="output_dir", help=f"安全限制：只能选择 {Path.home()} 下的目录")
-    
-    with col3:
-        st.write("") # 占位，让按钮对齐
-        st.write("") 
-        st.caption(f"⚠️ 仅限用户目录\n\n例如：\n- {Path.home()}/Downloads\n- {Path.home()}/Movies")
-        # macOS 上 Streamlit 运行在子线程，直接调用 Tkinter 会导致 crash (NSWindow should only be instantiated on the main thread)
-        # 临时移除 Tkinter 目录选择功能，改用手动输入
-        # if st.button("📂 选择文件夹"): ... 
+        st.text_input("保存目录", key="output_dir",
+                      help=f"安全限制：只能选择 {Path.home()} 下的目录")
+        jobs = st.number_input("同时下载任务数", min_value=1, max_value=5, value=1, step=1)
+        st.caption(f"⚠️ 仅限用户目录\n例如：\n- {Path.home()}/Downloads")
 
-# 2. 状态显示区域
+# 2. 状态与进度显示区域
 status_container = st.empty()
-progress_bar = st.empty()
+
+
+def render_tasks():
+    """渲染任务列表实时状态 (下载中显示进度条)"""
+    queue = st.session_state.queue
+    if not queue:
+        return
+    tasks = queue.get_tasks()
+    if not tasks:
+        return
+    lines = []
+    bars = []
+    for t in tasks:
+        name = t['title'] or t['url']
+        icon = {'pending': '⏳', 'downloading': '⬇️', 'done': '✅', 'error': '❌'}[t['state']]
+        if t['state'] == 'downloading' and t['total']:
+            lines.append(f"{icon} {name} — {t['current']}/{t['total']}")
+            bars.append(t['current'] / t['total'])
+        elif t['state'] == 'done':
+            lines.append(f"{icon} {name} — 已保存到 {t['output']}")
+        elif t['state'] == 'error':
+            lines.append(f"{icon} {name} — {t['error']}")
+        else:
+            lines.append(f"{icon} {name}")
+    st.markdown("\n\n".join(lines))
+
 
 # 3. 核心逻辑
 if st.button("🚀 开始下载", type="primary"):
-    if not url:
+    urls = [u.strip() for u in url_text.splitlines() if u.strip()]
+    if not urls:
         st.error("❌ 请输入视频地址")
     else:
-        # 0. 验证 URL
-        status_container.info("正在验证 URL...")
-        is_valid, msg = validate_url(url)
-        
-        if not is_valid:
-            st.error(f"❌ URL 无效: {msg}")
-        else:
-            try:
-                # 1. 解析 (如果是网页)
-                target_url = url
-                video_title = None
-                
-                if ".m3u8" not in url or url.strip().endswith(".html"):
-                    status_container.warning("识别为网页，正在启动浏览器解析 (可能需要几秒钟)...")
-                    extractor = WebExtractor()
-                    extracted, title = extractor.extract_m3u8(url)
-                    if extracted:
-                        target_url = extracted
-                        video_title = title
-                        st.success(f"✅ 成功提取 m3u8: {target_url}")
-                        if title:
-                            st.info(f"📄 识别到视频标题: {title}")
-                    else:
-                        st.error("❌ 未能在网页中找到 m3u8 链接")
-                        st.stop()
+        # 3.1 逐个预检 + 解析网页
+        targets = []
+        for u in urls:
+            status_container.info(f"正在验证: {u[:80]}")
+            is_valid, msg = validate_url(u)
+            if not is_valid:
+                st.error(f"❌ URL 无效: {msg} ({u[:60]})")
+                continue
 
-                # 2. 下载
-                status_container.info("正在准备下载...")
-                
-                # 定义进度回调
-                p_bar = progress_bar.progress(0)
-                
-                def on_progress(current, total):
-                    percent = int(current / total * 100)
-                    p_bar.progress(percent)
-                    status_container.info(f"⬇️ 正在下载切片: {current}/{total} ({percent}%)")
-
-                downloader = M3U8Downloader(target_url, output_dir=st.session_state.output_dir, output_filename=video_title)
-                result_path, error_msg = downloader.run(progress_callback=on_progress)
-                
-                if result_path:
-                    p_bar.progress(100)
-                    status_container.empty()
-                    st.success(f"🎉 下载完成！")
-                    st.balloons()
-                    st.code(result_path, language="bash")
-                    st.info(f"文件已保存到: {st.session_state.output_dir}")
+            if ".m3u8" in u and not u.strip().endswith(".html"):
+                targets.append((u, None))
+            else:
+                status_container.warning(f"正在启动浏览器解析 (可能需要几秒钟): {u[:60]}")
+                extractor = WebExtractor()
+                extracted, title = extractor.extract_m3u8(u)
+                if extracted:
+                    targets.append((extracted, title))
                 else:
-                    st.error(f"❌ 下载失败: {error_msg}")
-                    with st.expander("可能有用的排查建议"):
-                        st.markdown("""
-                        1. 检查网络连接是否正常
-                        2. 确认视频地址是否已失效（有些 m3u8 有时效性）
-                        3. 如果是加密视频，可能需要特定的 Headers 或 Key
-                        """)
+                    st.error(f"❌ 未能在网页中找到 m3u8 链接: {u[:60]}")
 
-            except PermissionError as e:
-                st.error(str(e))
-                st.toast("⚠️ 目录权限错误，请检查路径", icon="🚫")
-            except Exception as e:
-                st.error(f"❌ 发生未知错误: {str(e)}")
-                with st.expander("查看详细错误信息"):
-                    st.exception(e)
+        if not targets:
+            st.stop()
+
+        # 3.2 入队并启动 (非阻塞)
+        queue = DownloadQueue(max_parallel=int(jobs), show_progress=False)
+        for m3u8_url, title in targets:
+            queue.add(m3u8_url, title=title, output_dir=st.session_state.output_dir)
+        st.session_state.queue = queue
+        queue.run(wait=False)
+        status_container.info(f"🚀 已入队 {len(targets)} 个任务，实时进度如下 (刷新页面可查看最新状态)")
+
+# 4. 任务列表区 (运行中/结束后持续展示)
+render_tasks()
+if st.session_state.queue and st.session_state.queue.is_running():
+    st.autorefresh(interval=1000) if hasattr(st, 'autorefresh') else None
+    # 无 st.autorefresh 依赖时，用户手动刷新页面即可更新进度
 
 # 页脚
 st.markdown("---")
-st.caption("Powered by Streamlit & Python | v1.0")
+st.caption("Powered by Streamlit & Python | v1.1")

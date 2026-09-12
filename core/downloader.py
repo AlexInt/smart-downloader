@@ -10,12 +10,18 @@ from core.utils import HEADERS, get_download_dir, create_temp_dir, clean_dir, ge
 from core.decrypter import Decrypter
 
 class M3U8Downloader:
-    def __init__(self, url, output_dir=None, output_filename=None, max_workers=10):
+    def __init__(self, url, output_dir=None, output_filename=None, max_workers=10,
+                 log_prefix=None):
         self.url = url
         self.max_workers = max_workers
         self.download_dir = get_download_dir(custom_path=output_dir)
         self.output_filename = output_filename
         self.key_cache = {}
+        # 多任务场景由队列层传入前缀 (如 "[2/5]")，避免输出互相穿插
+        self.log_prefix = f"{log_prefix} " if log_prefix else ""
+
+    def _log(self, message):
+        print(f"{self.log_prefix}{message}")
 
     def run(self, progress_callback=None):
         """
@@ -26,56 +32,56 @@ class M3U8Downloader:
         try:
             # 1. 解析 m3u8
             playlist, base_uri = self._load_playlist(self.url)
-            
+
             # 2. 下载 fMP4 初始化段 (EXT-X-MAP，若存在)
             init_file = self._download_init_section(playlist, base_uri, temp_dir)
 
             # 3. 下载切片
-            print(f"找到 {len(playlist.segments)} 个切片，开始下载...")
+            self._log(f"找到 {len(playlist.segments)} 个切片，开始下载...")
             ts_files = self._download_segments(playlist.segments, base_uri, temp_dir, progress_callback)
             if init_file:
                 ts_files.insert(0, init_file)
-            
+
             # 3. 合并文件
             if ts_files:
                 output_path = self._merge_files(ts_files)
-                print(f"✅ 合并完成: {output_path}")
+                self._log(f"✅ 合并完成: {output_path}")
                 return str(output_path), None
             else:
                 msg = "❌ 没有下载到任何切片，可能是视频源不可用或解密失败"
-                print(msg)
+                self._log(msg)
                 return None, msg
-                
+
         except Exception as e:
             msg = f"下载过程出错: {str(e)}"
-            print(f"\n❌ {msg}")
+            self._log(f"❌ {msg}")
             return None, msg
         finally:
             clean_dir(temp_dir)
 
     def _load_playlist(self, url):
         """加载并解析 m3u8，处理多级列表"""
-        print(f"解析 m3u8: {url}")
-        
+        self._log(f"解析 m3u8: {url}")
+
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        
+
         session = requests.Session()
         session.verify = False
         session.headers.update(HEADERS)
-        
+
         response = session.get(url, timeout=15)
         response.raise_for_status()
         playlist = m3u8.loads(response.text, uri=url)
         base_uri = url
 
         if playlist.is_variant:
-            print("检测到多级播放列表，选择最高带宽流...")
+            self._log("检测到多级播放列表，选择最高带宽流...")
             best_stream = max(playlist.playlists, key=lambda p: p.stream_info.bandwidth)
-            print(f"选择流: {best_stream.uri}")
-            
+            self._log(f"选择流: {best_stream.uri}")
+
             sub_url = urljoin(url, best_stream.uri)
-            print(f"子列表完整 URL: {sub_url}")
+            self._log(f"子列表完整 URL: {sub_url}")
             
             sub_response = session.get(sub_url, timeout=15)
             sub_response.raise_for_status()
@@ -90,13 +96,13 @@ class M3U8Downloader:
         failed_segments = []
         total_segments = len(segments)
         success_count = 0
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [
-                executor.submit(self._process_segment, seg, base_uri, temp_dir, idx) 
+                executor.submit(self._process_segment, seg, base_uri, temp_dir, idx)
                 for idx, seg in enumerate(segments)
             ]
-            
+
             for i, future in enumerate(futures):
                 try:
                     path, seg_idx = future.result()
@@ -107,15 +113,18 @@ class M3U8Downloader:
                         failed_segments.append(seg_idx)
                 except Exception as e:
                     failed_segments.append(i)
-                
+
                 if progress_callback:
+                    # 有回调时静默，进度由上层 (队列/GUI) 展示
                     progress_callback(i + 1, total_segments)
-                print(f"\r进度: {i+1}/{total_segments} | 成功: {success_count}", end="", flush=True)
-        
-        print("")  # 换行
+                else:
+                    print(f"\r进度: {i+1}/{total_segments} | 成功: {success_count}", end="", flush=True)
+
+        if not progress_callback:
+            print("")  # 结束单行刷新，换行
         
         if failed_segments:
-            print(f"⚠️  有 {len(failed_segments)} 个切片下载失败")
+            self._log(f"⚠️  有 {len(failed_segments)} 个切片下载失败")
         
         ts_files.sort(key=lambda x: x[0])
         return [path for _, path in ts_files]
@@ -128,7 +137,7 @@ class M3U8Downloader:
         if not init_section:
             return None
 
-        print("检测到 fMP4 流 (EXT-X-MAP)，下载初始化段...")
+        self._log("检测到 fMP4 流 (EXT-X-MAP)，下载初始化段...")
         init_url = urljoin(base_uri, init_section.uri)
         response = requests.get(init_url, headers=HEADERS, timeout=15, verify=False)
         response.raise_for_status()
@@ -188,7 +197,9 @@ class M3U8Downloader:
 
     def _merge_files(self, ts_files):
         """合并文件"""
-        output_filename = generate_filename(title=self.output_filename, ext=".mp4")
+        output_filename = generate_filename(
+            title=self.output_filename, ext=".mp4", output_dir=self.download_dir
+        )
         output_path = self.download_dir / output_filename
 
         with open(output_path, 'wb') as outfile:
@@ -209,18 +220,18 @@ class M3U8Downloader:
 
         ffmpeg = shutil.which('ffmpeg')
         if not ffmpeg:
-            print("⚠️ 未检测到 ffmpeg，输出为 TS 流，Preview/QuickTime 可能无法播放 (brew install ffmpeg)")
+            self._log("⚠️ 未检测到 ffmpeg，输出为 TS 流，Preview/QuickTime 可能无法播放 (brew install ffmpeg)")
             return
 
-        print("检测到 TS 流，使用 ffmpeg 无损重封装为 MP4...")
+        self._log("检测到 TS 流，使用 ffmpeg 无损重封装为 MP4...")
         tmp_path = output_path.with_name(output_path.stem + "_remux.mp4")
         cmd = [ffmpeg, '-y', '-loglevel', 'error', '-i', str(output_path),
                '-c', 'copy', '-bsf:a', 'aac_adtstoasc', str(tmp_path)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
             tmp_path.replace(output_path)
-            print("✅ 重封装完成，可被 Preview/QuickTime 直接播放")
+            self._log("✅ 重封装完成，可被 Preview/QuickTime 直接播放")
         else:
             if tmp_path.exists():
                 tmp_path.unlink()
-            print(f"⚠️ ffmpeg 重封装失败，保留原始拼接结果: {result.stderr[:200]}")
+            self._log(f"⚠️ ffmpeg 重封装失败，保留原始拼接结果: {result.stderr[:200]}")

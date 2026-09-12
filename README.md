@@ -26,10 +26,16 @@
     - 自动重试与错误处理（基于 tenacity 指数退避）。
     - **智能命名**: 优先使用网页标题，无标题时自动使用时间戳+序号生成唯一文件名，防止覆盖。
     - **TS 流自动重封装**: 检测到 MPEG-TS 合并结果时，自动调用 ffmpeg 无损重封装（`-c copy`）为标准 MP4，确保 Preview/QuickTime 等原生播放器可播放；未安装 ffmpeg 时保留原始拼接结果并给出提示。
-5.  **双模式运行**:
+5.  **多链接队列下载**:
+    - CLI 支持一次传入多个 URL（空格分隔），或通过 `-f urls.txt` 从文件批量读取（每行一个，`#` 开头为注释）。
+    - `-j N` 指定任务级并行数（同时下载 N 个视频，默认串行；与切片级并发相互独立）。
+    - 单个任务失败不影响队列中其他任务，结束时输出成功/失败汇总。
+    - 同名文件自动加 `(1)`、`(2)` 后缀，避免静默覆盖。
+    - 多任务日志带 `[2/5]` 序号前缀，输出不会互相穿插。
+6.  **双模式运行**:
     - **CLI**: 纯命令行模式，适合脚本调用。
     - **GUI**: 基于 Streamlit 的图形界面，操作更直观。
-6.  **AI 视频增强**:
+7.  **AI 视频增强**:
     - 使用 Real-ESRGAN 进行超分辨率处理。
     - 通过 Vulkan 接口支持 GPU 加速（仅 macOS）。
     - 提供 2x、3x、4x 放大倍数。
@@ -52,6 +58,7 @@ smart-downloader/
 │   └── requirements.txt   # App 依赖
 ├── core/                  # 核心逻辑包
 │   ├── downloader.py      # m3u8 下载与合并逻辑 (M3U8Downloader 类)
+│   ├── queue.py           # 多链接下载队列 (DownloadQueue 类)
 │   ├── extractor.py       # 网页解析逻辑 (WebExtractor 类)
 │   ├── decrypter.py       # 解密逻辑 (Decrypter 类)
 │   └── utils.py           # 通用工具 (路径处理、文件清理)
@@ -277,7 +284,21 @@ cd mac_app && ./build_app.sh
     python3 main.py "https://example.com/page-with-video.html"
     ```
 
-3.  **指定输出目录**:
+3.  **批量队列下载**:
+
+    ```bash
+    # 多个 URL 空格分隔，依次入队
+    python3 main.py "https://example.com/a.m3u8" "https://example.com/b.html"
+
+    # 从文件读取 URL 列表 (每行一个，# 开头为注释)
+    python3 main.py -f urls.txt
+
+    # 3 个视频同时下载 (任务级并行)
+    python3 main.py -f urls.txt -j 3
+    ```
+
+4.  **指定输出目录**:
+
     ```bash
     # 默认下载目录为 ~/Downloads/tx/
     # 可以使用 -o 参数指定其他目录 (必须在用户主目录下)
