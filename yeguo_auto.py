@@ -20,6 +20,7 @@ import base64
 import json
 import re
 import sys
+from pathlib import Path
 
 import requests
 from Crypto.Cipher import AES
@@ -133,6 +134,15 @@ def main():
         print("❌ 没有可下载的集数")
         sys.exit(1)
 
+    if args.all:
+        # 全剧模式: 输出到以剧名命名的子目录
+        safe_name = "".join(c for c in drama_name if c.isalnum() or c in "._- ").strip()
+        base_dir = Path(args.output).expanduser() if args.output else Path.home() / "Downloads" / "tx"
+        output_dir = base_dir / safe_name
+        print(f"📁 全剧保存至: {output_dir}")
+    else:
+        output_dir = args.output
+
     print("-" * 30)
     done, failed = [], []
     for i, ep in enumerate(playable, 1):
@@ -149,7 +159,7 @@ def main():
         name = f"{drama_name}_第{fresh['sort']:02d}集"
         print(f"[{i}/{len(playable)}] {name} ({fresh.get('resolution', '未知分辨率')})")
         output, error = M3U8Downloader(
-            url, output_dir=args.output, output_filename=name, log_prefix=f"[{i}/{len(playable)}]"
+            url, output_dir=output_dir, output_filename=name, log_prefix=f"[{i}/{len(playable)}]"
         ).run()
         if output:
             done.append((name, output))
