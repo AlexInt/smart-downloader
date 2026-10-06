@@ -3,14 +3,16 @@ import requests
 import shutil
 import subprocess
 import concurrent.futures
+from requests.adapters import HTTPAdapter
 from urllib.parse import urljoin
+from urllib3.util.retry import Retry
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from core.utils import HEADERS, get_download_dir, create_temp_dir, clean_dir, generate_filename
 from core.decrypter import Decrypter
 
 class M3U8Downloader:
-    def __init__(self, url, output_dir=None, output_filename=None, max_workers=10,
+    def __init__(self, url, output_dir=None, output_filename=None, max_workers=6,
                  log_prefix=None):
         self.url = url
         self.max_workers = max_workers
@@ -19,6 +21,37 @@ class M3U8Downloader:
         self.key_cache = {}
         # 多任务场景由队列层传入前缀 (如 "[2/5]")，避免输出互相穿插
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        self.session = self._make_session()
+
+    def _make_session(self):
+        """创建带传输层重试的 Session，自动处理被服务器掐断的连接"""
+        session = requests.Session()
+        session.verify = False
+        session.headers.update(HEADERS)
+        transport_retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            # None = 对所有方法（含 POST/GET）都重试
+            allowed_methods=None,
+            # 连接读取出错/被断开时自动重试
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=transport_retry, pool_maxsize=self.max_workers + 5)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        return session
+
+    def _request(self, url, **kwargs):
+        """统一请求入口；SSL 被服务器断开时丢弃连接池，由上层 tenacity 重试换新连接"""
+        kwargs.setdefault('timeout', 30)
+        kwargs.setdefault('verify', False)
+        try:
+            return self.session.get(url, **kwargs)
+        except requests.exceptions.SSLError:
+            self._log("⚠️ SSL 连接被服务器断开，重建连接后重试...")
+            self.session = self._make_session()
+            raise
 
     def _log(self, message):
         print(f"{self.log_prefix}{message}")
@@ -59,18 +92,17 @@ class M3U8Downloader:
         finally:
             clean_dir(temp_dir)
 
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=2, max=20),
+        retry=retry_if_exception_type((requests.exceptions.RequestException, Exception)),
+        reraise=True
+    )
     def _load_playlist(self, url):
         """加载并解析 m3u8，处理多级列表"""
         self._log(f"解析 m3u8: {url}")
 
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        session = requests.Session()
-        session.verify = False
-        session.headers.update(HEADERS)
-
-        response = session.get(url, timeout=15)
+        response = self._request(url, timeout=15)
         response.raise_for_status()
         playlist = m3u8.loads(response.text, uri=url)
         base_uri = url
@@ -82,8 +114,8 @@ class M3U8Downloader:
 
             sub_url = urljoin(url, best_stream.uri)
             self._log(f"子列表完整 URL: {sub_url}")
-            
-            sub_response = session.get(sub_url, timeout=15)
+
+            sub_response = self._request(sub_url, timeout=15)
             sub_response.raise_for_status()
             playlist = m3u8.loads(sub_response.text, uri=sub_url)
             base_uri = sub_url
@@ -129,6 +161,12 @@ class M3U8Downloader:
         ts_files.sort(key=lambda x: x[0])
         return [path for _, path in ts_files]
 
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=2, max=20),
+        retry=retry_if_exception_type((requests.exceptions.RequestException, Exception)),
+        reraise=True
+    )
     def _download_init_section(self, playlist, base_uri, temp_dir):
         """下载 fMP4 初始化段 (EXT-X-MAP)，返回本地路径；不存在则返回 None"""
         init_section = next(
@@ -139,7 +177,7 @@ class M3U8Downloader:
 
         self._log("检测到 fMP4 流 (EXT-X-MAP)，下载初始化段...")
         init_url = urljoin(base_uri, init_section.uri)
-        response = requests.get(init_url, headers=HEADERS, timeout=15, verify=False)
+        response = self._request(init_url)
         response.raise_for_status()
 
         init_path = temp_dir / "seg_init.mp4"
@@ -148,8 +186,8 @@ class M3U8Downloader:
         return init_path
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=2, max=20),
         retry=retry_if_exception_type((requests.exceptions.RequestException, Exception)),
         reraise=True
     )
@@ -157,8 +195,8 @@ class M3U8Downloader:
         """处理单个切片：下载 -> 解密 -> 保存"""
         try:
             seg_url = urljoin(base_uri, segment.uri)
-            
-            response = requests.get(seg_url, headers=HEADERS, timeout=15, verify=False)
+
+            response = self._request(seg_url)
             response.raise_for_status()
             content = response.content
             
@@ -186,7 +224,7 @@ class M3U8Downloader:
              key_uri = urljoin(base_uri, key_uri)
         
         if key_uri not in self.key_cache:
-            key_resp = requests.get(key_uri, headers=HEADERS, timeout=15, verify=False)
+            key_resp = self._request(key_uri)
             key_resp.raise_for_status()
             self.key_cache[key_uri] = key_resp.content
         
