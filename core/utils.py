@@ -9,6 +9,14 @@ from urllib.parse import urlparse
 # 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def is_relative_to(path, root):
+    """判断 path 是否位于 root 目录下"""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
 # 全局配置
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -86,13 +94,13 @@ def get_download_dir(custom_path=None, subdir="tx"):
     else:
         download_dir = Path.home() / "Downloads" / subdir
 
-    # 安全检查：限制在用户主目录下
-    allowed_root = Path.home().resolve()
-    try:
-        # 使用 is_relative_to (Python 3.9+) 或 relative_to
-        download_dir.relative_to(allowed_root)
-    except ValueError:
-        raise PermissionError(f"❌ 安全限制：只允许在 {allowed_root} 目录下保存文件，您指定的目录是: {download_dir}")
+    # 安全检查：限制在允许的根目录下
+    allowed_roots = [
+        Path.home().resolve(),
+        Path("/Volumes/sisi/.video").resolve(),
+    ]
+    if not any(is_relative_to(download_dir, root) for root in allowed_roots):
+        raise PermissionError(f"❌ 安全限制：只允许在 {' 或 '.join(map(str, allowed_roots))} 目录下保存文件，您指定的目录是: {download_dir}")
         
     try:
         download_dir.mkdir(parents=True, exist_ok=True)

@@ -102,7 +102,7 @@ def pick_episode(drama_id, token, episode_id):
 def main():
     parser = argparse.ArgumentParser(description="野果短剧 (yeguodj.com) 全自动下载器")
     parser.add_argument("url", help="剧集页/详情页 URL")
-    parser.add_argument("--all", action="store_true", help="下载全剧所有可播放集")
+    parser.add_argument("-all", "--all", action="store_true", help="下载全剧所有可播放集")
     parser.add_argument("-o", "--output", default=None, help="输出目录 (默认: ~/Downloads/tx)")
     args = parser.parse_args()
 
