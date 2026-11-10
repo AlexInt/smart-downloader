@@ -29,7 +29,8 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 「下载」DownloadEngine (Swift 版 M3U8Downloader)
   拉清单(多级选最高码率) → 预取 AES-128 密钥 → 6 并发切片下载(重试/Range/解密)
   → 保存为「本地 HLS 文件夹」: playlist.m3u8(重写,去 KEY 行) + seg_*.ts(+init.mp4)
-  URLSession 被掐(连接层错误)时自动降级 WebKitFetcher(WKDownload, Safari 同源 TLS 栈)
+  URLSession 被掐(连接层错误)时自动降级 WebKitFetcher(WKDownload, Safari 同源 TLS 栈,
+  经由浏览页那个附加在视图树上的 WKWebView 发起——隐藏 webview 在真机上会直接 DownloadFailed)
 「播放」LocalMediaServer (127.0.0.1 回环 HTTP) + AVPlayer 原生 HLS
 ```
 
@@ -73,6 +74,12 @@ SMARTDOWNLOADER_DIR="$PWD/out" ./coretest "<该url>" ep1
 
 # 5. App 嗅探链路(可选): 临时把 BrowserView 默认起始页(about:blank)改为 http://127.0.0.1:8899/test.html,
 #    运行 `python3 -m http.server 8899` 后在模拟器跑 App, 按钮应亮起「下载视频 (1)」
+
+# 6. 真机蜂窝网络自动验证(需数据线连 iPhone): 传 -autoTestDownload 参数启动即自动下载,
+#    状态 print 到控制台。用于验证 WAF TLS 拦截下 URLSession→WebKit 降级链路是否真的可用
+xcrun devicectl device install app --device <设备ID> <DerivedData .../Debug-iphoneos/SmartDownloader.app>
+xcrun devicectl device process launch --console --device <设备ID> com.firefish.smartdownloader -autoTestDownload "<新鲜m3u8地址>"
+# 期望: DL[...]: 尝试 WebKit 兜底… → DL[...]: ✅ WebKit 兜底成功 → AUTOTEST RESULT: DONE
 ```
 
 ## 六、文件清单

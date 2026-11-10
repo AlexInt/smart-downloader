@@ -7,8 +7,13 @@ import WebKit
 // 真机网络下握手即被 RST，表现为 -1200 "TLS错误导致安全连接失败"。
 // App 浏览页(WKWebView)实测可正常加载站点，故下载请求降级走同一网络栈(WKDownload)。
 //
+// 载体选择（真机实测）：iOS 上脱离视图树、未加载任何内容的隐藏 WKWebView 发起的
+// WKDownload 会直接以 "DownloadFailed" 失败（无活跃页面上下文/前台网络会话），
+// 因此优先复用浏览页那个真实附加在视图树里的 WKWebView，仅在其不可用时
+// 退回隐藏 webview（Mac 冒烟测试场景）。
+//
 // 实现说明:
-// - 隐藏(detached) WKWebView + startDownload，响应由 WebKit 网络进程落盘到临时文件
+// - startDownload 发起下载，响应由 WebKit 网络进程落盘到临时文件
 // - delegate 回调在主线程；startDownload 与回调之间存在竞态窗口
 //   (decideDestination 可能先于 fetch 注册 continuation 执行)，
 //   故用 paths/results/waiters 三张表做两阶段握手，回调先行时暂存结果
@@ -18,6 +23,9 @@ import WebKit
 final class WebKitFetcher: NSObject {
     static let shared = WebKitFetcher()
 
+    /// 浏览页真实附加在视图树上的 WKWebView（真机蜂窝网络下被证实可过 WAF）
+    private weak var hostWebView: WKWebView?
+    /// 备用隐藏 webview（无 host 时的兜底，如 Mac 冒烟测试）
     private var webView: WKWebView?
     /// WKDownload -> 落盘路径（decideDestination 写入）
     private var paths: [ObjectIdentifier: URL] = [:]
@@ -25,6 +33,11 @@ final class WebKitFetcher: NSObject {
     private var results: [ObjectIdentifier: Result<Data, Error>] = [:]
     /// fetch 注册的等待者
     private var waiters: [ObjectIdentifier: CheckedContinuation<Data, Error>] = [:]
+
+    /// 浏览页创建 WKWebView 时注册，下载请求优先复用它发起
+    func setHostWebView(_ view: WKWebView) {
+        hostWebView = view
+    }
 
     /// 用 WebKit 网络栈拉取资源（Safari TLS 指纹，可过 WAF）
     func fetch(url: URL, byteRange: DownloadEngine.ByteRange?) async throws -> Data {
@@ -41,7 +54,13 @@ final class WebKitFetcher: NSObject {
     }
 
     private func start(url: URL, byteRange: DownloadEngine.ByteRange?) async throws -> Data {
-        let view = try ensureWebView()
+        // 优先复用浏览页的 webview：隐藏 webview 在 iOS 真机上下载会直接 DownloadFailed
+        let view: WKWebView
+        if let host = hostWebView {
+            view = host
+        } else {
+            view = try ensureWebView()
+        }
         var request = URLRequest(url: url)
         for (field, value) in DownloadEngine.browserHeaders {
             request.setValue(value, forHTTPHeaderField: field)
@@ -67,7 +86,7 @@ final class WebKitFetcher: NSObject {
         }
     }
 
-    /// WKWebView 不加入视图树也可发起下载（网络请求发生在 WebKit 网络进程）
+    /// 备用隐藏 webview：不加入视图树也可发起下载（macOS 冒烟实测可用；iOS 真机不可用）
     private func ensureWebView() throws -> WKWebView {
         if let webView { return webView }
         let config = WKWebViewConfiguration()

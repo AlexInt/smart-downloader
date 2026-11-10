@@ -73,13 +73,15 @@ final class DownloadManager: ObservableObject {
         if foundURLs.count > 20 { foundURLs.removeFirst(foundURLs.count - 20) }
     }
 
-    func startDownload(urlString: String, title rawTitle: String) {
+    @discardableResult
+    func startDownload(urlString: String, title rawTitle: String) -> DownloadTask {
         let base = DownloadEngine.sanitizeTitle(rawTitle) ?? DownloadEngine.timestampName()
         let task = DownloadTask(url: urlString, title: base)
         tasks.insert(task, at: 0)
         Task {
             await DownloadEngine().run(task: task)
         }
+        return task
     }
 
     func delete(at offsets: IndexSet) {
@@ -245,7 +247,11 @@ final class DownloadEngine {
     }
 
     private func setTask(_ task: DownloadTask, _ mutate: @MainActor (DownloadTask) -> Void) async {
-        await MainActor.run { mutate(task) }
+        await MainActor.run {
+            mutate(task)
+            // print 到 stdout：Xcode 控制台 / devicectl --console 可见，便于真机日志定位
+            print("DL[\(task.title)]: \(task.state) \(task.current)/\(task.total)")
+        }
     }
 
     // MARK: 网络会话（个人使用：信任所有证书，允许自签名/过期证书站点）
@@ -341,10 +347,16 @@ final class DownloadEngine {
             } catch {
                 lastError = error
                 // 连接层错误(WAF TLS 指纹拦截的典型表现): 立即降级 WebKit 网络栈，成功后 sticky
-                if isConnectionLevelError(error),
-                   let data = try? await fetchViaWebKit(url, byteRange: byteRange) {
-                    preferWebKit = true
-                    return data
+                if isConnectionLevelError(error) {
+                    print("DL[\(url.host ?? "")]: URLSession 连接层错误(\(error.localizedDescription))，尝试 WebKit 兜底…")
+                    do {
+                        let data = try await fetchViaWebKit(url, byteRange: byteRange)
+                        preferWebKit = true
+                        print("DL[\(url.host ?? "")]: ✅ WebKit 兜底成功，后续请求直接走 WebKit")
+                        return data
+                    } catch {
+                        print("DL[\(url.host ?? "")]: ⚠️ WebKit 兜底也失败: \(error.localizedDescription)")
+                    }
                 }
                 if attempt == retries { throw lastError }
                 let delay = min(20.0, pow(2.0, Double(attempt + 1)))

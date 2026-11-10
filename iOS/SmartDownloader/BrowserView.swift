@@ -134,6 +134,8 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         store.webView = webView
+        // WebKit 兜底通道优先复用这个真实 webview 发起下载（真机蜂窝网络下唯一可过 WAF 的网络栈）
+        WebKitFetcher.shared.setHostWebView(webView)
         if let first = URL(string: BrowserView.initialURLString) {
             webView.load(URLRequest(url: first))
         }
@@ -193,6 +195,7 @@ struct WebViewContainer: UIViewRepresentable {
                     NSURLErrorNetworkConnectionLost,    // -1005
                     NSURLErrorTimedOut,                 // -1001
                     NSURLErrorCannotConnectToHost,      // -1004
+                    NSURLErrorNotConnectedToInternet,   // -1009 蜂窝网络瞬断
                 ]
                 if retryable.contains(code), provisionalRetries < 2, let url = lastMainURL {
                     provisionalRetries += 1
