@@ -20,7 +20,7 @@ enum DramaCache {
         var updateStatus: String?
         var cover: String?
         var intro: String?
-        var episodes: [DramaEpisode]  // 按 sort 升序，含 downloaded/folder
+        var episodes: [ApiDramaEpisode]  // 按 sort 升序，含 downloaded/folder
         var fetchedAt: String?
     }
 
@@ -119,7 +119,7 @@ enum DramaCache {
         }
         sqlite3_finalize(stmt)
 
-        var episodes: [DramaEpisode] = []
+        var episodes: [ApiDramaEpisode] = []
         guard sqlite3_prepare_v2(db, epSQL, -1, &stmt, nil) == SQLITE_OK else {
             fail(db, "load episodes prepare"); return nil
         }
@@ -131,7 +131,7 @@ enum DramaCache {
             let playable = sqlite3_column_int(stmt, 2) != 0
             let downloaded = sqlite3_column_int(stmt, 3) != 0
             let folder = text(stmt, 4)
-            episodes.append(DramaEpisode(id: id, sort: sort, playable: playable,
+            episodes.append(ApiDramaEpisode(id: id, sort: sort, playable: playable,
                                          downloaded: downloaded, folder: folder))
         }
         sqlite3_finalize(stmt)

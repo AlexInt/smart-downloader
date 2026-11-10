@@ -33,7 +33,7 @@ struct DramaTarget: Identifiable, Hashable {
     }
 }
 
-struct DramaEpisode: Identifiable, Equatable, Codable {
+struct ApiDramaEpisode: Identifiable, Equatable, Codable {
     let id: Int
     let sort: Int
     let playable: Bool
@@ -45,7 +45,7 @@ struct DramaEpisode: Identifiable, Equatable, Codable {
 struct DramaInfo: Equatable {
     let name: String
     let updateStatus: String?
-    let episodes: [DramaEpisode]  // 已按 sort 升序；广告集已剔除
+    let episodes: [ApiDramaEpisode]  // 已按 sort 升序；广告集已剔除
 }
 
 /// 一次选集下载的会话：登录一次，之后每集下载前重调接口保证 auth_key 新鲜
@@ -73,7 +73,7 @@ final class DramaSession {
         token = (try? await login(constants)) ?? ""
         let data = try await fetchDramaData(constants)
         if ProcessInfo.processInfo.arguments.contains("dumpDramaMeta") {
-            Self.dumpMeta(data)
+            Self.dumpMeta(data, target: target)
         }
         guard let name = data["drama_name"] as? String,
               let episodeAll = data["episodeAll"] as? [[String: Any]] else {
@@ -84,7 +84,7 @@ final class DramaSession {
             .sorted { ($0["sort"] as? Int ?? 0) < ($1["sort"] as? Int ?? 0) }
             .map { ep in
                 let access = ep["access"] as? [String: Any]
-                return DramaEpisode(id: ep["id"] as? Int ?? 0,
+                return ApiDramaEpisode(id: ep["id"] as? Int ?? 0,
                                     sort: ep["sort"] as? Int ?? 0,
                                     playable: Self.isTrue(access?["can_play"]))
             }
@@ -92,7 +92,7 @@ final class DramaSession {
     }
 
     /// 每集下载前重调接口取新鲜直链（auth_key 有时效）
-    func freshVideoURL(for episode: DramaEpisode) async throws -> String {
+    func freshVideoURL(for episode: ApiDramaEpisode) async throws -> String {
         let constants = try self.constants()
         let data = try await fetchDramaData(constants)
         guard let episodeAll = data["episodeAll"] as? [[String: Any]],
@@ -104,9 +104,9 @@ final class DramaSession {
         return url
     }
 
-    /// 调查用：启动参数 dumpDramaMeta 时把接口解密响应的完整字段结构写进系统日志（NSLog），
-    /// 用 log collect --device 从手机采集提取（Mac 网络被 WAF 掐、devicectl --console 不可用时的通道）
-    private static func dumpMeta(_ data: [String: Any]) {
+    /// 调查用：启动参数 dumpDramaMeta 时——①完整字段结构写系统日志（idevicesyslog 可采）
+    /// ②完整原始 JSON 落盘 Documents/DramaMeta/raw_<剧ID>.json（Finder 文件共享可拷出）
+    static func dumpMeta(_ data: [String: Any], target: DramaTarget) {
         NSLog("DRAMAMETA ===== BEGIN =====")
         for key in data.keys.sorted() {
             let v = data[key]!
@@ -128,6 +128,16 @@ final class DramaSession {
             }
         }
         NSLog("DRAMAMETA ===== END =====")
+
+        // 完整原始 JSON 落盘（Finder 文件共享可拷出）
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("DramaMeta", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("raw_\(target.dramaID).json")
+        if let json = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) {
+            try? json.write(to: url)
+            NSLog("DRAMAMETA raw 已写入 \(url.lastPathComponent)（\(json.count) 字节）")
+        }
     }
 
     // MARK: 常量解析（随包 video_auto.py，单一事实源在仓库根）
@@ -290,7 +300,7 @@ final class SeriesDownloadCoordinator {
     private static var active: [SeriesDownloadCoordinator] = []
 
     private struct Plan {
-        let episode: DramaEpisode
+        let episode: ApiDramaEpisode
         let taskID: UUID
     }
 
@@ -306,7 +316,7 @@ final class SeriesDownloadCoordinator {
 
     /// 选集下载入口：登记全部集任务（等待中）后开始调度；集按 sort 升序排队
     static func start(target: DramaTarget, seriesName: String,
-                      episodes: [DramaEpisode], manager: DownloadManager, session: DramaSession) {
+                      episodes: [ApiDramaEpisode], manager: DownloadManager, session: DramaSession) {
         guard !episodes.isEmpty else { return }
         let coordinator = SeriesDownloadCoordinator(session: session, manager: manager)
         for ep in episodes.reversed() {  // tasks 头插，反序插入使「正在下载」列表保持升序

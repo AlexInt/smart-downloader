@@ -54,8 +54,8 @@ func runLibraryCheck() {
     // 剧集缓存 DB: 存 → 读 round-trip + 下载状态对账 + 集数更新合并
     var ok3 = true
     let cacheInfo = DramaInfo(name: "缓存测试剧", updateStatus: "更新中",
-                              episodes: [DramaEpisode(id: 11, sort: 1, playable: true),
-                                         DramaEpisode(id: 12, sort: 2, playable: false)])
+                              episodes: [ApiDramaEpisode(id: 11, sort: 1, playable: true),
+                                         ApiDramaEpisode(id: 12, sort: 2, playable: false)])
     DramaCache.saveInfo(site: "https://smoke.test", dramaID: "999", info: cacheInfo)
     DramaCache.savePageMeta(site: "https://smoke.test", dramaID: "999",
                             update: ["ogImage": "https://smoke.test/cover.jpg", "desc": "简介文本"])
@@ -71,7 +71,7 @@ func runLibraryCheck() {
 
     // 集数更新：网络刷新返回 3 集（新增 id 13）→ 合并且已下载标记保留、更新状态刷新
     let fresh = DramaInfo(name: "缓存测试剧", updateStatus: "完结",
-                          episodes: cacheInfo.episodes + [DramaEpisode(id: 13, sort: 3, playable: true)])
+                          episodes: cacheInfo.episodes + [ApiDramaEpisode(id: 13, sort: 3, playable: true)])
     DramaCache.saveInfo(site: "https://smoke.test", dramaID: "999", info: fresh)
     DramaCache.reconcileDownloaded(site: "https://smoke.test", dramaID: "999", folders: [1: "第01集"])
     if let entry = DramaCache.load(site: "https://smoke.test", dramaID: "999") {

@@ -95,7 +95,7 @@ struct BrowserView: View {
         // 浏览页不占导航条空间；推入的原生剧集页自行 .toolbar(.visible) 恢复
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $dramaPageTarget) { target in
-            DramaWebPage(target: target, manager: manager)
+            DramaNativePage(target: target, manager: manager)
         }
         }
         .sheet(isPresented: $showPicker) {
@@ -454,117 +454,12 @@ struct WebViewContainer: UIViewRepresentable {
     """#
 }
 
-/// 原生剧集页：点击剧集路由过来（网页本体不加载剧集页，主页停留不变），
-/// 内嵌 webview 加载剧集页（保留封面/简介/登录态内容），进入即弹选集面板；
-/// 页内再点其它剧集继续推入新的原生剧集页
-struct DramaWebPage: View {
+/// 原生剧集页（纯原生，无网页）：点击剧集路由过来，
+/// 头部 = 封面/剧名/简介（缓存 + 后台收割），下方全集 grid：未下载点选下载、已下载 ▶ 播放；
+/// 元数据缺失时后台用一次性隐藏 webview 拉网页提取（落库后头部即时更新），右上角 ↻ 强制更新集数
+struct DramaNativePage: View {
     let target: DramaTarget
     @ObservedObject var manager: DownloadManager
-    @StateObject private var store = WebViewStore()
-    @State private var address: String
-    /// 页内再点击其它剧集：继续推入原生剧集页
-    @State private var nestedTarget: DramaTarget?
-    @State private var pickerTarget: DramaTarget?
-    /// DOM/接口提取的元数据（调查落地：头部展示 + DramaMeta 落盘）
-    @State private var coverURL: URL?
-    @State private var intro: String?
-
-    init(target: DramaTarget, manager: DownloadManager) {
-        self.target = target
-        self.manager = manager
-        _address = State(initialValue: target.pageURLString)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if coverURL != nil || intro != nil {
-                HStack(alignment: .top, spacing: 10) {
-                    if let coverURL {
-                        AsyncImage(url: coverURL) { img in
-                            img.resizable().scaledToFill()
-                        } placeholder: {
-                            Color(uiColor: .systemGray5)
-                        }
-                        .frame(width: 72, height: 96)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let t = store.pageTitle, !t.isEmpty {
-                            Text(t).font(.subheadline).fontWeight(.semibold).lineLimit(2)
-                        }
-                        if let intro {
-                            Text(intro).font(.caption).foregroundColor(.secondary).lineLimit(4)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-            }
-            WebViewContainer(manager: manager, store: store, address: $address,
-                             onDramaLinkClick: { nestedTarget = $0 },
-                             onDramaURLDetected: { t, undo in
-                                 guard t.id != target.id else { return }
-                                 nestedTarget = t
-                                 if undo, store.webView?.canGoBack == true {
-                                     store.webView?.goBack()
-                                 }
-                             },
-                             isPrimaryBrowser: false,
-                             initialURL: target.pageURLString)
-            HStack {
-                Spacer()
-                Button { pickerTarget = target } label: {
-                    Label("选集", systemImage: "square.grid.2x2")
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-        }
-        .navigationTitle(store.pageTitle ?? "剧集页")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $nestedTarget) { nested in
-            DramaWebPage(target: nested, manager: manager)
-        }
-        .sheet(item: $pickerTarget) { t in
-            DramaPickerSheet(target: t, manager: manager)
-        }
-        .onChange(of: store.pageMetaJSON) { _, json in
-            guard let json,
-                  let meta = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return }
-            var update: [String: Any] = meta
-            if let og = meta["ogImage"] as? String, let u = URL(string: og), u.scheme?.hasPrefix("http") == true {
-                coverURL = u
-                update["cover"] = og
-            }
-            if let desc = meta["desc"] as? String, !desc.isEmpty {
-                intro = desc
-            }
-            if let ot = meta["ogTitle"] as? String, !ot.isEmpty {
-                update["og_title"] = ot
-            }
-            // 并入本地缓存数据库（cover/intro 列 + page_meta）
-            DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
-        }
-        .onAppear {
-            pickerTarget = target  // 进入即弹选集面板
-            // 缓存里已有的封面/简介先上头部（无网络也能显示）
-            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
-                if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
-                if let intro = entry.intro, !intro.isEmpty { self.intro = intro }
-            }
-        }
-    }
-}
-
-/// 剧集选集面板（原生剧集页进入时自动弹出的半屏 sheet）：
-/// grid 展示全集；已下载的集打绿勾且不可点（文件系统就是账本，开面板时扫剧目录）；
-/// 全选只选未下载的可播集，多选/单选后一次排队下载，落到 Downloads/<剧名>/第NN集/
-struct DramaPickerSheet: View {
-    let target: DramaTarget
-    @ObservedObject var manager: DownloadManager
-    @Environment(\.dismiss) private var dismiss
 
     @State private var loading = true
     @State private var loadError: String?
@@ -573,47 +468,58 @@ struct DramaPickerSheet: View {
     @State private var downloadedSorts: Set<Int> = []
     @State private var selected: Set<Int> = []
     @State private var playerItem: PlayerItem?
-    /// 当前列表是否来自本地缓存（缓存优先，右上角刷新强制更新）
+    /// 当前列表是否来自本地缓存（缓存优先，刷新按钮强制更新）
     @State private var fromCache = false
     @State private var reloadID = UUID()
-
-    /// 未下载且可播放的集
-    private var selectableEpisodes: [DramaEpisode] {
-        info?.episodes.filter { $0.playable && !downloadedSorts.contains($0.sort) } ?? []
-    }
+    /// 头部元数据（缓存 + 后台收割）
+    @State private var coverURL: URL?
+    @State private var intro: String?
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if loading {
-                    ProgressView("正在获取剧集列表…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let loadError {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundColor(.orange)
-                        Text(loadError)
-                            .font(.footnote)
-                            .multilineTextAlignment(.center)
-                        Button("重试") { reloadID = UUID() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    .padding()
+        Group {
+            if loading {
+                ProgressView("正在获取剧集列表…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let info {
-                    pickerGrid(info)
+            } else if let loadError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text(loadError)
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                    Button("重试") { reloadID = UUID() }
+                        .buttonStyle(.borderedProminent)
                 }
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let info {
+                pageContent(info)
             }
-            .navigationTitle("选集下载")
-            .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
+        .navigationTitle(info?.name ?? "剧集页")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .sheet(item: $playerItem) { item in
             PlayerView(item: item)
         }
         .task(id: reloadID) { await load() }
+        .onAppear { preloadHeaderFromCache() }
+        .onReceive(manager.objectWillChange) { _ in refreshDownloadedSorts() }
+    }
+
+    /// 缓存里已有的封面/简介先上头部（无网络也能显示）
+    private func preloadHeaderFromCache() {
+        if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
+            if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
+            if let introText = entry.intro, !introText.isEmpty { intro = introText }
+        }
+    }
+
+    /// 任一任务状态变化时重算已下载集（下载完成 → 格子即时变 ▶ 播放；仅内存重算，不每 tick 写库）
+    private func refreshDownloadedSorts() {
+        guard let info else { return }
+        downloadedSorts = Set(manager.downloadedEpisodeFolders(forSeries: info.name).keys)
     }
 
     private func load() async {
@@ -626,6 +532,7 @@ struct DramaPickerSheet: View {
             self.info = info
             fromCache = true
             await applyLibraryState(for: info, target: target)
+            harvestIfNeeded()
             loading = false
             return
         }
@@ -644,6 +551,7 @@ struct DramaPickerSheet: View {
             fromCache = false
             DramaCache.saveInfo(site: target.site, dramaID: target.dramaID, info: info)
             await applyLibraryState(for: info, target: target)
+            harvestIfNeeded()
         } catch {
             // 有缓存时网络失败不白屏：回退缓存继续用
             if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
@@ -667,31 +575,60 @@ struct DramaPickerSheet: View {
         DramaCache.reconcileDownloaded(site: target.site, dramaID: target.dramaID, folders: folders)
     }
 
-    private func pickerGrid(_ info: DramaInfo) -> some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("《\(info.name)》").font(.headline).lineLimit(1)
-                    Text(headerSubtitle(info))
-                        .font(.caption).foregroundColor(.secondary)
-                }
-                Spacer()
-                Button("全选") { selected = Set(selectableEpisodes.map(\.id)) }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(selectableEpisodes.isEmpty)
-                Button("清空") { selected.removeAll() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(selected.isEmpty)
-                Button {
-                    Task { await fetchAndCache() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered).controlSize(.small)
+    /// 头部缺封面/简介时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）
+    private func harvestIfNeeded() {
+        guard coverURL == nil || intro == nil else { return }
+        Task {
+            await DramaMetaHarvester.harvest(target: target)
+            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
+                if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
+                if let introText = entry.intro, !introText.isEmpty { intro = introText }
             }
-            .padding(.horizontal)
+        }
+    }
 
-            ScrollView {
+    private func pageContent(_ info: DramaInfo) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    if let coverURL {
+                        AsyncImage(url: coverURL) { img in
+                            img.resizable().scaledToFill()
+                        } placeholder: {
+                            Color(uiColor: .systemGray5)
+                        }
+                        .frame(width: 90, height: 120)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(info.name).font(.headline).lineLimit(2)
+                        Text(headerSubtitle(info))
+                            .font(.caption).foregroundColor(.secondary)
+                        if let intro {
+                            Text(intro).font(.caption).foregroundColor(.secondary).lineLimit(4)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal)
+
+                HStack {
+                    Spacer()
+                    Button("全选") { selected = Set(selectableEpisodes.map(\.id)) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(selectableEpisodes.isEmpty)
+                    Button("清空") { selected.removeAll() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(selected.isEmpty)
+                    Button {
+                        Task { await fetchAndCache() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+                .padding(.horizontal)
+
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
                     ForEach(info.episodes) { ep in
                         episodeCell(ep)
@@ -699,10 +636,10 @@ struct DramaPickerSheet: View {
                 }
                 .padding(.horizontal)
             }
-
-            Button {
-                startDownload(info)
-            } label: {
+            .padding(.vertical, 8)
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button { startDownload(info) } label: {
                 if selected.isEmpty && selectableEpisodes.isEmpty {
                     Label("全部已下载", systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity)
@@ -714,7 +651,8 @@ struct DramaPickerSheet: View {
             .buttonStyle(.borderedProminent)
             .disabled(selected.isEmpty)
             .padding(.horizontal)
-            .padding(.bottom, 6)
+            .padding(.vertical, 8)
+            .background(.bar)
         }
     }
 
@@ -723,8 +661,13 @@ struct DramaPickerSheet: View {
         return downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
     }
 
-    /// 单元格状态：已下载 = 绿勾，点击直接播放；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
-    private func episodeCell(_ ep: DramaEpisode) -> some View {
+    /// 未下载且可播放的集
+    private var selectableEpisodes: [ApiDramaEpisode] {
+        info?.episodes.filter { $0.playable && !downloadedSorts.contains($0.sort) } ?? []
+    }
+
+    /// 单元格状态：已下载 = 绿勾 ▶，点击直接播放；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
+    private func episodeCell(_ ep: ApiDramaEpisode) -> some View {
         let isSelected = selected.contains(ep.id)
         let isDownloaded = downloadedSorts.contains(ep.sort)
         return Button {
@@ -753,28 +696,28 @@ struct DramaPickerSheet: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, minHeight: 34)
-                .background(cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-                .foregroundStyle(cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-                .overlay(alignment: .topTrailing) {
-                    if isDownloaded {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                            .offset(x: 5, y: -5)
-                    } else if !ep.playable {
-                        Image(systemName: "lock.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .offset(x: 5, y: -5)
-                    }
+            .background(cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+            .foregroundStyle(cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+            .overlay(alignment: .topTrailing) {
+                if isDownloaded {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                        .offset(x: 5, y: -5)
+                } else if !ep.playable {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .offset(x: 5, y: -5)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .disabled(!ep.playable)
     }
 
     /// 已下载集：从剧目录找该集的 playlist.m3u8，拉起播放器（本地 HTTP 服务已支持剧集两级路径）
-    private func playDownloaded(_ ep: DramaEpisode) {
+    private func playDownloaded(_ ep: ApiDramaEpisode) {
         guard let info else { return }
         let fm = FileManager.default
         let seriesDir = DownloadEngine.seriesDirectory(for: info.name)
@@ -803,7 +746,7 @@ struct DramaPickerSheet: View {
     }
 
     private func startDownload(_ info: DramaInfo) {
-        // 缓存路径打开的面板没有 session：现建一个（每集下载前仍会重调接口取新鲜直链）
+        // 缓存路径打开的页面没有 session：现建一个（每集下载前仍会重调接口取新鲜直链）
         let session = self.session ?? DramaSession(target: target)
         self.session = session
         let chosen = info.episodes
@@ -812,6 +755,93 @@ struct DramaPickerSheet: View {
         guard !chosen.isEmpty else { return }
         SeriesDownloadCoordinator.start(target: target, seriesName: info.name,
                                         episodes: chosen, manager: manager, session: session)
-        dismiss()
     }
 }
+
+// MARK: - 元数据收割器 + 提取 JS
+
+/// 剧集页元数据提取 JS（og:image/标题/简介/图片列表/正文样本），主浏览页与收割器共用
+let dramaMetaJS = """
+(function(){
+  var q = function(sel){ var el = document.querySelector(sel); return el ? (el.content || el.src || el.getAttribute('content') || '') : ''; };
+  var imgs = [];
+  var nodes = document.querySelectorAll('img');
+  for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
+  return JSON.stringify({
+    url: location.href,
+    title: document.title || '',
+    ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
+    ogTitle: q('meta[property="og:title"]'),
+    desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
+    imgs: imgs,
+    text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
+  });
+})()
+"""
+
+/// 一次性隐藏 webview：加载剧集页提取元数据（og:image/标题/简介），落库后释放。
+/// 仅在纯原生页缺封面/简介时使用；同一剧每次运行只收割一次。
+@MainActor
+final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
+    static var harvestedKeys: Set<String> = []
+
+    static func harvest(target: DramaTarget) async {
+        let key = target.id
+        guard !harvestedKeys.contains(key) else { return }
+        harvestedKeys.insert(key)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let harvester = DramaMetaHarvester()
+            harvester.begin(target: target) {
+                continuation.resume()
+            }
+        }
+    }
+
+    private var webView: WKWebView?
+    private var pendingTarget: DramaTarget?
+    private var finishHandler: (() -> Void)?
+    private var finished = false
+
+    private func begin(target: DramaTarget, finish: @escaping () -> Void) {
+        pendingTarget = target
+        finishHandler = finish
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()  // 与主浏览页共享登录态
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: config)
+        view.navigationDelegate = self
+        webView = view
+        view.load(URLRequest(url: URL(string: target.pageURLString)!))
+        // 超时兜底：25 秒后用已拿到的部分数据收尾
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            self?.finish()
+        }
+    }
+
+    private func finish() {
+        guard !finished else { return }
+        finished = true
+        finishHandler?()
+        finishHandler = nil
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // SPA 渲染滞后：轮询提取直到拿到 og/desc 或超时收尾
+        Task { [weak self] in
+            guard let self, let target = self.pendingTarget else { return }
+            for _ in 0..<5 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let result = try? await webView.evaluateJavaScript(dramaMetaJS) as? String,
+                      let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else { continue }
+                var update = d
+                if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
+                if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
+                if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
+                DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
+                if !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty { break }
+            }
+            self.finish()
+        }
+    }
+}
+
