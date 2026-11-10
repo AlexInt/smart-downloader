@@ -7,30 +7,65 @@ struct PlayerItem: Identifiable {
     let isHLSFolder: Bool
 }
 
-/// 下载列表：进度实时刷新，点击已完成条目直接播放，左滑删除（同时删沙盒文件/文件夹）
+/// 下载页：正在下载队列 + 剧集（按剧名目录分组）/ 散装条目；
+/// 点击已完成条目直接播放，左滑删除（同时删沙盒文件/文件夹）
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
     @State private var playerItem: PlayerItem?
+
+    /// 未完成任务（等待/解析/下载中/失败）
+    private var activeTasks: [DownloadTask] { manager.tasks.filter { $0.state != .done } }
+    /// 散装已完成条目（不属于任何剧）
+    private var standaloneItems: [DownloadTask] {
+        manager.tasks.filter { $0.state == .done && $0.seriesName == nil }
+    }
+    /// 剧 -> 已落盘的集（按集名排序）
+    private var seriesGroups: [(name: String, episodes: [DownloadTask])] {
+        Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
+                   by: { $0.seriesName! })
+            .map { (name: $0.key, episodes: $0.value.sorted { $0.title < $1.title }) }
+            .sorted { $0.name < $1.name }
+    }
 
     var body: some View {
         NavigationStack {
             Group {
                 if manager.tasks.isEmpty {
-                    ContentUnavailableView("暂无下载",
-                                           systemImage: "arrow.down.circle",
-                                           description: Text("去「浏览」页打开视频网页，点击「下载视频」"))
+                    ContentUnavailableView(
+                        "暂无下载",
+                        systemImage: "arrow.down.circle",
+                        description: Text("去「浏览」页打开视频网页：播放页点「下载视频」，剧集页自动弹面板选集下载"))
                 } else {
                     List {
-                        ForEach(manager.tasks) { task in
-                            TaskRow(task: task)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    if task.state == .done, let url = task.outputURL {
-                                        playerItem = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
+                        if !activeTasks.isEmpty {
+                            Section("正在下载") {
+                                ForEach(activeTasks) { task in
+                                    TaskRow(task: task)
+                                }
+                                .onDelete { manager.delete(at: globalOffsets($0, in: activeTasks)) }
+                            }
+                        }
+                        if !seriesGroups.isEmpty {
+                            Section("剧集") {
+                                ForEach(seriesGroups, id: \.name) { group in
+                                    NavigationLink {
+                                        SeriesDetailView(manager: manager, seriesName: group.name)
+                                    } label: {
+                                        seriesRow(group)
                                     }
                                 }
+                            }
                         }
-                        .onDelete { manager.delete(at: $0) }
+                        if !standaloneItems.isEmpty {
+                            Section("已下载") {
+                                ForEach(standaloneItems) { task in
+                                    TaskRow(task: task)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { playIfDone(task) }
+                                }
+                                .onDelete { manager.delete(at: globalOffsets($0, in: standaloneItems)) }
+                            }
+                        }
                     }
                     .listStyle(.insetGrouped)
                 }
@@ -42,16 +77,98 @@ struct DownloadsView: View {
             PlayerView(item: item)
         }
     }
+
+    private func seriesRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "square.stack.3d.up.fill").foregroundColor(.purple)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.name).lineLimit(1)
+                Text("已下载 \(group.episodes.count) 集").font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func playIfDone(_ task: DownloadTask) {
+        if task.state == .done, let url = task.outputURL {
+            playerItem = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
+        }
+    }
+
+    /// 左滑删除的局部下标 -> manager.tasks 全局下标
+    private func globalOffsets(_ offsets: IndexSet, in subset: [DownloadTask]) -> IndexSet {
+        IndexSet(offsets.compactMap { offset in
+            manager.tasks.firstIndex { $0.id == subset[offset].id }
+        })
+    }
+}
+
+/// 剧详情页：该剧全部集（含下载中的），点集播放，左滑删单集，右上角删全剧
+struct SeriesDetailView: View {
+    @ObservedObject var manager: DownloadManager
+    let seriesName: String
+    @State private var playerItem: PlayerItem?
+    @State private var confirmDelete = false
+
+    private var episodes: [DownloadTask] {
+        manager.tasks
+            .filter { $0.seriesName == seriesName }
+            .sorted { $0.title < $1.title }
+    }
+
+    var body: some View {
+        List {
+            ForEach(episodes) { task in
+                TaskRow(task: task, showSeries: false)
+                    .contentShape(Rectangle())
+                    .onTapGesture { playIfDone(task) }
+            }
+            .onDelete { offsets in
+                for offset in offsets { manager.remove(episodes[offset]) }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(seriesName)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { confirmDelete = true } label: {
+                    Image(systemName: "trash").foregroundColor(.red)
+                }
+            }
+        }
+        .confirmationDialog(
+            "删除《\(seriesName)》全部 \(episodes.count) 集及其文件？",
+            isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除全剧", role: .destructive) { manager.deleteSeries(seriesName) }
+        }
+        .sheet(item: $playerItem) { item in
+            PlayerView(item: item)
+        }
+    }
+
+    private func playIfDone(_ task: DownloadTask) {
+        if task.state == .done, let url = task.outputURL {
+            playerItem = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
+        }
+    }
 }
 
 struct TaskRow: View {
     @ObservedObject var task: DownloadTask
+    /// 队列行是否附剧名前缀（剧详情页内不需要）
+    var showSeries = true
+
+    private var rowTitle: String {
+        if showSeries, let series = task.seriesName { return "\(series) · \(task.title)" }
+        return task.title
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             stateIcon
             VStack(alignment: .leading, spacing: 4) {
-                Text(task.title)
+                Text(rowTitle)
                     .lineLimit(1)
                 detailLine
             }

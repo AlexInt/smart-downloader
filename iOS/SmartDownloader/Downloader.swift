@@ -35,8 +35,10 @@ enum DownloadError: LocalizedError {
 
 final class DownloadTask: ObservableObject, Identifiable {
     let id = UUID()
-    let url: String
+    var url: String
     @Published var title: String
+    /// 所属剧名（选集下载时非空；nil = 散装单条目）。落盘到 Downloads/<剧名>/<集>/
+    let seriesName: String?
     @Published var state: TaskState = .waiting
     @Published var current = 0
     @Published var total = 0
@@ -46,9 +48,10 @@ final class DownloadTask: ObservableObject, Identifiable {
     /// 启动时扫描本地目录得到的历史条目（无下载过程）
     var isFromLibrary = false
 
-    init(url: String, title: String) {
+    init(url: String, title: String, seriesName: String? = nil) {
         self.url = url
         self.title = title
+        self.seriesName = seriesName
     }
 
     var displayName: String {
@@ -75,13 +78,34 @@ final class DownloadManager: ObservableObject {
     }
 
     @discardableResult
-    func startDownload(urlString: String, title rawTitle: String) -> DownloadTask {
+    func startDownload(urlString: String, title rawTitle: String, seriesName: String? = nil) -> DownloadTask {
         let base = DownloadEngine.sanitizeTitle(rawTitle) ?? DownloadEngine.timestampName()
-        let task = DownloadTask(url: urlString, title: base)
+        let task = DownloadTask(url: urlString, title: base, seriesName: seriesName)
+        register(task)
+        run(task)
+        return task
+    }
+
+    /// 登记（插入列表头部，不启动）
+    func register(_ task: DownloadTask) {
         tasks.insert(task, at: 0)
-        Task {
+    }
+
+    /// 启动已登记任务；onFinish 在任务结束（成功/失败）后于主线程回调（多集调度依赖它接力）
+    func run(_ task: DownloadTask, onFinish: (@MainActor () -> Void)? = nil) {
+        Task { @MainActor in
             await DownloadEngine().run(task: task)
+            onFinish?()
         }
+    }
+
+    func task(withID id: UUID) -> DownloadTask? { tasks.first { $0.id == id } }
+    func containsTask(id: UUID) -> Bool { tasks.contains { $0.id == id } }
+
+    /// 多集调度用：登记一个等待中的集任务（不启动，由 SeriesDownloadCoordinator 统一调度）
+    func registerEpisode(title: String, seriesName: String) -> DownloadTask {
+        let task = DownloadTask(url: "", title: title, seriesName: seriesName)
+        tasks.insert(task, at: 0)
         return task
     }
 
@@ -99,23 +123,84 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    /// 启动时扫描沙盒: HLS 文件夹(含 playlist.m3u8) + 单独的 mp4/m4v/mov 文件
+    /// 删除单个任务及其沙盒文件/文件夹（按任务对象，剧详情页左滑删除用）
+    func remove(_ task: DownloadTask) {
+        guard let index = tasks.firstIndex(where: { $0.id == task.id }) else { return }
+        delete(at: IndexSet(integer: index))
+    }
+
+    /// 删除整部剧：移除其全部任务条目与剧目录（剧详情页用户主动触发）
+    func deleteSeries(_ seriesName: String) {
+        let dirs = Set(tasks.filter { $0.seriesName == seriesName }.compactMap { task -> URL? in
+            guard let playlist = task.outputURL else { return nil }
+            // playlist 位于 .../<剧名>/<集>/playlist.m3u8
+            return playlist.deletingLastPathComponent().deletingLastPathComponent()
+        })
+        for dir in dirs { try? FileManager.default.removeItem(at: dir) }
+        tasks.removeAll { $0.seriesName == seriesName }
+    }
+
+    /// 选集面板「已下载」检测：文件系统就是账本（不引入数据库）。
+    /// 剧目录下含 playlist.m3u8 的子目录算已下载，集号从目录名（第NN集[ (n) ]）解析；
+    /// 残缺目录（无 playlist.m3u8，下载中断产物）不算已下载，可重下。
+    func downloadedEpisodeSorts(forSeries rawSeriesName: String) -> Set<Int> {
+        let fm = FileManager.default
+        let seriesDir = DownloadEngine.seriesDirectory(for: rawSeriesName)
+        guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return [] }
+        var sorts = Set<Int>()
+        for sub in subs {
+            guard fm.fileExists(atPath: sub.appendingPathComponent("playlist.m3u8").path) else { continue }
+            if let sort = Self.episodeSort(fromFolderName: sub.lastPathComponent) {
+                sorts.insert(sort)
+            }
+        }
+        return sorts
+    }
+
+    /// 目录名 -> 集号：第01集 / 第01集(1)（重下防覆盖后缀）；不匹配返回 nil
+    static func episodeSort(fromFolderName name: String) -> Int? {
+        guard name.hasPrefix("第") else { return nil }
+        let body = name.dropFirst()
+        guard let range = body.range(of: "集") else { return nil }
+        let digits = body[..<range.lowerBound]
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isNumber }) else { return nil }
+        return Int(digits)
+    }
+
+    /// 启动时扫描沙盒（两级）:
+    ///   Downloads/<标题>/playlist.m3u8      -> 散装条目
+    ///   Downloads/<剧名>/<集>/playlist.m3u8 -> 剧目条目（seriesName = 剧目录名）
+    ///   Downloads/*.mp4 等单文件            -> 散装条目
     private func loadLibrary() {
         let fm = FileManager.default
         let dir = DownloadEngine.downloadsDir
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        func makeHLSTask(title: String, playlist: URL, series: String?) -> DownloadTask {
+            let task = DownloadTask(url: "", title: title, seriesName: series)
+            task.state = .done
+            task.outputURL = playlist
+            task.isHLSFolder = true
+            task.isFromLibrary = true
+            return task
+        }
         for entry in entries.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
             let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             if isDirectory {
                 let playlist = entry.appendingPathComponent("playlist.m3u8")
-                guard fm.fileExists(atPath: playlist.path) else { continue }
-                let task = DownloadTask(url: "", title: entry.lastPathComponent)
-                task.state = .done
-                task.outputURL = playlist
-                task.isHLSFolder = true
-                task.isFromLibrary = true
-                tasks.append(task)
+                if fm.fileExists(atPath: playlist.path) {
+                    // 散装 HLS 条目
+                    tasks.append(makeHLSTask(title: entry.lastPathComponent, playlist: playlist, series: nil))
+                    continue
+                }
+                // 剧目录：其下每个含 playlist.m3u8 的子目录算一集
+                guard let subs = try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil) else { continue }
+                for ep in subs.filter({ fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path) })
+                              .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                    tasks.append(makeHLSTask(title: ep.lastPathComponent,
+                                             playlist: ep.appendingPathComponent("playlist.m3u8"),
+                                             series: entry.lastPathComponent))
+                }
             } else if ["mp4", "m4v", "mov"].contains(entry.pathExtension.lowercased()) {
                 let task = DownloadTask(url: "", title: entry.deletingPathExtension().lastPathComponent)
                 task.state = .done
@@ -143,6 +228,11 @@ final class DownloadEngine {
         }
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Downloads", isDirectory: true)
+    }
+
+    /// 剧目录：选集下载落盘与「已下载」检测共用同一命名规则（sanitize 后的剧名）
+    static func seriesDirectory(for rawSeriesName: String) -> URL {
+        downloadsDir.appendingPathComponent(sanitizeTitle(rawSeriesName) ?? rawSeriesName, isDirectory: true)
     }
 
     // MARK: 主流程
@@ -217,9 +307,11 @@ final class DownloadEngine {
             await setTask(task) { $0.state = .saving }
             let isTS = Self.isTSStream(tempDir: tempDir, hasInit: initData != nil)
 
-            try FileManager.default.createDirectory(at: Self.downloadsDir, withIntermediateDirectories: true)
-            let folderName = Self.uniqueFolderName(base: task.title, in: Self.downloadsDir)
-            let folder = Self.downloadsDir.appendingPathComponent(folderName, isDirectory: true)
+            // 选集下载落到 Downloads/<剧名>/<集>/，散装仍是 Downloads/<标题>/
+            let parentDir = task.seriesName.map { Self.seriesDirectory(for: $0) } ?? Self.downloadsDir
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            let folderName = Self.uniqueFolderName(base: task.title, in: parentDir)
+            let folder = parentDir.appendingPathComponent(folderName, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
             let ext = isTS ? "ts" : "m4s"
