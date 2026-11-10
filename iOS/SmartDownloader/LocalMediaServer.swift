@@ -79,13 +79,30 @@ final class LocalMediaServer: @unchecked Sendable {
         }
     }
 
-    /// 生成本地 HLS 文件夹的播放地址
+    /// 生成本地 HLS 文件夹的播放地址。
+    /// 路径必须是相对 root 的完整相对路径：剧集集目录在 Downloads/<剧名>/第NN集/ 下多了一层，
+    /// 不能只取 lastPathComponent（在 root 下不存在会 404，且“第01集”跨剧重名）。
     func playbackURL(forFolder folder: URL) async -> URL {
         let port = await start()
-        let encoded = folder.lastPathComponent
-            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folder.lastPathComponent
+        let root = Self.rootDirectory.standardizedFileURL
+        // absoluteURL：容错相对路径入参（App 内部恒为绝对，冒烟工具可能传相对）
+        var cursor = folder.absoluteURL.standardizedFileURL
+        var components: [String] = []
+        var underRoot = false
+        for _ in 0..<16 {
+            if cursor.path == root.path { underRoot = true; break }
+            guard cursor.path.hasPrefix(root.path + "/") else { break }
+            components.insert(cursor.lastPathComponent, at: 0)
+            cursor = cursor.deletingLastPathComponent()
+        }
+        guard underRoot, !components.isEmpty else {
+            return folder.absoluteURL.appendingPathComponent("playlist.m3u8")
+        }
+        let encoded = components
+            .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0 }
+            .joined(separator: "/")
         return URL(string: "http://127.0.0.1:\(port)/\(encoded)/playlist.m3u8")
-            ?? folder.appendingPathComponent("playlist.m3u8")
+            ?? folder.absoluteURL.appendingPathComponent("playlist.m3u8")
     }
 }
 
