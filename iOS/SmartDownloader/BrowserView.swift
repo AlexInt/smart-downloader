@@ -16,6 +16,7 @@ struct BrowserView: View {
     ]
 
     @ObservedObject var manager: DownloadManager
+    @Binding var selectedTab: Int
     @StateObject private var store = WebViewStore()
     @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
     @State private var showPicker = false
@@ -99,6 +100,13 @@ struct BrowserView: View {
         }
         .sheet(isPresented: $showPicker) {
             pickerSheet
+        }
+        .onChange(of: selectedTab) { _, tab in
+            // 切到其它 Tab 时退回首页：回来不再停留在剧集页（下载任务不受影响）
+            if tab != 0 {
+                dramaPageTarget = nil
+                lastAutoDramaKey = nil
+            }
         }
         .onChange(of: address) { _, newValue in
             if let target = DramaTarget.parse(newValue) {

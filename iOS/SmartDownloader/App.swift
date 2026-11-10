@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct SmartDownloaderApp: App {
     @StateObject private var manager = DownloadManager()
+    @State private var selectedTab = 0
     /// 防止 onAppear 重复触发自动冒烟
     @MainActor private static var autoTestStarted = false
 
@@ -13,11 +14,13 @@ struct SmartDownloaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                BrowserView(manager: manager)
+            TabView(selection: $selectedTab) {
+                BrowserView(manager: manager, selectedTab: $selectedTab)
                     .tabItem { Label("浏览", systemImage: "safari.fill") }
+                    .tag(0)
                 DownloadsView(manager: manager)
                     .tabItem { Label("下载", systemImage: "arrow.down.circle") }
+                    .tag(1)
             }
             .onAppear { Self.runDeviceAutoTest(manager: manager) }
         }
