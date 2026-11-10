@@ -374,6 +374,7 @@ struct DramaPickerSheet: View {
     @State private var session: DramaSession?
     @State private var downloadedSorts: Set<Int> = []
     @State private var selected: Set<Int> = []
+    @State private var playerItem: PlayerItem?
     @State private var reloadID = UUID()
 
     /// 未下载且可播放的集
@@ -409,6 +410,9 @@ struct DramaPickerSheet: View {
         }
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+        .sheet(item: $playerItem) { item in
+            PlayerView(item: item)
+        }
         .task(id: reloadID) { await load() }
     }
 
@@ -481,12 +485,18 @@ struct DramaPickerSheet: View {
         return downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
     }
 
-    /// 单元格状态：已下载 = 绿勾禁点；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
+    /// 单元格状态：已下载 = 绿勾，点击直接播放；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
     private func episodeCell(_ ep: DramaEpisode) -> some View {
         let isSelected = selected.contains(ep.id)
         let isDownloaded = downloadedSorts.contains(ep.sort)
         return Button {
-            if isSelected { selected.remove(ep.id) } else { selected.insert(ep.id) }
+            if isDownloaded {
+                playDownloaded(ep)
+            } else if isSelected {
+                selected.remove(ep.id)
+            } else {
+                selected.insert(ep.id)
+            }
         } label: {
             Text(String(format: "第%02d集", ep.sort))
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
@@ -510,7 +520,24 @@ struct DramaPickerSheet: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .disabled(!ep.playable || isDownloaded)
+        .disabled(!ep.playable)
+    }
+
+    /// 已下载集：从剧目录找该集的 playlist.m3u8，拉起播放器（本地 HTTP 服务已支持剧集两级路径）
+    private func playDownloaded(_ ep: DramaEpisode) {
+        guard let info else { return }
+        let fm = FileManager.default
+        let seriesDir = DownloadEngine.seriesDirectory(for: info.name)
+        guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return }
+        let playlist = subs
+            .filter {
+                fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path)
+                    && DownloadManager.episodeSort(fromFolderName: $0.lastPathComponent) == ep.sort
+            }
+            .map { $0.appendingPathComponent("playlist.m3u8") }
+            .first
+        guard let playlist else { return }
+        playerItem = PlayerItem(url: playlist, isHLSFolder: true)
     }
 
     private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
