@@ -498,11 +498,23 @@ struct DramaPickerSheet: View {
                 selected.insert(ep.id)
             }
         } label: {
-            Text(String(format: "第%02d集", ep.sort))
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(maxWidth: .infinity, minHeight: 34)
+            Group {
+                if isDownloaded {
+                    HStack(spacing: 3) {
+                        Image(systemName: "play.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                        Text(String(format: "第%02d集", ep.sort))
+                            .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    }
+                } else {
+                    Text(String(format: "第%02d集", ep.sort))
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, minHeight: 34)
                 .background(cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
                 .foregroundStyle(cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
                 .overlay(alignment: .topTrailing) {
@@ -548,7 +560,7 @@ struct DramaPickerSheet: View {
 
     private func cellForeground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
         if isSelected { return .white }
-        if isDownloaded { return .secondary }
+        if isDownloaded { return .primary }
         return playable ? .primary : Color(uiColor: .tertiaryLabel)
     }
 
