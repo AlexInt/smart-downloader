@@ -42,6 +42,8 @@ final class DramaPlayerViewModel: ObservableObject {
     let player = AVPlayer()
 
     @Published private(set) var isReady = false
+    /// 长按画面期间的 2× 倍速状态（驱动播放器上的倍速提示）
+    @Published private(set) var isFastForwarding = false
     @Published private(set) var currentTimeText = "00:00"
     @Published private(set) var durationText = "00:00"
     @Published private(set) var progress: Double = 0
@@ -63,6 +65,7 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 切集时重新取本地播放地址（LocalMediaServer 已支持剧集两级路径）
     func load(episode: PlayableEpisode) async {
         ensureObserver()
+        endFastForward()          // 切集前先恢复 1×，避免倍速状态跨集残留
         loadError = nil
         isReady = false
         resetTimes()
@@ -120,6 +123,7 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     func stop() {
+        isFastForwarding = false
         player.pause()
         player.replaceCurrentItem(with: nil)
         if let timeObserver {
@@ -127,6 +131,21 @@ final class DramaPlayerViewModel: ObservableObject {
             self.timeObserver = nil
         }
         isReady = false
+    }
+
+    /// 长按达到阈值：以 2× 播放。仅在已就绪且正在播放时生效，暂停态长按不会自动开播。
+    func beginFastForward() {
+        guard isReady, !isFastForwarding, player.timeControlStatus == .playing else { return }
+        isFastForwarding = true
+        player.rate = 2.0
+    }
+
+    /// 松手 / 手势被取消（如改为上下滑切集）/ 切集：恢复 1×。
+    /// 暂停后松手不重新开播，所以只在仍在播放时才改 rate。
+    func endFastForward() {
+        guard isFastForwarding else { return }
+        isFastForwarding = false
+        if player.timeControlStatus == .playing { player.rate = 1.0 }
     }
 
     // MARK: 私有

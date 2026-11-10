@@ -56,10 +56,17 @@ struct DramaPlayerView: View {
                     .designFrame(0, 0, 390, 840)
                     .allowsHitTesting(false)
 
-                // 单击播放/暂停：透明热区，位于视频之上、遮罩之下
+                // 单击播放/暂停；按住画面约 0.25s 进入 2× 倍速，松手恢复 1×。
+                // 手指移出 40pt（改为上下滑切集）时 pressing 也会给 false，倍速自动解除。
                 Color.clear
                     .designFrame(0, 0, 390, 840)
                     .contentShape(Rectangle())
+                    .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 40,
+                                        pressing: { pressing in
+                                            if !pressing { vm.endFastForward() }
+                                        }) {
+                                            vm.beginFastForward()
+                                        }
                     .onTapGesture { vm.togglePlayback() }
 
                 // ── 上下压暗，保证白字对比 ───────────────────
@@ -259,6 +266,22 @@ struct DramaPlayerView: View {
                     .foregroundStyle(DWColor.textSwipe)
                     .designFrame(169, 801, 120, 16, alignment: .leading)
                     .allowsHitTesting(false)
+
+                // ── 长按倍速状态提示（不占设计稿节点） ───────
+                HStack(spacing: 6) {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("2× 倍速播放")
+                        .font(DWFont.cn(13, .semibold))
+                }
+                .foregroundStyle(DWColor.gold)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.55), in: Capsule())
+                .opacity(vm.isFastForwarding ? 1 : 0)
+                .animation(.easeInOut(duration: 0.15), value: vm.isFastForwarding)
+                .designFrame(95, 300, 200, 34)
+                .allowsHitTesting(false)
 
                 // ── 加载 / 错误态覆盖（不占设计稿坐标） ──────
                 if let error = vm.loadError {
