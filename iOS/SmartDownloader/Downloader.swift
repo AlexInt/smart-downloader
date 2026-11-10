@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import CommonCrypto
 
@@ -242,6 +243,11 @@ final class DownloadEngine {
         } catch {
             var message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             if let host = URL(string: task.url)?.host { message += " (\(host))" }
+            // 连接层失败几乎必然是网络路径被 CDN/WAF 拦截（蜂窝网络下常见），
+            // 此时网页内视频同样播不出来，客户端无解，给出可操作提示
+            if Self.isConnectionLevelError(error) {
+                message += "；当前网络无法连接该视频源（蜂窝网络下常见，网页内视频也会同样卡住），请换 WiFi 或开启 VPN 后重试"
+            }
             await setTask(task) { $0.state = .failed(message) }
         }
     }
@@ -315,40 +321,32 @@ final class DownloadEngine {
         if forceWebKit || preferWebKit {
             return try await fetchViaWebKit(url, byteRange: byteRange)
         }
+        // 该域名已证实需 IP 直连（域名连接被网络侧 RST），直接走，省去每次必败的常规连接
+        if let host = url.host, ipDirectHosts.contains(host),
+           let data = try? await fetchIPDirect(url, byteRange: byteRange) {
+            return data
+        }
         var lastError: Error = DownloadError.badStatus(-1)
         for attempt in 0...retries {
             do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 30
-                for (field, value) in Self.browserHeaders {
-                    request.setValue(value, forHTTPHeaderField: field)
-                }
-                var expectedLength: Int?
-                if let range = byteRange, let offset = range.offset {
-                    request.setValue("bytes=\(offset)-\(offset + range.length - 1)",
-                                     forHTTPHeaderField: "Range")
-                    expectedLength = range.length
-                }
+                let (request, expectedLength) = makeRequest(url: url, byteRange: byteRange)
                 let (payload, response) = try await SharedSession.session.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw DownloadError.badStatus(http.statusCode)
                 }
-                var data = payload
-                if let expected = expectedLength {
-                    // 服务器忽略 Range 时可能返回全量，截取所需前缀；不足则报错
-                    guard data.count >= expected else {
-                        throw DownloadError.shortSegment(expected, data.count)
-                    }
-                    if data.count > expected {
-                        data = data.prefix(expected)
-                    }
-                }
-                return data
+                return try trimToRange(payload, expected: expectedLength)
             } catch {
                 lastError = error
-                // 连接层错误(WAF TLS 指纹拦截的典型表现): 立即降级 WebKit 网络栈，成功后 sticky
                 if isConnectionLevelError(error) {
-                    print("DL[\(url.host ?? "")]: URLSession 连接层错误(\(error.localizedDescription))，尝试 WebKit 兜底…")
+                    print("DL[\(url.host ?? "")]: URLSession 连接层错误(\(error.localizedDescription))")
+                    // 先试 IP 直连（域名 SNI 被网络侧 RST 时有效），再试 WebKit（客户端 TLS 指纹被拦时有效）
+                    if let host = url.host,
+                       let data = try? await fetchIPDirect(url, byteRange: byteRange) {
+                        ipDirectHosts.insert(host)
+                        print("DL[\(host)]: ✅ IP 直连成功，该域名后续请求直接走 IP")
+                        return data
+                    }
+                    print("DL[\(url.host ?? "")]: IP 直连也失败，尝试 WebKit 兜底…")
                     do {
                         let data = try await fetchViaWebKit(url, byteRange: byteRange)
                         preferWebKit = true
@@ -364,6 +362,113 @@ final class DownloadEngine {
             }
         }
         throw lastError
+    }
+
+    private static func makeRequest(url: URL, byteRange: ByteRange?) -> (URLRequest, Int?) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        for (field, value) in browserHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        var expectedLength: Int?
+        if let range = byteRange, let offset = range.offset {
+            request.setValue("bytes=\(offset)-\(offset + range.length - 1)",
+                             forHTTPHeaderField: "Range")
+            expectedLength = range.length
+        }
+        return (request, expectedLength)
+    }
+
+    /// 服务器忽略 Range 返回全量时截取所需前缀；不足则报错
+    private static func trimToRange(_ payload: Data, expected: Int?) throws -> Data {
+        guard let expected else { return payload }
+        guard payload.count >= expected else {
+            throw DownloadError.shortSegment(expected, payload.count)
+        }
+        return payload.count > expected ? Data(payload.prefix(expected)) : payload
+    }
+
+    // MARK: IP 直连（绕过基于域名/SNI 的网络侧拦截）
+    //
+    // 蜂窝网络下运营商/防火墙可能按 ClientHello 中的 SNI 域名掐连接（握手期间 RST，
+    // 所有客户端无一幸免，网页内视频同样播不出）。对策：域名解析成 IP 后直接连 IP
+    // （URL 用 IP 时 TLS 层不携带 SNI），Host 头置原域名供 CDN 路由正确站点；
+    // 证书与 IP 不匹配由 TrustAllSessionDelegate 兜底。
+    // 若拦截是按目的 IP 进行的（而非域名），此法同样无效，自然降级到 WebKit/报错。
+
+    /// 已证实 IP 直连可用的域名（sticky）
+    nonisolated(unsafe) static var ipDirectHosts: Set<String> = []
+    /// 域名 -> [IP] 解析缓存（进程内）
+    nonisolated(unsafe) static var dnsCache: [String: [String]] = [:]
+
+    private static func isLiteralIP(_ host: String) -> Bool {
+        var v4 = in_addr(); var v6 = in6_addr()
+        return inet_pton(AF_INET, host, &v4) == 1 || inet_pton(AF_INET6, host, &v6) == 1
+    }
+
+    /// 解析域名（getaddrinfo 为阻塞调用，放后台线程；优先 IPv4），成功后缓存
+    static func resolveHost(_ host: String) async -> [String] {
+        if let cached = dnsCache[host], !cached.isEmpty { return cached }
+        let ips: [String] = await Task.detached(priority: .utility) {
+            var hints = addrinfo()
+            hints.ai_family = AF_UNSPEC
+            hints.ai_socktype = SOCK_STREAM
+            var result: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return [] }
+            defer { freeaddrinfo(first) }
+            var all: [String] = []
+            var cursor: UnsafeMutablePointer<addrinfo>? = first
+            while let node = cursor {
+                defer { cursor = node.pointee.ai_next }
+                guard let sa = node.pointee.ai_addr else { continue }
+                var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+                if sa.pointee.sa_family == sa_family_t(AF_INET) {
+                    var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                    if inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
+                        all.append(String(cString: buffer))
+                    }
+                } else if sa.pointee.sa_family == sa_family_t(AF_INET6) {
+                    var addr = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+                    if inet_ntop(AF_INET6, &addr.sin6_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
+                        all.append(String(cString: buffer))
+                    }
+                }
+            }
+            let ipv4 = all.filter { !$0.contains(":") }
+            return ipv4.isEmpty ? all : ipv4
+        }.value
+        if !ips.isEmpty { dnsCache[host] = ips }
+        return ips
+    }
+
+    /// IP 直连：URL 换成 IP（无 SNI），Host 头置原域名；逐个尝试解析出的 IP（最多 3 个）
+    static func fetchIPDirect(_ url: URL, byteRange: ByteRange?) async throws -> Data {
+        guard let host = url.host, !isLiteralIP(host) else {
+            throw DownloadError.badStatus(-3)
+        }
+        let ips = await resolveHost(host)
+        guard !ips.isEmpty else {
+            throw DownloadError.badStatus(-3)  // DNS 解析不到 IP
+        }
+        var lastIPError: Error = DownloadError.badStatus(-3)
+        for ip in ips.prefix(3) {
+            guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
+            comps.host = ip.contains(":") ? "[\(ip)]" : ip
+            guard let ipURL = comps.url else { continue }
+            do {
+                var (request, expectedLength) = makeRequest(url: ipURL, byteRange: byteRange)
+                request.setValue(host, forHTTPHeaderField: "Host")
+                let (payload, response) = try await SharedSession.session.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.badStatus(http.statusCode)
+                }
+                return try trimToRange(payload, expected: expectedLength)
+            } catch {
+                lastIPError = error
+                continue  // 该 IP 不行，换下一个
+            }
+        }
+        throw lastIPError
     }
 
     static func fetchText(_ url: URL) async throws -> String {
@@ -632,13 +737,34 @@ final class DownloadEngine {
 
     // MARK: 文件名
 
+    /// 去掉浏览器标题里的站点后缀与营销词（如 "某剧 第1集在线观看 - 某站" -> "某剧 第1集"）
+    static func cleanTitle(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 末尾 " - 站点名" / " | 站点名"：尾部不含数字（集数）时视为站名丢弃
+        if let range = text.range(of: #"\s*[-–—|｜]\s*[^-–—|｜]{1,20}$"#, options: .regularExpression) {
+            let tail = String(text[range])
+            if tail.rangeOfCharacter(from: .decimalDigits) == nil {
+                text.removeSubrange(range)
+            }
+        }
+        // 常见营销词
+        for word in ["免费在线观看", "在线观看", "高清在线", "免费播放"] {
+            text = text.replacingOccurrences(of: word, with: "")
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func sanitizeTitle(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
-        let scalars = raw.unicodeScalars.filter {
+        let cleaned = cleanTitle(raw)
+        guard !cleaned.isEmpty else { return nil }
+        let scalars = cleaned.unicodeScalars.filter {
             CharacterSet.alphanumerics.contains($0) || "._- ".unicodeScalars.contains($0)
         }
         var text = String(String.UnicodeScalarView(scalars))
             .replacingOccurrences(of: " ", with: "_")
+        // 压缩清理后残留的分隔符（"标题_-_" -> "标题"）
+        text = text.replacingOccurrences(of: #"[_\-]{2,}"#, with: "_", options: .regularExpression)
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: "._-"))
         if text.count > 80 { text = String(text.prefix(80)) }
         return text.isEmpty ? nil : text

@@ -45,6 +45,7 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 - 不导出单文件 MP4（TS→MP4 重封装需要 ffmpeg；如需 AirDrop 单文件，后续再加）
 - 签名 URL 有时效：嗅探到后尽快点下载
 - **WAF TLS 指纹拦截（已自动兜底）**：部分视频资源站点的 WAF 按客户端 TLS 握手特征掐非浏览器连接，URLSession 在部分真机网络下握手即被 RST（报 `-1200` TLS错误导致安全连接失败）。App 内置 WebKitFetcher 兜底：连接层错误时自动改走 WKDownload（与浏览页同源的 Safari TLS 栈，已被实测证明可过 WAF），成功后进程内 sticky 不再回头。失败信息会附带视频源域名便于定位。
+- **蜂窝网络按域名（SNI）拦截 → IP 直连绕过（已实测解决）**：5G 蜂窝网络下 CDN 会在 TLS 握手期按 ClientHello 里的 SNI 域名直接 RST，此时 URLSession、WKWebView 乃至网页内视频全部失败（客户端指纹伪装无效）。App 对此内置 IP 直连：域名解析成 IP 后直接连 IP（URL 用 IP 时 TLS 不携带 SNI），`Host` 头回填原域名供 CDN 路由，证书不匹配由 TrustAll 兜底；成功则该域名进程内 sticky 走 IP。降级顺序：URLSession → IP 直连 → WebKit 兜底。
 - 安全按「个人使用」标准：信任所有证书 + ATS 全放行（用户已确认此取舍）
 
 ## 五、冒烟测试（Mac 上验证核心，不需手机）

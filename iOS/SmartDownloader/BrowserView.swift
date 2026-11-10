@@ -12,7 +12,7 @@ struct BrowserView: View {
 
     /// 快捷站点标签：点击直达；地址栏仍可输入任意 URL
     static let quickLinks: [(name: String, url: String)] = [
-        ("野果短剧", "https://www.yeguodj.com/"),
+        ("🍎", "https://www.yeguodj.com/"),
     ]
 
     @ObservedObject var manager: DownloadManager

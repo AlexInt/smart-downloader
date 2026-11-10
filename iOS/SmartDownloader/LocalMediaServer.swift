@@ -5,7 +5,8 @@ import Network
 ///
 /// 为什么需要它：AVFoundation 无法直接播放文件版 m3u8，也无法播放裸 TS 合并文件（iOS 上没有 ffmpeg）。
 /// 「本地回环 HTTP + 重写后的播放列表」是 iOS 离线 HLS 播放的标准做法。
-final class LocalMediaServer {
+/// 可变状态全部收敛在 stateQueue 串行队列上访问，故标注 @unchecked Sendable
+final class LocalMediaServer: @unchecked Sendable {
     static let shared = LocalMediaServer()
 
     private let stateQueue = DispatchQueue(label: "LocalMediaServer.state")
@@ -89,7 +90,8 @@ final class LocalMediaServer {
 }
 
 /// 单连接处理：解析 HTTP GET（支持 Range），回送文件后关闭
-final class HTTPConnectionHandler {
+/// 单连接的状态只在该连接的回调（同一队列串行回调）中访问，故标注 @unchecked Sendable
+final class HTTPConnectionHandler: @unchecked Sendable {
     private let connection: NWConnection
     private let root: URL
     private var buffer = Data()
