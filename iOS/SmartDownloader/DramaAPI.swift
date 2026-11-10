@@ -314,12 +314,19 @@ final class SeriesDownloadCoordinator {
         self.manager = manager
     }
 
-    /// 选集下载入口：登记全部集任务（等待中）后开始调度；集按 sort 升序排队
+    /// 选集下载入口：登记全部集任务（等待中）后开始调度；集按 sort 升序排队。
+    /// 已在队列中的集直接剔除，连点「下载所选」也不会重复建任务 / 重复起调度器。
     static func start(target: DramaTarget, seriesName: String,
                       episodes: [ApiDramaEpisode], manager: DownloadManager, session: DramaSession) {
-        guard !episodes.isEmpty else { return }
+        let queued = manager.queuedEpisodeSorts(forSeries: seriesName)
+        var seen = Set<Int>()
+        let fresh = episodes
+            .filter { !queued.contains($0.sort) && seen.insert($0.sort).inserted }
+            .sorted { $0.sort < $1.sort }
+        guard !fresh.isEmpty else { return }
+
         let coordinator = SeriesDownloadCoordinator(session: session, manager: manager)
-        for ep in episodes.reversed() {  // tasks 头插，反序插入使「正在下载」列表保持升序
+        for ep in fresh.reversed() {  // tasks 头插，反序插入使「正在下载」列表保持升序
             let task = manager.registerEpisode(title: String(format: "第%02d集", ep.sort),
                                                seriesName: seriesName)
             coordinator.pending.append(Plan(episode: ep, taskID: task.id))

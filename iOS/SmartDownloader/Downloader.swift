@@ -14,6 +14,16 @@ enum TaskState: Equatable {
     case failed(String)
 }
 
+extension TaskState {
+    /// 已结束（成功/失败）的任务不再算「活跃下载」，允许同 URL 主动重试
+    var isFinished: Bool {
+        switch self {
+        case .done, .failed: return true
+        default: return false
+        }
+    }
+}
+
 enum DownloadError: LocalizedError {
     case badStatus(Int)
     case notMediaPlaylist
@@ -52,6 +62,8 @@ final class DownloadTask: ObservableObject, Identifiable {
     var isHLSFolder = false
     /// 启动时扫描本地目录得到的历史条目（无下载过程）
     var isFromLibrary = false
+    /// 创建时间：新任务为入队时刻；历史条目在库扫描时由文件/目录的创建时间回填
+    var createdAt: Date = Date()
 
     init(url: String, title: String, seriesName: String? = nil) {
         self.url = url
@@ -84,8 +96,14 @@ final class DownloadManager: ObservableObject {
         if foundURLs.count > 20 { foundURLs.removeFirst(foundURLs.count - 20) }
     }
 
+    /// 幂等入口：同一 m3u8 已在队列中时直接复用该任务，连点 / 多入口都不会重复入队。
+    /// 已完成或失败的任务不占名额，用户仍可主动重下。
     @discardableResult
     func startDownload(urlString: String, title rawTitle: String, seriesName: String? = nil) -> DownloadTask {
+        if !urlString.isEmpty,
+           let existing = tasks.first(where: { $0.url == urlString && !$0.state.isFinished }) {
+            return existing
+        }
         let base = DownloadEngine.sanitizeTitle(rawTitle) ?? DownloadEngine.timestampName()
         let task = DownloadTask(url: urlString, title: base, seriesName: seriesName)
         register(task)
@@ -122,8 +140,25 @@ final class DownloadManager: ObservableObject {
     func task(withID id: UUID) -> DownloadTask? { tasks.first { $0.id == id } }
     func containsTask(id: UUID) -> Bool { tasks.contains { $0.id == id } }
 
-    /// 多集调度用：登记一个等待中的集任务（不启动，由 SeriesDownloadCoordinator 统一调度）
+    /// 同一 m3u8 是否已有活跃任务（等待/解析/下载/保存中）——下载入口幂等与按钮状态共用
+    func hasActiveTask(forURL url: String) -> Bool {
+        guard !url.isEmpty else { return false }
+        return tasks.contains { $0.url == url && !$0.state.isFinished }
+    }
+
+    /// 该剧仍在队列中的集号（等待/下载中），供选集面板排除，避免连点重复排队
+    func queuedEpisodeSorts(forSeries series: String) -> Set<Int> {
+        Set(tasks
+            .filter { $0.seriesName == series && !$0.state.isFinished }
+            .compactMap { DownloadManager.episodeSort(fromFolderName: $0.title) })
+    }
+
+    /// 多集调度用：登记一个等待中的集任务（不启动，由 SeriesDownloadCoordinator 统一调度）。
+    /// 幂等：同剧同集已有活跃任务时直接复用，不重复插入列表。
     func registerEpisode(title: String, seriesName: String) -> DownloadTask {
+        if let existing = tasks.first(where: {
+            $0.seriesName == seriesName && $0.title == title && !$0.state.isFinished
+        }) { return existing }
         let task = DownloadTask(url: "", title: title, seriesName: seriesName)
         tasks.insert(task, at: 0)
         observeTaskState(task)
@@ -275,12 +310,19 @@ final class DownloadManager: ObservableObject {
         let dir = DownloadEngine.downloadsDir
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        /// 历史条目没有元数据，用文件/目录的创建时间还原排序依据（缺失则退回修改时间）
+        func fileCreatedAt(_ url: URL) -> Date? {
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            return values?.creationDate ?? values?.contentModificationDate
+        }
         func makeHLSTask(title: String, playlist: URL, series: String?) -> DownloadTask {
             let task = DownloadTask(url: "", title: title, seriesName: series)
             task.state = .done
             task.outputURL = playlist
             task.isHLSFolder = true
             task.isFromLibrary = true
+            // 目录的创建时间比 playlist.m3u8（下载结束才写）更接近任务创建时刻
+            if let date = fileCreatedAt(playlist.deletingLastPathComponent()) { task.createdAt = date }
             return task
         }
         for entry in entries.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
@@ -305,6 +347,7 @@ final class DownloadManager: ObservableObject {
                 task.state = .done
                 task.outputURL = entry
                 task.isFromLibrary = true
+                if let date = fileCreatedAt(entry) { task.createdAt = date }
                 tasks.append(task)
             }
         }

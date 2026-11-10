@@ -83,10 +83,9 @@ struct BrowserView: View {
                         startDownload(from: manager.foundURLs.first)
                     }
                 } label: {
-                    Label(manager.foundURLs.isEmpty ? "未检测到视频" : "下载视频 (\(manager.foundURLs.count))",
-                          systemImage: "arrow.down.circle.fill")
+                    Label(downloadButtonTitle, systemImage: downloadButtonIcon)
                 }
-                .disabled(manager.foundURLs.isEmpty)
+                .disabled(manager.foundURLs.isEmpty || isSubmitting || singleURLAlreadyQueued)
                 .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 10)
@@ -145,8 +144,17 @@ struct BrowserView: View {
                     showPicker = false
                     startDownload(from: found)
                 } label: {
-                    Text(found).font(.footnote).lineLimit(2)
+                    HStack(spacing: 8) {
+                        Text(found).font(.footnote).lineLimit(2)
+                        Spacer(minLength: 0)
+                        if manager.hasActiveTask(forURL: found) {
+                            Label("已在队列", systemImage: "checkmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
+                .disabled(manager.hasActiveTask(forURL: found))
             }
             .navigationTitle("选择 m3u8")
             .navigationBarTitleDisplayMode(.inline)
@@ -157,13 +165,37 @@ struct BrowserView: View {
     private func startDownload(from raw: String?) {
         guard let raw, let url = URL(string: raw),
               url.scheme == "http" || url.scheme == "https" else { return }
+        // 取标题是异步的，这个窗口内连点会排多个任务；用 isSubmitting 把入口锁住
+        guard !isSubmitting else { return }
+        guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
+        isSubmitting = true
         Task { @MainActor in
+            defer { isSubmitting = false }
             var title = ""
             if let webView = store.webView {
                 title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
             }
             manager.startDownload(urlString: url.absoluteString, title: title)
         }
+    }
+
+    /// 异步取标题期间的连点锁
+    @State private var isSubmitting = false
+
+    private var singleURLAlreadyQueued: Bool {
+        guard manager.foundURLs.count == 1, let url = manager.foundURLs.first else { return false }
+        return manager.hasActiveTask(forURL: url)
+    }
+
+    private var downloadButtonTitle: String {
+        if manager.foundURLs.isEmpty { return "未检测到视频" }
+        if isSubmitting { return "正在添加…" }
+        if singleURLAlreadyQueued { return "已在下载队列" }
+        return "下载视频 (\(manager.foundURLs.count))"
+    }
+
+    private var downloadButtonIcon: String {
+        singleURLAlreadyQueued ? "checkmark.circle.fill" : "arrow.down.circle.fill"
     }
 }
 
@@ -642,7 +674,8 @@ struct DramaNativePage: View {
         .safeAreaInset(edge: .bottom) {
             Button { startDownload(info) } label: {
                 if selected.isEmpty && selectableEpisodes.isEmpty {
-                    Label("全部已下载", systemImage: "checkmark.circle")
+                    Label(queuedSorts.isEmpty ? "全部已下载" : "已全部加入队列",
+                          systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity)
                 } else {
                     Label("下载所选 (\(selected.count))", systemImage: "arrow.down.circle.fill")
@@ -659,21 +692,40 @@ struct DramaNativePage: View {
 
     private func headerSubtitle(_ info: DramaInfo) -> String {
         let base = "\(fromCache ? "本地缓存 · " : "")共 \(info.episodes.count) 集 · 可下载 \(selectableEpisodes.count) 集"
-        return downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
+        var text = downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
+        if !queuedSorts.isEmpty { text += " · 排队中 \(queuedSorts.count) 集" }
+        return text
     }
 
-    /// 未下载且可播放的集
+    /// 该剧仍在队列（等待/下载中）的集号。单一事实源是 manager.tasks，
+    /// 用计算属性跟随状态变化，不另存 @State，避免与队列状态不同步。
+    private var queuedSorts: Set<Int> {
+        guard let info else { return [] }
+        return manager.queuedEpisodeSorts(forSeries: info.name)
+    }
+
+    /// 可下载且未入队的集（已下载、排队中、付费锁定都排除）
     private var selectableEpisodes: [ApiDramaEpisode] {
-        info?.episodes.filter { $0.playable && !downloadedSorts.contains($0.sort) } ?? []
+        guard let info else { return [] }
+        let queued = queuedSorts
+        return info.episodes.filter {
+            $0.playable
+                && !downloadedSorts.contains($0.sort)
+                && !queued.contains($0.sort)
+        }
     }
 
-    /// 单元格状态：已下载 = 绿勾 ▶，点击直接播放；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
+    /// 单元格状态：已下载 = 绿勾 ▶（点击播放）；排队中 = 灰显 ↓（禁点）；付费锁定 = 灰锁（禁点）；
+    /// 选中 = 高亮；其余可点选。排队态优先于选中态，避免残留选择显示成可再次提交
     private func episodeCell(_ ep: ApiDramaEpisode) -> some View {
         let isSelected = selected.contains(ep.id)
         let isDownloaded = downloadedSorts.contains(ep.sort)
+        let isQueued = queuedSorts.contains(ep.sort)
         return Button {
             if isDownloaded {
                 playDownloaded(ep)
+            } else if isQueued {
+                return                       // 已在队列，点击不再追加任务
             } else if isSelected {
                 selected.remove(ep.id)
             } else {
@@ -689,6 +741,14 @@ struct DramaNativePage: View {
                         Text(String(format: "第%02d集", ep.sort))
                             .font(.system(.caption, design: .monospaced).weight(.semibold))
                     }
+                } else if isQueued {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "第%02d集", ep.sort))
+                            .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    }
                 } else {
                     Text(String(format: "第%02d集", ep.sort))
                         .font(.system(.caption, design: .monospaced).weight(.semibold))
@@ -697,13 +757,22 @@ struct DramaNativePage: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, minHeight: 34)
-            .background(cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-            .foregroundStyle(cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+            .background(isQueued
+                ? Color(uiColor: .systemGray6)
+                : cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+            .foregroundStyle(isQueued
+                ? Color(uiColor: .tertiaryLabel)
+                : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
             .overlay(alignment: .topTrailing) {
                 if isDownloaded {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.caption2)
                         .foregroundStyle(.green)
+                        .offset(x: 5, y: -5)
+                } else if isQueued {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                         .offset(x: 5, y: -5)
                 } else if !ep.playable {
                     Image(systemName: "lock.fill")
@@ -714,7 +783,7 @@ struct DramaNativePage: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .disabled(!ep.playable)
+        .disabled(!ep.playable || isQueued)
     }
 
     /// 已下载集：拉起沉浸式竖屏播放页，带上该剧全部已下载集以支持上下滑切集。
@@ -749,9 +818,16 @@ struct DramaNativePage: View {
         let session = self.session ?? DramaSession(target: target)
         self.session = session
         let chosen = info.episodes
-            .filter { selected.contains($0.id) && $0.playable && !downloadedSorts.contains($0.sort) }
+            .filter { selected.contains($0.id) && $0.playable
+                && !downloadedSorts.contains($0.sort)
+                && !queuedSorts.contains($0.sort) }
             .sorted { $0.sort < $1.sort }
-        guard !chosen.isEmpty else { return }
+        guard !chosen.isEmpty else {
+            selected.removeAll()
+            return
+        }
+        // 立即清空选择：连点「下载所选」不会二次提交同一批
+        selected.removeAll()
         SeriesDownloadCoordinator.start(target: target, seriesName: info.name,
                                         episodes: chosen, manager: manager, session: session)
     }

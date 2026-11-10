@@ -7,80 +7,126 @@ struct PlayerItem: Identifiable {
     let isHLSFolder: Bool
 }
 
-/// 下载页：正在下载队列 + 剧集（按剧名目录分组）/ 散装条目；
-/// 点击已完成条目直接播放，左滑删除（同时删沙盒文件/文件夹）
+/// 下载页排列顺序（偏好跨页面共享并持久化）
+enum DownloadSortOrder: String, CaseIterable, Identifiable {
+    case newestFirst
+    case oldestFirst
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .newestFirst: return "最新创建优先"
+        case .oldestFirst: return "最早创建优先"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .newestFirst: return "arrow.down"
+        case .oldestFirst: return "arrow.up"
+        }
+    }
+
+    /// 按创建时间排；同一时刻用标题/集号兜底，避免顺序抖动
+    func order(_ tasks: [DownloadTask]) -> [DownloadTask] {
+        tasks.sorted { a, b in
+            if a.createdAt != b.createdAt {
+                return self == .newestFirst ? a.createdAt > b.createdAt : a.createdAt < b.createdAt
+            }
+            return a.title < b.title
+        }
+    }
+}
+
+private extension Date {
+    /// 列表里显示的创建时间，让排序依据可见（固定格式，不依赖 locale）
+    var downloadsListText: String {
+        let c = Calendar.current.dateComponents([.month, .day, .hour, .minute], from: self)
+        return String(format: "%02d/%02d %02d:%02d",
+                      c.month ?? 0, c.day ?? 0, c.hour ?? 0, c.minute ?? 0)
+    }
+}
+
+/// 下载页顶部两个可横滑的区域
+enum DownloadPage: Int, Hashable {
+    case inProgress = 0
+    case completed = 1
+}
+
+/// 下载页：顶部「下载中 / 已下载」两个 tab，可点可左右滑。
+/// 排序与编辑（批量删除）在工具栏统一控制，两个区域都支持左滑删除。
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
     @State private var playerItem: PlayerItem?
-    /// 编辑模式：点行勾选（剧行勾选整剧），底部栏全选/批量删除
+    /// 编辑模式：点行勾选（剧行勾选整剧），底部栏全选/批量删除；跨两个区域一起生效
     @State private var selectionMode = false
     @State private var selected = Set<UUID>()
+    /// 排序偏好与剧详情页共享，重启 App 后保留
+    @AppStorage("DownloadsView.sortOrder") private var sortOrder: DownloadSortOrder = .newestFirst
+    /// 顶部 tab 与内容分页共用同一个 selection，点 tab 或左右滑都会同步
+    @State private var page: DownloadPage = .inProgress
+    /// 剧行左滑删除整剧前的确认目标
+    @State private var pendingDeleteSeries: String?
 
     /// 未完成任务（等待/解析/下载中/失败）
-    private var activeTasks: [DownloadTask] { manager.tasks.filter { $0.state != .done } }
+    private var activeTasks: [DownloadTask] {
+        sortOrder.order(manager.tasks.filter { $0.state != .done })
+    }
     /// 散装已完成条目（不属于任何剧）
     private var standaloneItems: [DownloadTask] {
-        manager.tasks.filter { $0.state == .done && $0.seriesName == nil }
+        sortOrder.order(manager.tasks.filter { $0.state == .done && $0.seriesName == nil })
     }
-    /// 剧 -> 已落盘的集（按集名排序）
+    /// 剧 -> 已落盘的集。组内按创建时间排；剧之间「最新优先」看最近一集、「最早优先」看最早一集。
     private var seriesGroups: [(name: String, episodes: [DownloadTask])] {
-        Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
-                   by: { $0.seriesName! })
-            .map { (name: $0.key, episodes: $0.value.sorted { $0.title < $1.title }) }
-            .sorted { $0.name < $1.name }
+        let grouped = Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
+                                 by: { $0.seriesName! })
+        let groups = grouped.map { (name: $0.key, episodes: sortOrder.order($0.value)) }
+        return groups.sorted { a, b in
+            let timesA = a.episodes.map(\.createdAt)
+            let timesB = b.episodes.map(\.createdAt)
+            let keyA = sortOrder == .newestFirst ? timesA.max() : timesA.min()
+            let keyB = sortOrder == .newestFirst ? timesB.max() : timesB.min()
+            if let keyA, let keyB, keyA != keyB {
+                return sortOrder == .newestFirst ? keyA > keyB : keyA < keyB
+            }
+            return a.name < b.name
+        }
     }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if manager.tasks.isEmpty {
-                    ContentUnavailableView(
-                        "暂无下载",
-                        systemImage: "arrow.down.circle",
-                        description: Text("去「浏览」页打开视频网页：播放页点「下载视频」，剧集页自动弹面板选集下载"))
-                } else {
-                    List {
-                        if !activeTasks.isEmpty {
-                            Section("正在下载") {
-                                ForEach(activeTasks) { task in
-                                    sectionRow(task: task)
-                                }
-                                .onDelete { manager.delete(at: globalOffsets($0, in: activeTasks)) }
-                            }
-                        }
-                        if !seriesGroups.isEmpty {
-                            Section("剧集") {
-                                if selectionMode {
-                                    ForEach(seriesGroups, id: \.name) { group in
-                                        seriesSelectionRow(group)
-                                    }
-                                } else {
-                                    ForEach(seriesGroups, id: \.name) { group in
-                                        NavigationLink {
-                                            SeriesDetailView(manager: manager, seriesName: group.name)
-                                        } label: {
-                                            seriesRow(group)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if !standaloneItems.isEmpty {
-                            Section("已下载") {
-                                ForEach(standaloneItems) { task in
-                                    sectionRow(task: task)
-                                }
-                                .onDelete { manager.delete(at: globalOffsets($0, in: standaloneItems)) }
-                            }
-                        }
-                    }
-                    .listStyle(.insetGrouped)
+            VStack(spacing: 0) {
+                Picker("下载区域", selection: $page) {
+                    Text("下载中").tag(DownloadPage.inProgress)
+                    Text("已下载").tag(DownloadPage.completed)
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                TabView(selection: $page) {
+                    inProgressPage
+                        .tag(DownloadPage.inProgress)
+                    completedPage
+                        .tag(DownloadPage.completed)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle("下载")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if !manager.tasks.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Menu {
+                            Picker("排列顺序", selection: $sortOrder) {
+                                ForEach(DownloadSortOrder.allCases) { order in
+                                    Label(order.label, systemImage: order.icon).tag(order)
+                                }
+                            }
+                        } label: {
+                            Label("排序", systemImage: "arrow.up.arrow.down")
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(selectionMode ? "完成" : "编辑") {
                             if selectionMode { selected.removeAll() }
@@ -106,9 +152,94 @@ struct DownloadsView: View {
                     .background(.bar)
                 }
             }
+            .confirmationDialog(
+                "删除《\(pendingDeleteSeries ?? "")》全部集及其文件？",
+                isPresented: Binding(
+                    get: { pendingDeleteSeries != nil },
+                    set: { if !$0 { pendingDeleteSeries = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("删除全剧", role: .destructive) {
+                    if let name = pendingDeleteSeries { manager.deleteSeries(name) }
+                    pendingDeleteSeries = nil
+                }
+                Button("取消", role: .cancel) { pendingDeleteSeries = nil }
+            }
         }
         .sheet(item: $playerItem) { item in
             PlayerView(item: item)
+        }
+    }
+
+    /// 左页：进行中（等待/解析/下载/保存/失败），左滑删除任务
+    @ViewBuilder
+    private var inProgressPage: some View {
+        if activeTasks.isEmpty {
+            ContentUnavailableView(
+                "暂无进行中的下载",
+                systemImage: "arrow.down.circle",
+                description: Text("去「浏览」页打开视频网页播放，或在剧集页选集下载"))
+        } else {
+            List {
+                Section {
+                    ForEach(activeTasks) { task in
+                        sectionRow(task: task)
+                    }
+                    .onDelete { manager.delete(at: globalOffsets($0, in: activeTasks)) }
+                } header: {
+                    Text("共 \(activeTasks.count) 个任务 · 按创建时间排列")
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+    }
+
+    /// 右页：已下载。剧集分组可进二级页 / 排序 / 删整剧，散装单条放在下方
+    @ViewBuilder
+    private var completedPage: some View {
+        if seriesGroups.isEmpty && standaloneItems.isEmpty {
+            ContentUnavailableView(
+                "还没有下载完的内容",
+                systemImage: "square.stack.3d.up",
+                description: Text("下载完成后，剧集和单条视频会出现在这里，可排序、可删除"))
+        } else {
+            List {
+                if !seriesGroups.isEmpty {
+                    Section {
+                        ForEach(seriesGroups, id: \.name) { group in
+                            if selectionMode {
+                                seriesSelectionRow(group)
+                            } else {
+                                NavigationLink {
+                                    SeriesDetailView(manager: manager, seriesName: group.name)
+                                } label: {
+                                    seriesRow(group)
+                                }
+                            }
+                        }
+                        .onDelete { offsets in
+                            guard !selectionMode else { return }
+                            if let index = offsets.first, seriesGroups.indices.contains(index) {
+                                pendingDeleteSeries = seriesGroups[index].name
+                            }
+                        }
+                    } header: {
+                        Text("剧集 · \(seriesGroups.count) 部")
+                    } footer: {
+                        Text("左滑删除整剧，点进剧名可逐集管理")
+                    }
+                }
+                if !standaloneItems.isEmpty {
+                    Section("其他下载") {
+                        ForEach(standaloneItems) { task in
+                            sectionRow(task: task)
+                        }
+                        .onDelete { manager.delete(at: globalOffsets($0, in: standaloneItems)) }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
         }
     }
 
@@ -117,10 +248,19 @@ struct DownloadsView: View {
             Image(systemName: "square.stack.3d.up.fill").foregroundColor(.purple)
             VStack(alignment: .leading, spacing: 4) {
                 Text(group.name).lineLimit(1)
-                Text("已下载 \(group.episodes.count) 集").font(.caption).foregroundColor(.secondary)
+                Text(seriesSubtitle(group)).font(.caption).foregroundColor(.secondary)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 剧行副标题带上时间，让「最新/最早优先」的排序依据可见
+    private func seriesSubtitle(_ group: (name: String, episodes: [DownloadTask])) -> String {
+        let times = group.episodes.map(\.createdAt)
+        let key = sortOrder == .newestFirst ? times.max() : times.min()
+        let base = "已下载 \(group.episodes.count) 集"
+        guard let key else { return base }
+        return base + " · \(key.downloadsListText)"
     }
 
     private func playIfDone(_ task: DownloadTask) {
@@ -202,11 +342,11 @@ struct SeriesDetailView: View {
     /// 剧集点播走沉浸式播放页；playerItem 仅作非 HLS 文件夹的 AVKit 回退
     @State private var immersivePlayback: ImmersivePlaybackRequest?
     @State private var confirmDelete = false
+    /// 与下载页共用同一个排序偏好，两个页面的先后顺序一致
+    @AppStorage("DownloadsView.sortOrder") private var sortOrder: DownloadSortOrder = .newestFirst
 
     private var episodes: [DownloadTask] {
-        manager.tasks
-            .filter { $0.seriesName == seriesName }
-            .sorted { $0.title < $1.title }
+        sortOrder.order(manager.tasks.filter { $0.seriesName == seriesName })
     }
 
     var body: some View {
@@ -317,7 +457,8 @@ struct TaskRow: View {
         case .saving:
             Text("保存文件…").font(.caption).foregroundColor(.secondary)
         case .done:
-            Text(task.isFromLibrary ? "本地文件" : "已保存到 \(task.displayName)")
+            let base = task.isFromLibrary ? "本地文件" : "已保存到 \(task.displayName)"
+            Text("\(base) · \(task.createdAt.downloadsListText)")
                 .font(.caption).foregroundColor(.secondary)
         case .failed(let message):
             Text("失败: \(message)").font(.caption).foregroundColor(.red)
