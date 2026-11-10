@@ -10,10 +10,12 @@ import Foundation
 // 运行时从随包携带的 video_auto.py 解析（与 videocli 读仓库根文件同一思路）。
 
 /// 剧集页 URL 解析出的下载目标
-struct DramaTarget: Identifiable, Equatable {
+struct DramaTarget: Identifiable, Hashable {
     let site: String
     let dramaID: String
     var id: String { "\(site)#\(dramaID)" }
+    /// 原生剧集页内嵌 webview 加载的详情页地址
+    var pageURLString: String { "\(site)/drama/detail/\(dramaID)/" }
 
     /// 形如 https://<站点>/drama/{video|detail}/<ID>[/ep-N]/；无法识别返回 nil
     static func parse(_ raw: String) -> DramaTarget? {

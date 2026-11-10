@@ -57,7 +57,7 @@ xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
 ## 开发约定
 
 1. **下载能力统一走 `core/downloader.py`**（Python 侧）/ `Downloader.swift`（iOS 侧）。站点特有逻辑（登录、加密 API、嗅探）放独立脚本或独立文件，不要混入通用模块。
-2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由 `quickLinks` 数组（BrowserView.swift）+ 地址栏输入，剧集选集面板由导航 URL 自动检测（DramaTarget.parse）。
+2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由 `quickLinks` 数组（BrowserView.swift）+ 地址栏输入，剧集点击由 URL 检测（DramaTarget.parse）路由到原生剧集页。
 3. **输出目录必须在用户主目录下**（`core/utils.get_download_dir` 有安全检查，越界抛 PermissionError）。
 4. 临时文件放 `temp_*` 目录，任务结束必须清理；同名文件加 `(1)` 后缀防覆盖。
 

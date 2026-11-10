@@ -15,10 +15,10 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 
 1. 「浏览」页自动恢复上次访问的页面（首次为空白起始页，地址栏输入视频资源站点即可）；在网页里正常登录、点开剧集播放
 2. 播放后底部「**下载视频 (n)**」按钮亮起（嗅探到的 m3u8 实时累积；多个时可点击选择）
-3. **选集下载**：打开剧集页（形如 `<站点>/drama/video/<剧ID>/` 或 `/drama/detail/<剧ID>/`）时自动弹出半屏选集面板：
-   grid 展示全集，点击集号选中（可全选/多选），已下载过的集打绿勾且不可点（开面板时扫剧目录，文件系统就是账本，无数据库），
+3. **选集下载**：首页点击剧集卡片 → 路由到**原生剧集页**（内嵌网页打开剧集页，主页停留不变）并自动弹出选集面板：
+   grid 展示全集，点击集号选中（可全选/多选），已下载集打绿勾、点 ▶ 直接播放（文件系统就是账本，无数据库），
    付费锁定集灰显带锁；「下载所选」一次排队下载（同时最多 2 集），每集下载前重调站点接口取新鲜直链；
-   关掉面板后可用底部「**选集**」按钮重开
+   关掉面板可用页内「**选集**」按钮重开；页内点击其它剧集会继续推入新的原生剧集页
 4. 点「下载」页看进度（多集调度最多 2 集并行，每集内部 6 并发切片）；下载页按剧分组：
    正在下载 / 剧集（点进二级页看集列表）/ 散装条目；剧详情页点集即播、左滑删单集、右上角删全剧
 5. 点击已完成条目**直接播放**；左滑删除（同时删除沙盒文件）
@@ -32,8 +32,8 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
   WKWebView 加载视频资源站点 (cookie 共享, 登录态/付费内容自动解锁)
   ├ 注入嗅探 JS (atDocumentStart): Hook XHR/fetch + performance 历史 + video/source DOM 扫描
   │     → window.webkit.messageHandlers 回传 m3u8 → 按钮激活
-  └ 导航提交后检测剧集页 URL (/drama/(video|detail)/<ID>) → 自动弹半屏选集面板
-        DramaAPI: 登录 → playlet 接口 → AES-128-CBC 解密 → 剧名 + 全集列表
+  └ 点击剧集链接/SPA 路由检测 (/drama/(video|detail)/<ID>) → 推入原生剧集页（内嵌 webview 打开剧集页）
+        选集面板: DramaAPI 登录 → playlet 接口 → AES-128-CBC 解密 → 剧名 + 全集列表
         （账号/AES 常量从随包 video_auto.py 解析, 不硬编码；站点地址从 URL 推导）
 「下载」DownloadEngine (Swift 版 M3U8Downloader)
   拉清单(多级选最高码率) → 预取 AES-128 密钥 → 6 并发切片下载(重试/Range/解密)
@@ -104,7 +104,7 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | 文件 | 职责 |
 |---|---|
 | `SmartDownloader/App.swift` | 入口，启动时预启本地媒体服务 |
-| `SmartDownloader/BrowserView.swift` | 浏览页：WKWebView + 嗅探脚本注入(内嵌 JS) + 下载按钮 + 剧集页选集面板 |
+| `SmartDownloader/BrowserView.swift` | 浏览页：WKWebView + 嗅探脚本注入(内嵌 JS) + 下载按钮 + 原生剧集页（内嵌 webview）+ 选集面板 |
 | `SmartDownloader/Downloader.swift` | 下载核心 + 任务/队列管理 + 两级库扫描（剧目录/散装） |
 | `SmartDownloader/DramaAPI.swift` | 站点剧集接口（独立文件）：URL 解析/登录/AES 解密 + 多集下载调度 |
 | `SmartDownloader/video_auto.py` | → 仓库根 video_auto.py 的 symlink，随包携带供 DramaAPI 解析账号/AES 常量（改动只需改仓库根一处） |

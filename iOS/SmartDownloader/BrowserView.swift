@@ -19,11 +19,13 @@ struct BrowserView: View {
     @StateObject private var store = WebViewStore()
     @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
     @State private var showPicker = false
-    @State private var dramaTarget: DramaTarget?
-    /// 同一部剧只自动弹一次选集面板；关掉后可用底部「选集」按钮重开
+    /// 点击剧集（拦截网页路由 / SPA pushState 检测）推入的原生剧集页
+    @State private var dramaPageTarget: DramaTarget?
+    /// 同一部剧只自动推入一次（SPA 回退后清除，重进会再推）
     @State private var lastAutoDramaKey: String?
 
     var body: some View {
+        NavigationStack {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 TextField("输入网址", text: $address)
@@ -64,22 +66,15 @@ struct BrowserView: View {
                     .padding(.horizontal, 10)
             }
 
-            WebViewContainer(manager: manager, store: store, address: $address)
+            WebViewContainer(manager: manager, store: store, address: $address,
+                             onDramaLinkClick: { pushDramaPage($0) },
+                             onDramaURLDetected: { detectDrama($0, undoSPA: $1) })
 
             HStack(spacing: 18) {
                 Button { store.goBack() } label: { Image(systemName: "chevron.left") }
                 Button { store.goForward() } label: { Image(systemName: "chevron.right") }
                 Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
                 Spacer()
-                // 剧集页（/drama/(video|detail)/<ID>）显示「选集」，重开选集面板
-                if let target = DramaTarget.parse(address) {
-                    Button {
-                        dramaTarget = target
-                    } label: {
-                        Label("选集", systemImage: "square.grid.2x2")
-                    }
-                    .buttonStyle(.bordered)
-                }
                 Button {
                     if manager.foundURLs.count > 1 {
                         showPicker = true
@@ -96,28 +91,43 @@ struct BrowserView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
         }
+        // 浏览页不占导航条空间；推入的原生剧集页自行 .toolbar(.visible) 恢复
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(item: $dramaPageTarget) { target in
+            DramaWebPage(target: target, manager: manager)
+        }
+        }
         .sheet(isPresented: $showPicker) {
             pickerSheet
         }
-        .sheet(item: $dramaTarget) { target in
-            DramaPickerSheet(target: target, manager: manager)
+        .onChange(of: address) { _, newValue in
+            if let target = DramaTarget.parse(newValue) {
+                detectDrama(target, undoSPA: false)
+            } else {
+                // 离开剧集页后清除去重标记：再次进入同一部剧会重新推入
+                lastAutoDramaKey = nil
+            }
         }
-        .onChange(of: address) { _, newValue in autoDetectDrama(newValue) }
-        .onAppear { autoDetectDrama(address) }
+        .onAppear {
+            if let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
+        }
     }
 
-    /// 识别到剧集页 URL（https://<站点>/drama/(video|detail)/<ID>…）自动弹出半屏选集面板
-    private func autoDetectDrama(_ urlString: String) {
-        guard let target = DramaTarget.parse(urlString) else {
-            // 离开剧集页后清除去重标记：再次进入同一部剧会重新弹出
-            lastAutoDramaKey = nil
-            return
-        }
-        // 同一部剧内点集/刷新不重复弹；离开再进会重新弹
+    /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页
+    private func detectDrama(_ target: DramaTarget, undoSPA: Bool) {
         guard lastAutoDramaKey != target.id else { return }
         lastAutoDramaKey = target.id
-        dramaTarget = target
-        print("BROWSER: 检测到剧集页 -> \(target.id) 弹选集面板")
+        dramaPageTarget = target
+        print("BROWSER: 检测到剧集页 -> \(target.id) 推入原生剧集页")
+        if undoSPA, store.webView?.canGoBack == true {
+            store.webView?.goBack()
+        }
+    }
+
+    /// 用户点击剧集链接（路由已在 decidePolicy 取消）：每次点击都推入原生剧集页
+    private func pushDramaPage(_ target: DramaTarget) {
+        dramaPageTarget = target
+        print("BROWSER: 点击剧集 -> \(target.id) 推入原生剧集页")
     }
 
     private var pickerSheet: some View {
@@ -153,6 +163,7 @@ struct BrowserView: View {
 final class WebViewStore: ObservableObject {
     weak var webView: WKWebView?
     @Published var loadError: String?
+    @Published var pageTitle: String?
 
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
@@ -170,6 +181,14 @@ struct WebViewContainer: UIViewRepresentable {
     @ObservedObject var manager: DownloadManager
     @ObservedObject var store: WebViewStore
     @Binding var address: String
+    /// 用户点击剧集链接（路由已在 decidePolicy 取消后回调，每次点击必回调）
+    var onDramaLinkClick: (DramaTarget) -> Void = { _ in }
+    /// URL 变为剧集页（SPA pushState 或提交完成）时回调 (target, undoSPA)
+    var onDramaURLDetected: (DramaTarget, Bool) -> Void = { _, _ in }
+    /// 主浏览页 = true：注册 WebKit 兕底宿主 + 持久化最后访问页；剧集内嵌页 = false
+    var isPrimaryBrowser = true
+    /// 起始加载地址；nil = 主浏览页恢复上次访问页
+    var initialURL: String? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -189,20 +208,27 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         store.webView = webView
-        print("BROWSER: 初始加载 -> \(BrowserView.initialURLString)")
+        let startURLString = initialURL ?? BrowserView.initialURLString
+        print("BROWSER: 初始加载 -> \(startURLString)")
         // SPA 站点用 pushState 换页时不会触发 didCommit：KVO 跟踪主帧 URL，
-        // 地址栏与剧集页检测才能跟上（否则选集面板不会自动弹出）
+        // 地址栏与剧集页路由检测才能跟上
         context.coordinator.urlObservation = webView.observe(\.url, options: [.new]) { [weak coordinator = context.coordinator] view, _ in
             MainActor.assumeIsolated {
                 guard let coordinator else { return }
                 let current = view.url?.absoluteString ?? ""
-                coordinator.parent.address = current
                 print("BROWSER: url -> \(current)")
+                // URL 变成剧集页（SPA pushState 或提交）：回调宿主决策（推原生页/回退列表）
+                if let target = DramaTarget.parse(current) {
+                    coordinator.parent.onDramaURLDetected(target, !view.isLoading)
+                }
+                coordinator.parent.address = current
             }
         }
-        // WebKit 兜底通道优先复用这个真实 webview 发起下载（真机蜂窝网络下唯一可过 WAF 的网络栈）
-        WebKitFetcher.shared.setHostWebView(webView)
-        if let first = URL(string: BrowserView.initialURLString) {
+        // WebKit 兜底通道宿主仅主浏览页注册（剧集内嵌 webview 不抢宿主）
+        if isPrimaryBrowser {
+            WebKitFetcher.shared.setHostWebView(webView)
+        }
+        if let first = URL(string: startURLString) {
             webView.load(URLRequest(url: first))
         }
         return webView
@@ -240,6 +266,13 @@ struct WebViewContainer: UIViewRepresentable {
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.targetFrame?.isMainFrame == true {
                 lastMainURL = navigationAction.request.url
+                // 用户点击剧集链接：路由到原生剧集页，网页本体不加载该页
+                if navigationAction.navigationType == .linkActivated,
+                   let target = DramaTarget.parse(navigationAction.request.url?.absoluteString ?? "") {
+                    parent.onDramaLinkClick(target)
+                    decisionHandler(.cancel)
+                    return
+                }
             }
             decisionHandler(.allow)
         }
@@ -251,9 +284,18 @@ struct WebViewContainer: UIViewRepresentable {
                 parent.store.loadError = nil
                 print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
                 if let current = webView.url?.absoluteString {
-                    UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
+                    if parent.isPrimaryBrowser {
+                        UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
+                    }
                     parent.address = current
                 }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript("document.title") { result, _ in
+                guard let title = result as? String, !title.isEmpty else { return }
+                MainActor.assumeIsolated { self.parent.store.pageTitle = title }
             }
         }
 
@@ -278,7 +320,7 @@ struct WebViewContainer: UIViewRepresentable {
                     return
                 }
                 // 启动恢复的页面首次加载就失败：清掉保存的起始页，下次冷启动不再卡在同一地址
-                if isInitialRestoreLoad {
+                if isInitialRestoreLoad && parent.isPrimaryBrowser {
                     isInitialRestoreLoad = false
                     UserDefaults.standard.removeObject(forKey: BrowserView.lastPageKey)
                     parent.store.loadError = "\(error.localizedDescription)（上次页面无法打开，已重置起始页，请重新访问）"
@@ -360,7 +402,60 @@ struct WebViewContainer: UIViewRepresentable {
     """#
 }
 
-/// 剧集选集面板（浏览页识别到剧集页 URL 时自动弹出的半屏 sheet）：
+/// 原生剧集页：点击剧集路由过来（网页本体不加载剧集页，主页停留不变），
+/// 内嵌 webview 加载剧集页（保留封面/简介/登录态内容），进入即弹选集面板；
+/// 页内再点其它剧集继续推入新的原生剧集页
+struct DramaWebPage: View {
+    let target: DramaTarget
+    @ObservedObject var manager: DownloadManager
+    @StateObject private var store = WebViewStore()
+    @State private var address: String
+    /// 页内再点击其它剧集：继续推入原生剧集页
+    @State private var nestedTarget: DramaTarget?
+    @State private var pickerTarget: DramaTarget?
+
+    init(target: DramaTarget, manager: DownloadManager) {
+        self.target = target
+        self.manager = manager
+        _address = State(initialValue: target.pageURLString)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            WebViewContainer(manager: manager, store: store, address: $address,
+                             onDramaLinkClick: { nestedTarget = $0 },
+                             onDramaURLDetected: { t, undo in
+                                 guard t.id != target.id else { return }
+                                 nestedTarget = t
+                                 if undo, store.webView?.canGoBack == true {
+                                     store.webView?.goBack()
+                                 }
+                             },
+                             isPrimaryBrowser: false,
+                             initialURL: target.pageURLString)
+            HStack {
+                Spacer()
+                Button { pickerTarget = target } label: {
+                    Label("选集", systemImage: "square.grid.2x2")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .navigationTitle(store.pageTitle ?? "剧集页")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $nestedTarget) { nested in
+            DramaWebPage(target: nested, manager: manager)
+        }
+        .sheet(item: $pickerTarget) { t in
+            DramaPickerSheet(target: t, manager: manager)
+        }
+        .onAppear { pickerTarget = target }  // 进入即弹选集面板
+    }
+}
+
+/// 剧集选集面板（原生剧集页进入时自动弹出的半屏 sheet）：
 /// grid 展示全集；已下载的集打绿勾且不可点（文件系统就是账本，开面板时扫剧目录）；
 /// 全选只选未下载的可播集，多选/单选后一次排队下载，落到 Downloads/<剧名>/第NN集/
 struct DramaPickerSheet: View {
