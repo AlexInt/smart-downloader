@@ -2,7 +2,7 @@
 // 用法: ./fetchtest <url> [--browser]
 import Foundation
 
-let urlStr = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "https://www.yeguodj.com/"
+let urlStr = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "https://example.com/"
 let useBrowserHeaders = CommandLine.arguments.contains("--browser")
 
 final class TrustAll: NSObject, URLSessionDelegate {

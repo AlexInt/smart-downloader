@@ -3,7 +3,7 @@ import WebKit
 
 // MARK: - WebKit 网络栈兜底通道
 //
-// 野果 WAF 按客户端 TLS 指纹掐连接：WKWebView(Safari 栈) 能过，URLSession 在部分
+// 部分视频资源站点的 WAF 按客户端 TLS 指纹掐连接：WKWebView(Safari 栈) 能过，URLSession 在部分
 // 真机网络下握手即被 RST，表现为 -1200 "TLS错误导致安全连接失败"。
 // App 浏览页(WKWebView)实测可正常加载站点，故下载请求降级走同一网络栈(WKDownload)。
 //

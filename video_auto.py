@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-野果短剧 (yeguodj.com) 全自动下载器（独立脚本，无需浏览器）
+视频资源站全自动下载器（独立脚本，无需浏览器）
 
 原理: 直接调用站点 play 接口 → AES 解密响应 → 获取含新鲜 auth_key 的 m3u8 → 复用下载核心。
+站点地址从输入的剧集页 URL 自动推导，代码内不硬编码任何站点。
 auth_key 每次调用接口即时生成，无过期问题；登录 token 有效期 30 天。
 
 用法:
-  python3 yeguo_auto.py <剧集页URL>              下载指定集（默认第 1 集）
-  python3 yeguo_auto.py <URL> --all              下载全剧所有可播放集
-  python3 yeguo_auto.py <URL> -o ~/Downloads/tx  指定输出目录
+  python3 video_auto.py <剧集页URL>              下载指定集（默认第 1 集）
+  python3 video_auto.py <URL> --all              下载全部可播放集
+  python3 video_auto.py <URL> -o ~/Downloads/tx  指定输出目录
 
-支持 URL 形式:
-  https://yeguodj.com/drama/video/3445/          第 1 集
-  https://yeguodj.com/drama/video/3445/ep-3/     第 3 集
-  https://yeguodj.com/drama/detail/3445/         第 1 集
+支持剧集页 URL 形式（站点任意）:
+  https://<站点域名>/drama/video/3445/          第 1 集
+  https://<站点域名>/drama/video/3445/ep-3/     第 3 集
+  https://<站点域名>/drama/detail/3445/         第 1 集
 """
 import argparse
 import base64
@@ -28,17 +29,14 @@ from Crypto.Util.Padding import unpad
 
 from core.downloader import M3U8Downloader
 
-SITE = "https://www.yeguodj.com"
 USERNAME = "yeguo110"
 PASSWORD = "yg123456"
 AES_KEY = b"2acf7e91e9864673"
 AES_IV = b"1c29882d3ddfcfd6"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Origin": SITE,
-    "Referer": f"{SITE}/",
-}
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def decrypt_response(data):
@@ -48,23 +46,25 @@ def decrypt_response(data):
     return json.loads(plain)
 
 
-def call_api(path, token, extra):
+def call_api(site, path, token, extra):
     form = {
         "bundleId": "com.pwa.mater", "version": "1.3.2", "oauth_type": "web",
         "language": "zh", "via": "pwa", "oauth_id": "a" * 32, "token": token,
         "trace_id": "a" * 32,
     }
     form.update(extra)
-    resp = requests.post(f"{SITE}/{path}", data=form, headers=HEADERS, timeout=15).json()
+    headers = {"User-Agent": USER_AGENT, "Origin": site, "Referer": f"{site}/"}
+    resp = requests.post(f"{site}/{path}", data=form, headers=headers, timeout=15).json()
     if resp.get("errcode") != 0:
         raise RuntimeError(f"接口 {path} 返回错误: errcode={resp.get('errcode')} {resp.get('msg', '')}")
     return decrypt_response(resp["data"])
 
 
-def login():
+def login(site):
     """登录获取 30 天有效期的 token；失败则降级为游客模式"""
     try:
-        result = call_api("api.php/api/account/login", "", {"username": USERNAME, "password": PASSWORD})
+        result = call_api(site, "api.php/api/account/login", "",
+                          {"username": USERNAME, "password": PASSWORD})
         token = result["data"]["token"]
         print(f"✅ 已登录: {result['data']['nickname']}")
         return token
@@ -73,26 +73,27 @@ def login():
         return ""
 
 
-def fetch_drama(drama_id, token):
+def fetch_drama(site, drama_id, token):
     """调用 play 接口，返回含全集列表的剧集数据"""
-    result = call_api("api.php/api/playlet/play", token,
+    result = call_api(site, "api.php/api/playlet/play", token,
                       {"playlet_id": drama_id, "video_id": drama_id, "episode_id": 0})
     return result["data"]
 
 
 def parse_input_url(url):
-    """从 URL 提取 (剧 ID, 集数序号)；无法识别时返回 (None, None)"""
-    m = re.search(r"/drama/(?:video|detail)/(\d+)(?:/ep-(\d+))?", url)
+    """从 URL 提取 (站点根, 剧 ID, 集数序号)；无法识别时返回 (None, None, None)"""
+    m = re.search(r"^(https?://[^/]+)/drama/(?:video|detail)/(\d+)(?:/ep-(\d+))?", url.strip())
     if not m:
-        return None, None
-    drama_id = int(m.group(1))
-    ep_no = int(m.group(2)) if m.group(2) else 1
-    return drama_id, ep_no
+        return None, None, None
+    site = m.group(1)
+    drama_id = int(m.group(2))
+    ep_no = int(m.group(3)) if m.group(3) else 1
+    return site, drama_id, ep_no
 
 
-def pick_episode(drama_id, token, episode_id):
+def pick_episode(site, drama_id, token, episode_id):
     """按集 ID 取该集信息；每次重新调接口保证 auth_key 新鲜"""
-    data = fetch_drama(drama_id, token)
+    data = fetch_drama(site, drama_id, token)
     for ep in data["episodeAll"]:
         if ep.get("id") == episode_id and not ep.get("is_adv"):
             return data["drama_name"], ep
@@ -100,19 +101,19 @@ def pick_episode(drama_id, token, episode_id):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="野果短剧 (yeguodj.com) 全自动下载器")
+    parser = argparse.ArgumentParser(description="视频资源站全自动下载器")
     parser.add_argument("url", help="剧集页/详情页 URL")
-    parser.add_argument("-all", "--all", action="store_true", help="下载全剧所有可播放集")
+    parser.add_argument("--all", action="store_true", help="下载全部可播放集")
     parser.add_argument("-o", "--output", default=None, help="输出目录 (默认: ~/Downloads/tx)")
     args = parser.parse_args()
 
-    drama_id, ep_no = parse_input_url(args.url)
-    if not drama_id:
-        print(f"❌ 无法识别的 URL: {args.url}")
+    site, drama_id, ep_no = parse_input_url(args.url)
+    if not site:
+        print(f"❌ 无法识别的剧集页 URL: {args.url}")
         sys.exit(1)
 
-    token = login()
-    data = fetch_drama(drama_id, token)
+    token = login(site)
+    data = fetch_drama(site, drama_id, token)
     drama_name = data["drama_name"]
     episodes = sorted([e for e in data["episodeAll"] if not e.get("is_adv")], key=lambda e: e["sort"])
     total = len(episodes)
@@ -147,7 +148,7 @@ def main():
     done, failed = [], []
     for i, ep in enumerate(playable, 1):
         # 每集重新调接口，确保 auth_key 新鲜
-        _, fresh = pick_episode(drama_id, token, ep["id"])
+        _, fresh = pick_episode(site, drama_id, token, ep["id"])
         if not fresh:
             failed.append((ep["sort"], "接口未返回该集信息"))
             continue

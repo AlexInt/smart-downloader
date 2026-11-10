@@ -1,6 +1,6 @@
 # Smart Downloader iOS
 
-iPhone App（最低 iOS 26）：内嵌浏览器打开野果短剧网页，自动嗅探 m3u8，一键下载到沙盒，下载列表点击即播。
+iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动嗅探 m3u8，一键下载到沙盒，下载列表点击即播。
 
 ## 一、真机跑通步骤（开发手机）
 
@@ -13,7 +13,7 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开野果短剧网页，自动
 
 ## 二、使用方法
 
-1. 「浏览」页默认打开野果短剧；在网页里正常登录、点开剧集播放
+1. 「浏览」页自动恢复上次访问的页面（首次为空白起始页，地址栏输入视频资源站点即可）；在网页里正常登录、点开剧集播放
 2. 播放后底部「**下载视频 (n)**」按钮亮起（嗅探到的 m3u8 实时累积；多个时可点击选择）
 3. 点击开始下载 → 切到「下载」页看进度（6 并发）
 4. 点击已完成条目**直接播放**；左滑删除（同时删除沙盒文件）
@@ -23,7 +23,7 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开野果短剧网页，自动
 
 ```
 「浏览」页
-  WKWebView 加载野果 (cookie 共享, 登录态/付费内容自动解锁)
+  WKWebView 加载视频资源站点 (cookie 共享, 登录态/付费内容自动解锁)
   └ 注入嗅探 JS (atDocumentStart): Hook XHR/fetch + performance 历史 + video/source DOM 扫描
       → window.webkit.messageHandlers 回传 m3u8 → 按钮激活
 「下载」DownloadEngine (Swift 版 M3U8Downloader)
@@ -43,7 +43,7 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开野果短剧网页，自动
 - 无断点续传、无取消按钮
 - 不导出单文件 MP4（TS→MP4 重封装需要 ffmpeg；如需 AirDrop 单文件，后续再加）
 - 签名 URL 有时效：嗅探到后尽快点下载
-- **WAF TLS 指纹拦截（已自动兜底）**：野果 WAF 按客户端 TLS 握手特征掐非浏览器连接，URLSession 在部分真机网络下握手即被 RST（报 `-1200` TLS错误导致安全连接失败；Mac 上四种客户端实测 URLSession 过、Python/curl 被掐，真机则 URLSession 也被掐）。App 内置 WebKitFetcher 兜底：连接层错误时自动改走 WKDownload（与浏览页同源的 Safari TLS 栈，已被实测证明可过 WAF），成功后进程内 sticky 不再回头。失败信息会附带视频源域名便于定位。
+- **WAF TLS 指纹拦截（已自动兜底）**：部分视频资源站点的 WAF 按客户端 TLS 握手特征掐非浏览器连接，URLSession 在部分真机网络下握手即被 RST（报 `-1200` TLS错误导致安全连接失败）。App 内置 WebKitFetcher 兜底：连接层错误时自动改走 WKDownload（与浏览页同源的 Safari TLS 栈，已被实测证明可过 WAF），成功后进程内 sticky 不再回头。失败信息会附带视频源域名便于定位。
 - 安全按「个人使用」标准：信任所有证书 + ATS 全放行（用户已确认此取舍）
 
 ## 五、冒烟测试（Mac 上验证核心，不需手机）
@@ -64,14 +64,14 @@ SMARTDOWNLOADER_DIR="$PWD/out" ./playtest out/smoke_test
 
 # 3. 站点连通诊断: 用 App 同款 URLSession 栈测任意 URL（--browser 加 Safari 头）
 swiftc -O -o fetchtest fetchtest.swift
-./fetchtest "https://www.yeguodj.com/" --browser
+./fetchtest "<任意URL>" --browser
 
-# 4. 真实剧集端到端: 用 App 同款栈调站点接口取新鲜 m3u8, 再交给 coretest 下载
-swiftc -O -o yeguocli yeguocli.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
-./yeguocli 3445    # 输出 M3U8: <url>
+# 4. 真实剧集端到端: 用 App 同款栈调站点接口取新鲜 m3u8(站点地址从剧集页 URL 解析), 再交给 coretest 下载
+swiftc -O -o videocli videocli.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
+./videocli "<剧集页URL>"    # 输出 M3U8: <url>
 SMARTDOWNLOADER_DIR="$PWD/out" ./coretest "<该url>" ep1
 
-# 5. App 嗅探链路(可选): 临时把 BrowserView.initialURLString 改为 http://127.0.0.1:8899/test.html,
+# 5. App 嗅探链路(可选): 临时把 BrowserView 默认起始页(about:blank)改为 http://127.0.0.1:8899/test.html,
 #    运行 `python3 -m http.server 8899` 后在模拟器跑 App, 按钮应亮起「下载视频 (1)」
 ```
 
@@ -86,6 +86,7 @@ SMARTDOWNLOADER_DIR="$PWD/out" ./coretest "<该url>" ep1
 | `SmartDownloader/LocalMediaServer.swift` | 回环 HTTP 服务（Range 支持，仅 127.0.0.1） |
 | `SmartDownloader/DownloadsView.swift` | 下载列表 + AVKit 播放页 |
 | `SmartDownloader/Info.plist` | ATS 放行 / 文件共享 / 横竖屏 |
-| `smoke/` | 冒烟测试工具（coretest / playtest / yeguocli / fetchtest，仅 macOS） |
+| `SmartDownloader/Media.xcassets` | 资源目录（App Icon，sd.png 1024x1024） |
+| `smoke/` | 冒烟测试工具（coretest / playtest / videocli / fetchtest，仅 macOS） |
 
 工程文件为 Xcode 26 新格式（文件夹同步组），无需 xcodegen，添加新 Swift 文件直接放进 `SmartDownloader/` 即自动参与编译。

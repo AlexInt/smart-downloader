@@ -250,7 +250,7 @@ final class DownloadEngine {
 
     // MARK: 网络会话（个人使用：信任所有证书，允许自签名/过期证书站点）
 
-    /// 野果 WAF 会拦截非浏览器请求：默认 URLSession 头会被 RST 并报成
+    /// 部分视频资源站点的 WAF 会拦截非浏览器请求：默认 URLSession 头会被 RST 并报成
     /// “A TLS error caused the secure connection to fail.”（-1200）。
     /// 实测同一 TLS 栈换浏览器请求头即可通过，所有请求统一伪装成 Safari。
     static let browserHeaders: [(String, String)] = [

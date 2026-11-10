@@ -1,14 +1,18 @@
 import SwiftUI
 import WebKit
 
-/// 浏览页：WKWebView 加载野果网页 + 注入 m3u8 嗅探脚本 + 一键下载按钮
+/// 浏览页：WKWebView 加载视频资源网页 + 注入 m3u8 嗅探脚本 + 一键下载按钮
 struct BrowserView: View {
-    /// 冒烟测试时临时改为 "http://127.0.0.1:8899/test.html"（见 iOS/smoke/ 目录）
-    static let initialURLString = "https://www.yeguodj.com/"
+    /// 站点地址不写入代码：记住上次访问页面，启动时直接恢复
+    static let lastPageKey = "BrowserView.lastPageURL"
+    /// 冒烟测试时临时把默认起始页改为 "http://127.0.0.1:8899/test.html"（见 iOS/smoke/ 目录）
+    static var initialURLString: String {
+        UserDefaults.standard.string(forKey: lastPageKey) ?? "about:blank"
+    }
 
     @ObservedObject var manager: DownloadManager
     @StateObject private var store = WebViewStore()
-    @State private var address = BrowserView.initialURLString
+    @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
     @State private var showPicker = false
 
     var body: some View {
@@ -173,6 +177,7 @@ struct WebViewContainer: UIViewRepresentable {
                 provisionalRetries = 0
                 parent.store.loadError = nil
                 if let current = webView.url?.absoluteString {
+                    UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
                     parent.address = current
                 }
             }
