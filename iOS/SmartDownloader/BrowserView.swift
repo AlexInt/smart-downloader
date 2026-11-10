@@ -108,9 +108,16 @@ struct BrowserView: View {
 
     /// 识别到剧集页 URL（https://<站点>/drama/(video|detail)/<ID>…）自动弹出半屏选集面板
     private func autoDetectDrama(_ urlString: String) {
-        guard let target = DramaTarget.parse(urlString), lastAutoDramaKey != target.id else { return }
+        guard let target = DramaTarget.parse(urlString) else {
+            // 离开剧集页后清除去重标记：再次进入同一部剧会重新弹出
+            lastAutoDramaKey = nil
+            return
+        }
+        // 同一部剧内点集/刷新不重复弹；离开再进会重新弹
+        guard lastAutoDramaKey != target.id else { return }
         lastAutoDramaKey = target.id
         dramaTarget = target
+        print("BROWSER: 检测到剧集页 -> \(target.id) 弹选集面板")
     }
 
     private var pickerSheet: some View {
@@ -182,6 +189,17 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         store.webView = webView
+        print("BROWSER: 初始加载 -> \(BrowserView.initialURLString)")
+        // SPA 站点用 pushState 换页时不会触发 didCommit：KVO 跟踪主帧 URL，
+        // 地址栏与剧集页检测才能跟上（否则选集面板不会自动弹出）
+        context.coordinator.urlObservation = webView.observe(\.url, options: [.new]) { [weak coordinator = context.coordinator] view, _ in
+            MainActor.assumeIsolated {
+                guard let coordinator else { return }
+                let current = view.url?.absoluteString ?? ""
+                coordinator.parent.address = current
+                print("BROWSER: url -> \(current)")
+            }
+        }
         // WebKit 兜底通道优先复用这个真实 webview 发起下载（真机蜂窝网络下唯一可过 WAF 的网络栈）
         WebKitFetcher.shared.setHostWebView(webView)
         if let first = URL(string: BrowserView.initialURLString) {
@@ -200,6 +218,10 @@ struct WebViewContainer: UIViewRepresentable {
         var parent: WebViewContainer
         private var lastMainURL: URL?
         private var provisionalRetries = 0
+        /// 主帧 URL KVO（SPA pushState 换页不触发 didCommit，靠它同步地址栏/剧集页检测）
+        var urlObservation: NSKeyValueObservation?
+        /// 启动时恢复的“上次页面”尚未成功 commit 过；首次加载失败则重置起始页，避免冷启动反复卡在同一坏地址
+        private var isInitialRestoreLoad = true
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         // JS -> 原生：嗅探到 m3u8（消息回调固定在主线程）
@@ -225,7 +247,9 @@ struct WebViewContainer: UIViewRepresentable {
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             MainActor.assumeIsolated {
                 provisionalRetries = 0
+                isInitialRestoreLoad = false
                 parent.store.loadError = nil
+                print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
                 if let current = webView.url?.absoluteString {
                     UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
                     parent.address = current
@@ -253,13 +277,23 @@ struct WebViewContainer: UIViewRepresentable {
                     }
                     return
                 }
+                // 启动恢复的页面首次加载就失败：清掉保存的起始页，下次冷启动不再卡在同一地址
+                if isInitialRestoreLoad {
+                    isInitialRestoreLoad = false
+                    UserDefaults.standard.removeObject(forKey: BrowserView.lastPageKey)
+                    parent.store.loadError = "\(error.localizedDescription)（上次页面无法打开，已重置起始页，请重新访问）"
+                    print("BROWSER: 初始恢复页加载失败，已重置保存的起始页")
+                    return
+                }
                 parent.store.loadError = error.localizedDescription
+                print("BROWSER: 加载失败 code=\((error as NSError).code) url=\(lastMainURL?.absoluteString ?? "?") msg=\(error.localizedDescription)")
             }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             MainActor.assumeIsolated {
                 parent.store.loadError = error.localizedDescription
+                print("BROWSER: 加载失败(后段) code=\((error as NSError).code) url=\(webView.url?.absoluteString ?? "?") msg=\(error.localizedDescription)")
             }
         }
     }

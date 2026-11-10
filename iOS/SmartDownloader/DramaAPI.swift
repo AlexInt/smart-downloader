@@ -126,10 +126,17 @@ final class DramaSession {
     // MARK: 协议实现（与 videocli.swift 同逻辑）
 
     private func login(_ constants: Constants) async throws -> String {
+        // token 30 天有效：按站点缓存，避免每次开面板都打登录接口（站点 WAF 对高频登录敏感）
+        let tokenKey = "DramaAPI.token.\(target.site)"
+        if let cached = UserDefaults.standard.string(forKey: tokenKey), !cached.isEmpty {
+            print("DRAMA: 使用缓存 token")
+            return cached
+        }
         let response = try await apiPost(path: "api/account/login", token: "",
                                          extra: ["username": constants.username, "password": constants.password],
                                          constants: constants)
         if let data = response["data"] as? [String: Any], let t = data["token"] as? String {
+            UserDefaults.standard.set(t, forKey: tokenKey)
             print("DRAMA: 登录成功")
             return t
         }
@@ -181,6 +188,8 @@ final class DramaSession {
         guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               (envelope["errcode"] as? Int) == 0 else {
             let snippet = String(data: data, encoding: .utf8)?.prefix(160) ?? ""
+            // 接口错误（含 token 失效）：清缓存，下次开面板重新登录
+            UserDefaults.standard.removeObject(forKey: "DramaAPI.token.\(target.site)")
             throw DramaError.apiError(String(snippet))
         }
         guard let payload = envelope["data"] as? String else { throw DramaError.badResponse }
