@@ -193,17 +193,22 @@ final class DownloadManager: ObservableObject {
     /// 剧目录下含 playlist.m3u8 的子目录算已下载，集号从目录名（第NN集[ (n) ]）解析；
     /// 残缺目录（无 playlist.m3u8，下载中断产物）不算已下载，可重下。
     func downloadedEpisodeSorts(forSeries rawSeriesName: String) -> Set<Int> {
+        Set(downloadedEpisodeFolders(forSeries: rawSeriesName).keys)
+    }
+
+    /// 剧目录下 已下载集号 -> 集目录名（含防覆盖后缀），供缓存对账与播放定位
+    func downloadedEpisodeFolders(forSeries rawSeriesName: String) -> [Int: String] {
         let fm = FileManager.default
         let seriesDir = DownloadEngine.seriesDirectory(for: rawSeriesName)
-        guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return [] }
-        var sorts = Set<Int>()
+        guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return [:] }
+        var map: [Int: String] = [:]
         for sub in subs {
             guard fm.fileExists(atPath: sub.appendingPathComponent("playlist.m3u8").path) else { continue }
             if let sort = Self.episodeSort(fromFolderName: sub.lastPathComponent) {
-                sorts.insert(sort)
+                map[sort] = sub.lastPathComponent
             }
         }
-        return sorts
+        return map
     }
 
     /// 旧版散装下载收编：把顶层「标题含剧名+第N集」的旧文件夹搬进 Downloads/<剧名>/第NN集/。

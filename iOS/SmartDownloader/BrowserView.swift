@@ -544,10 +544,17 @@ struct DramaWebPage: View {
             if let ot = meta["ogTitle"] as? String, !ot.isEmpty {
                 update["og_title"] = ot
             }
-            // 本地落盘（JSON 文件，原生可直接读；Finder 文件共享可拷出）
-            DramaMetaStore.save(update, for: target)
+            // 并入本地缓存数据库（cover/intro 列 + page_meta）
+            DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
         }
-        .onAppear { pickerTarget = target }  // 进入即弹选集面板
+        .onAppear {
+            pickerTarget = target  // 进入即弹选集面板
+            // 缓存里已有的封面/简介先上头部（无网络也能显示）
+            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
+                if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
+                if let intro = entry.intro, !intro.isEmpty { self.intro = intro }
+            }
+        }
     }
 }
 
@@ -566,6 +573,8 @@ struct DramaPickerSheet: View {
     @State private var downloadedSorts: Set<Int> = []
     @State private var selected: Set<Int> = []
     @State private var playerItem: PlayerItem?
+    /// 当前列表是否来自本地缓存（缓存优先，右上角刷新强制更新）
+    @State private var fromCache = false
     @State private var reloadID = UUID()
 
     /// 未下载且可播放的集
@@ -611,25 +620,51 @@ struct DramaPickerSheet: View {
         loading = true
         loadError = nil
         selected = []
+        // 缓存优先：同一剧集第二次打开直接读本地，不发网络请求（刷新按钮强制更新）
+        if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
+           let info = DramaInfo(entry: entry) {
+            self.info = info
+            fromCache = true
+            await applyLibraryState(for: info, target: target)
+            loading = false
+            return
+        }
+        await fetchAndCache()
+    }
+
+    /// 强制走网络拉取并落库（刷新按钮）
+    private func fetchAndCache() async {
+        loading = true
+        loadError = nil
         let session = DramaSession(target: target)
         self.session = session
         do {
             let info = try await session.fetchInfo()
             self.info = info
-            // 先收编旧版散装下载（只搬不删），再算已下载集，两者都能打勾
-            manager.collectLegacyEpisodes(forSeries: info.name)
-            manager.refreshLibrary()
-            downloadedSorts = manager.downloadedEpisodeSorts(forSeries: info.name)
-            // 接口侧元数据并入本地 meta 文件（DOM/接口双源）
-            DramaMetaStore.save(["api_drama_name": info.name,
-                                 "api_update_status": info.updateStatus ?? "",
-                                 "api_episode_count": info.episodes.count,
-                                 "api_playable_count": info.episodes.filter(\.playable).count],
-                                for: target)
+            fromCache = false
+            DramaCache.saveInfo(site: target.site, dramaID: target.dramaID, info: info)
+            await applyLibraryState(for: info, target: target)
         } catch {
-            loadError = error.localizedDescription
+            // 有缓存时网络失败不白屏：回退缓存继续用
+            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
+               let info = DramaInfo(entry: entry) {
+                self.info = info
+                fromCache = true
+                await applyLibraryState(for: info, target: target)
+            } else {
+                loadError = error.localizedDescription
+            }
         }
         loading = false
+    }
+
+    private func applyLibraryState(for info: DramaInfo, target: DramaTarget) async {
+        // 先收编旧版散装下载（只搬不删），再算已下载集（磁盘为账本），并对账写回缓存
+        manager.collectLegacyEpisodes(forSeries: info.name)
+        manager.refreshLibrary()
+        let folders = manager.downloadedEpisodeFolders(forSeries: info.name)
+        downloadedSorts = Set(folders.keys)
+        DramaCache.reconcileDownloaded(site: target.site, dramaID: target.dramaID, folders: folders)
     }
 
     private func pickerGrid(_ info: DramaInfo) -> some View {
@@ -647,6 +682,12 @@ struct DramaPickerSheet: View {
                 Button("清空") { selected.removeAll() }
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(selected.isEmpty)
+                Button {
+                    Task { await fetchAndCache() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
             }
             .padding(.horizontal)
 
@@ -678,7 +719,7 @@ struct DramaPickerSheet: View {
     }
 
     private func headerSubtitle(_ info: DramaInfo) -> String {
-        let base = "共 \(info.episodes.count) 集 · 可下载 \(selectableEpisodes.count) 集"
+        let base = "\(fromCache ? "本地缓存 · " : "")共 \(info.episodes.count) 集 · 可下载 \(selectableEpisodes.count) 集"
         return downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
     }
 
@@ -762,7 +803,9 @@ struct DramaPickerSheet: View {
     }
 
     private func startDownload(_ info: DramaInfo) {
-        guard let session else { return }
+        // 缓存路径打开的面板没有 session：现建一个（每集下载前仍会重调接口取新鲜直链）
+        let session = self.session ?? DramaSession(target: target)
+        self.session = session
         let chosen = info.episodes
             .filter { selected.contains($0.id) && $0.playable && !downloadedSorts.contains($0.sort) }
             .sorted { $0.sort < $1.sort }

@@ -50,6 +50,38 @@ func runLibraryCheck() {
     print("LIBRARY: 收编后 series_eps=\(series2.map(\.title).sorted()) downloaded=\(downloaded2)")
     let ok2 = series2.count == 3 && downloaded2 == [1, 2, 3]
     print(ok2 ? "RESULT: DONE" : "RESULT: FAILED (期望收编后 series=3 sorts=[1,2,3])")
+
+    // 剧集缓存 DB: 存 → 读 round-trip + 下载状态对账 + 集数更新合并
+    var ok3 = true
+    let cacheInfo = DramaInfo(name: "缓存测试剧", updateStatus: "更新中",
+                              episodes: [DramaEpisode(id: 11, sort: 1, playable: true),
+                                         DramaEpisode(id: 12, sort: 2, playable: false)])
+    DramaCache.saveInfo(site: "https://smoke.test", dramaID: "999", info: cacheInfo)
+    DramaCache.savePageMeta(site: "https://smoke.test", dramaID: "999",
+                            update: ["ogImage": "https://smoke.test/cover.jpg", "desc": "简介文本"])
+    DramaCache.markDownloaded(site: "https://smoke.test", dramaID: "999", episodeID: 11, folder: "第01集")
+    DramaCache.reconcileDownloaded(site: "https://smoke.test", dramaID: "999", folders: [1: "第01集"])
+    if let entry = DramaCache.load(site: "https://smoke.test", dramaID: "999") {
+        let ep11 = entry.episodes.first { $0.id == 11 }
+        let ep12 = entry.episodes.first { $0.id == 12 }
+        print("CACHE: eps=\(entry.episodes.count) cover=\(entry.cover ?? "?") ep11.downloaded=\(ep11?.downloaded ?? false) folder=\(ep11?.folder ?? "?") ep12.downloaded=\(ep12?.downloaded ?? false)")
+        ok3 = entry.episodes.count == 2 && ep11?.downloaded == true && ep11?.folder == "第01集"
+            && ep12?.downloaded == false && entry.cover == "https://smoke.test/cover.jpg"
+    } else { ok3 = false }
+
+    // 集数更新：网络刷新返回 3 集（新增 id 13）→ 合并且已下载标记保留、更新状态刷新
+    let fresh = DramaInfo(name: "缓存测试剧", updateStatus: "完结",
+                          episodes: cacheInfo.episodes + [DramaEpisode(id: 13, sort: 3, playable: true)])
+    DramaCache.saveInfo(site: "https://smoke.test", dramaID: "999", info: fresh)
+    DramaCache.reconcileDownloaded(site: "https://smoke.test", dramaID: "999", folders: [1: "第01集"])
+    if let entry = DramaCache.load(site: "https://smoke.test", dramaID: "999") {
+        let ep11 = entry.episodes.first { $0.id == 11 }
+        let ep13 = entry.episodes.first { $0.id == 13 }
+        print("CACHE: 更新后 eps=\(entry.episodes.count) ep11.downloaded=\(ep11?.downloaded ?? false) ep13=\(ep13?.playable ?? false) status=\(entry.updateStatus ?? "?")")
+        ok3 = ok3 && entry.episodes.count == 3 && ep11?.downloaded == true
+            && ep13?.downloaded == false && entry.updateStatus == "完结"
+    } else { ok3 = false }
+    print(ok3 ? "RESULT: DONE" : "RESULT: FAILED (缓存 round-trip 失败)")
     finished = true
 }
 

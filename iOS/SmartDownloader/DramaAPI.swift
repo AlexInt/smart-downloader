@@ -33,10 +33,13 @@ struct DramaTarget: Identifiable, Hashable {
     }
 }
 
-struct DramaEpisode: Identifiable, Equatable {
+struct DramaEpisode: Identifiable, Equatable, Codable {
     let id: Int
     let sort: Int
     let playable: Bool
+    /// 下载状态与落盘目录名（磁盘对账/下载完成回调写入缓存）
+    var downloaded: Bool = false
+    var folder: String? = nil
 }
 
 struct DramaInfo: Equatable {
@@ -69,8 +72,9 @@ final class DramaSession {
         let constants = try self.constants()
         token = (try? await login(constants)) ?? ""
         let data = try await fetchDramaData(constants)
-        // 调查期间临时无条件开启（NSLog 系统日志，不影响功能）；调查结束后恢复参数门控
-        Self.dumpMeta(data)
+        if ProcessInfo.processInfo.arguments.contains("dumpDramaMeta") {
+            Self.dumpMeta(data)
+        }
         guard let name = data["drama_name"] as? String,
               let episodeAll = data["episodeAll"] as? [[String: Any]] else {
             throw DramaError.badResponse
@@ -329,7 +333,17 @@ final class SeriesDownloadCoordinator {
                         return
                     }
                     task.url = url
-                    manager.run(task) { [weak self] in self?.finishOne() }
+                    manager.run(task) { [weak self] in
+                        // 下载完成：该集"已下载 + 落盘目录名"记入缓存
+                        if task.state == .done, let self,
+                           let folder = task.outputURL?.deletingLastPathComponent().lastPathComponent {
+                            DramaCache.markDownloaded(site: self.session.target.site,
+                                                      dramaID: self.session.target.dramaID,
+                                                      episodeID: plan.episode.id,
+                                                      folder: folder)
+                        }
+                        self?.finishOne()
+                    }
                 } catch {
                     task.state = .failed("获取第\(plan.episode.sort)集地址失败: \(error.localizedDescription)")
                     finishOne()
@@ -344,34 +358,6 @@ final class SeriesDownloadCoordinator {
             Self.active.removeAll { $0 === self }
         } else {
             pump()
-        }
-    }
-}
-
-// MARK: - 剧集元数据本地落存
-//
-// DOM/接口双源提取的短剧元数据按剧存一份 JSON（Documents/DramaMeta/<剧ID>.json），
-// 原生剧集页头部直接读它展示封面/简介；Finder 文件共享可拷出查看。
-// 不引入数据库：数据量小、按剧一文件、无查询需求。
-enum DramaMetaStore {
-    static func fileURL(for target: DramaTarget) -> URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DramaMeta", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("\(target.dramaID).json")
-    }
-
-    /// 合并写入（DOM 与接口各自写入，双源字段共存）
-    static func save(_ update: [String: Any], for target: DramaTarget) {
-        let url = fileURL(for: target)
-        var merged = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any] ?? [:]
-        for (key, value) in update { merged[key] = value }
-        merged["site"] = target.site
-        merged["drama_id"] = target.dramaID
-        merged["updated_at"] = ISO8601DateFormatter().string(from: Date())
-        if let data = try? JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: url)
-            print("DRAMAMETA 已写入 \(url.lastPathComponent)（\(data.count) 字节）")
         }
     }
 }
