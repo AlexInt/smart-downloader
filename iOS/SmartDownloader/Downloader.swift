@@ -21,9 +21,11 @@ enum DownloadError: LocalizedError {
     case missingKey
     case decryptFailed(Int32)
     case shortSegment(Int, Int)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
+        case .cancelled: return "已手动删除"
         case .badStatus(let code): return "HTTP 状态码 \(code)"
         case .notMediaPlaylist: return "不是有效的 m3u8 媒体播放列表"
         case .emptySegments: return "播放列表中没有切片"
@@ -40,6 +42,8 @@ final class DownloadTask: ObservableObject, Identifiable {
     @Published var title: String
     /// 所属剧名（选集下载时非空；nil = 散装单条目）。落盘到 Downloads/<剧名>/<集>/
     let seriesName: String?
+    /// 用户删除进行中任务时置位，引擎在切片间隙/保存前检查，避免删了还继续落盘产生幽灵文件
+    var isCancelled = false
     @Published var state: TaskState = .waiting
     @Published var current = 0
     @Published var total = 0
@@ -127,6 +131,7 @@ final class DownloadManager: ObservableObject {
     func delete(at offsets: IndexSet) {
         for index in offsets {
             let task = tasks[index]
+            if task.state != .done { task.isCancelled = true }
             if let url = task.outputURL {
                 // HLS 条目删除整个文件夹，文件条目删除文件
                 let target = task.isHLSFolder ? url.deletingLastPathComponent() : url
@@ -146,13 +151,40 @@ final class DownloadManager: ObservableObject {
 
     /// 删除整部剧：移除其全部任务条目与剧目录（剧详情页用户主动触发）
     func deleteSeries(_ seriesName: String) {
-        let dirs = Set(tasks.filter { $0.seriesName == seriesName }.compactMap { task -> URL? in
+        let members = tasks.filter { $0.seriesName == seriesName }
+        for task in members where task.state != .done { task.isCancelled = true }
+        let dirs = Set(members.compactMap { task -> URL? in
             guard let playlist = task.outputURL else { return nil }
             // playlist 位于 .../<剧名>/<集>/playlist.m3u8
             return playlist.deletingLastPathComponent().deletingLastPathComponent()
         })
         for dir in dirs { try? FileManager.default.removeItem(at: dir) }
         tasks.removeAll { $0.seriesName == seriesName }
+    }
+
+    /// 编辑模式批量删除：按 id 删任务与文件；进行中任务置 isCancelled 通知引擎中止；
+    /// 随后清掉已无内容的剧目录壳（只剩空目录/残缺临时物）
+    func deleteTasks(ids: Set<UUID>) {
+        let targets = tasks.filter { ids.contains($0.id) }
+        for task in targets {
+            if task.state != .done { task.isCancelled = true }
+            if let url = task.outputURL {
+                let target = task.isHLSFolder ? url.deletingLastPathComponent() : url
+                try? FileManager.default.removeItem(at: target)
+            }
+        }
+        let affectedSeries = Set(targets.compactMap(\.seriesName))
+        tasks.removeAll { ids.contains($0.id) }
+        let fm = FileManager.default
+        for series in affectedSeries {
+            let dir = DownloadEngine.seriesDirectory(for: series)
+            let remaining = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            let hasContent = remaining.contains {
+                fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path)
+                    || ["mp4", "m4v", "mov"].contains($0.pathExtension.lowercased())
+            }
+            if !hasContent { try? fm.removeItem(at: dir) }
+        }
     }
 
     /// 选集面板「已下载」检测：文件系统就是账本（不引入数据库）。
@@ -346,6 +378,7 @@ final class DownloadEngine {
             let segments = playlist.segments
             var finished = 0
             while finished < segments.count {
+                if task.isCancelled { throw DownloadError.cancelled }
                 let end = min(finished + Self.maxConcurrency, segments.count)
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     for index in finished..<end {
@@ -363,6 +396,7 @@ final class DownloadEngine {
             }
 
             // ---- 保存为本地 HLS 文件夹 ----
+            if task.isCancelled { throw DownloadError.cancelled }
             await setTask(task) { $0.state = .saving }
             let isTS = Self.isTSStream(tempDir: tempDir, hasInit: initData != nil)
 

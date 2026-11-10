@@ -12,6 +12,9 @@ struct PlayerItem: Identifiable {
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
     @State private var playerItem: PlayerItem?
+    /// 编辑模式：点行勾选（剧行勾选整剧），底部栏全选/批量删除
+    @State private var selectionMode = false
+    @State private var selected = Set<UUID>()
 
     /// 未完成任务（等待/解析/下载中/失败）
     private var activeTasks: [DownloadTask] { manager.tasks.filter { $0.state != .done } }
@@ -40,18 +43,24 @@ struct DownloadsView: View {
                         if !activeTasks.isEmpty {
                             Section("正在下载") {
                                 ForEach(activeTasks) { task in
-                                    TaskRow(task: task)
+                                    sectionRow(task: task)
                                 }
                                 .onDelete { manager.delete(at: globalOffsets($0, in: activeTasks)) }
                             }
                         }
                         if !seriesGroups.isEmpty {
                             Section("剧集") {
-                                ForEach(seriesGroups, id: \.name) { group in
-                                    NavigationLink {
-                                        SeriesDetailView(manager: manager, seriesName: group.name)
-                                    } label: {
-                                        seriesRow(group)
+                                if selectionMode {
+                                    ForEach(seriesGroups, id: \.name) { group in
+                                        seriesSelectionRow(group)
+                                    }
+                                } else {
+                                    ForEach(seriesGroups, id: \.name) { group in
+                                        NavigationLink {
+                                            SeriesDetailView(manager: manager, seriesName: group.name)
+                                        } label: {
+                                            seriesRow(group)
+                                        }
                                     }
                                 }
                             }
@@ -59,9 +68,7 @@ struct DownloadsView: View {
                         if !standaloneItems.isEmpty {
                             Section("已下载") {
                                 ForEach(standaloneItems) { task in
-                                    TaskRow(task: task)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture { playIfDone(task) }
+                                    sectionRow(task: task)
                                 }
                                 .onDelete { manager.delete(at: globalOffsets($0, in: standaloneItems)) }
                             }
@@ -72,6 +79,33 @@ struct DownloadsView: View {
             }
             .navigationTitle("下载")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if !manager.tasks.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(selectionMode ? "完成" : "编辑") {
+                            if selectionMode { selected.removeAll() }
+                            selectionMode.toggle()
+                        }
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if selectionMode {
+                    HStack {
+                        Button(allSelected ? "全不选" : "全选") { toggleSelectAll() }
+                            .buttonStyle(.bordered)
+                        Spacer()
+                        Button("删除所选 (\(selected.count))", role: .destructive) {
+                            deleteSelected()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selected.isEmpty)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+                }
+            }
         }
         .sheet(item: $playerItem) { item in
             PlayerView(item: item)
@@ -100,6 +134,57 @@ struct DownloadsView: View {
         IndexSet(offsets.compactMap { offset in
             manager.tasks.firstIndex { $0.id == subset[offset].id }
         })
+    }
+
+    private var allSelected: Bool {
+        !manager.tasks.isEmpty && selected.count == manager.tasks.count
+    }
+
+    private func toggleSelectAll() {
+        if allSelected { selected.removeAll() } else { selected = Set(manager.tasks.map(\.id)) }
+    }
+
+    private func deleteSelected() {
+        manager.deleteTasks(ids: selected)
+        selected.removeAll()
+        if manager.tasks.isEmpty { selectionMode = false }
+    }
+
+    private func toggleSelection(_ id: UUID) {
+        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+    }
+
+    /// 编辑模式下整行点击=勾选；普通模式点击=播放
+    @ViewBuilder
+    private func sectionRow(task: DownloadTask) -> some View {
+        if selectionMode {
+            HStack(spacing: 12) {
+                Image(systemName: selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(selected.contains(task.id) ? .blue : .secondary)
+                TaskRow(task: task)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggleSelection(task.id) }
+        } else {
+            TaskRow(task: task)
+                .contentShape(Rectangle())
+                .onTapGesture { playIfDone(task) }
+        }
+    }
+
+    /// 编辑模式下剧行点击=勾选整剧（该剧全部已下载集）
+    private func seriesSelectionRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
+        let ids = Set(group.episodes.map(\.id))
+        let allIn = ids.isSubset(of: selected)
+        return HStack(spacing: 12) {
+            Image(systemName: allIn ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(allIn ? .blue : .secondary)
+            seriesRow(group)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if allIn { selected.subtract(ids) } else { selected.formUnion(ids) }
+        }
     }
 }
 
