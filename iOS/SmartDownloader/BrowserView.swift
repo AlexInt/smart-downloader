@@ -172,6 +172,8 @@ final class WebViewStore: ObservableObject {
     weak var webView: WKWebView?
     @Published var loadError: String?
     @Published var pageTitle: String?
+    /// 页面元数据提取结果（JSON 字符串，原生解析后展示/落盘）
+    @Published var pageMetaJSON: String?
 
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
@@ -305,6 +307,48 @@ struct WebViewContainer: UIViewRepresentable {
                 guard let title = result as? String, !title.isEmpty else { return }
                 MainActor.assumeIsolated { self.parent.store.pageTitle = title }
             }
+            // 调查：提取页面元数据（og:image/标题/简介/图片列表），立即 + 3秒后（SPA 渲染滞后）各一次
+            extractMeta(webView, delay: 0)
+            extractMeta(webView, delay: 3)
+        }
+
+        /// 调查用：从 DOM 提取短剧元数据，写入 store（页面头部展示 + DramaMeta 落盘）并写系统日志
+        func extractMeta(_ webView: WKWebView, delay: Double) {
+            Task { [weak self] in
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                let js = """
+                (function(){
+                  var q = function(sel){ var el = document.querySelector(sel); return el ? (el.content || el.src || el.getAttribute('content') || '') : ''; };
+                  var imgs = [];
+                  var nodes = document.querySelectorAll('img');
+                  for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
+                  return JSON.stringify({
+                    url: location.href,
+                    title: document.title || '',
+                    ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
+                    ogTitle: q('meta[property="og:title"]'),
+                    desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
+                    imgs: imgs,
+                    text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
+                  });
+                })()
+                """
+                guard let self,
+                      let result = try? await webView.evaluateJavaScript(js) as? String,
+                      let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else { return }
+                self.parent.store.pageMetaJSON = result
+                NSLog("DRAMAMETA-DOM ===== BEGIN =====")
+                for key in d.keys.sorted() {
+                    if let arr = d[key] as? [Any] {
+                        NSLog("DRAMAMETA-DOM \(key) list len=\(arr.count): \(String(describing: arr.prefix(8)).prefix(500))")
+                    } else {
+                        NSLog("DRAMAMETA-DOM \(key) = \(String(describing: d[key]).prefix(400))")
+                    }
+                }
+                NSLog("DRAMAMETA-DOM ===== END =====")
+            }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
@@ -421,6 +465,9 @@ struct DramaWebPage: View {
     /// 页内再点击其它剧集：继续推入原生剧集页
     @State private var nestedTarget: DramaTarget?
     @State private var pickerTarget: DramaTarget?
+    /// DOM/接口提取的元数据（调查落地：头部展示 + DramaMeta 落盘）
+    @State private var coverURL: URL?
+    @State private var intro: String?
 
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
@@ -430,6 +477,30 @@ struct DramaWebPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if coverURL != nil || intro != nil {
+                HStack(alignment: .top, spacing: 10) {
+                    if let coverURL {
+                        AsyncImage(url: coverURL) { img in
+                            img.resizable().scaledToFill()
+                        } placeholder: {
+                            Color(uiColor: .systemGray5)
+                        }
+                        .frame(width: 72, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let t = store.pageTitle, !t.isEmpty {
+                            Text(t).font(.subheadline).fontWeight(.semibold).lineLimit(2)
+                        }
+                        if let intro {
+                            Text(intro).font(.caption).foregroundColor(.secondary).lineLimit(4)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
             WebViewContainer(manager: manager, store: store, address: $address,
                              onDramaLinkClick: { nestedTarget = $0 },
                              onDramaURLDetected: { t, undo in
@@ -458,6 +529,23 @@ struct DramaWebPage: View {
         }
         .sheet(item: $pickerTarget) { t in
             DramaPickerSheet(target: t, manager: manager)
+        }
+        .onChange(of: store.pageMetaJSON) { _, json in
+            guard let json,
+                  let meta = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return }
+            var update: [String: Any] = meta
+            if let og = meta["ogImage"] as? String, let u = URL(string: og), u.scheme?.hasPrefix("http") == true {
+                coverURL = u
+                update["cover"] = og
+            }
+            if let desc = meta["desc"] as? String, !desc.isEmpty {
+                intro = desc
+            }
+            if let ot = meta["ogTitle"] as? String, !ot.isEmpty {
+                update["og_title"] = ot
+            }
+            // 本地落盘（JSON 文件，原生可直接读；Finder 文件共享可拷出）
+            DramaMetaStore.save(update, for: target)
         }
         .onAppear { pickerTarget = target }  // 进入即弹选集面板
     }
@@ -532,6 +620,12 @@ struct DramaPickerSheet: View {
             manager.collectLegacyEpisodes(forSeries: info.name)
             manager.refreshLibrary()
             downloadedSorts = manager.downloadedEpisodeSorts(forSeries: info.name)
+            // 接口侧元数据并入本地 meta 文件（DOM/接口双源）
+            DramaMetaStore.save(["api_drama_name": info.name,
+                                 "api_update_status": info.updateStatus ?? "",
+                                 "api_episode_count": info.episodes.count,
+                                 "api_playable_count": info.episodes.filter(\.playable).count],
+                                for: target)
         } catch {
             loadError = error.localizedDescription
         }

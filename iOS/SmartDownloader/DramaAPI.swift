@@ -69,6 +69,8 @@ final class DramaSession {
         let constants = try self.constants()
         token = (try? await login(constants)) ?? ""
         let data = try await fetchDramaData(constants)
+        // 调查期间临时无条件开启（NSLog 系统日志，不影响功能）；调查结束后恢复参数门控
+        Self.dumpMeta(data)
         guard let name = data["drama_name"] as? String,
               let episodeAll = data["episodeAll"] as? [[String: Any]] else {
             throw DramaError.badResponse
@@ -96,6 +98,32 @@ final class DramaSession {
         let url = (fresh["video_url"] as? String) ?? (fresh["video_url_h265"] as? String) ?? ""
         guard url.hasPrefix("http") else { throw DramaError.noVideoURL }
         return url
+    }
+
+    /// 调查用：启动参数 dumpDramaMeta 时把接口解密响应的完整字段结构写进系统日志（NSLog），
+    /// 用 log collect --device 从手机采集提取（Mac 网络被 WAF 掐、devicectl --console 不可用时的通道）
+    private static func dumpMeta(_ data: [String: Any]) {
+        NSLog("DRAMAMETA ===== BEGIN =====")
+        for key in data.keys.sorted() {
+            let v = data[key]!
+            if let s = v as? String {
+                NSLog("DRAMAMETA \(key) = \(s.prefix(300))")
+            } else if let n = v as? NSNumber {
+                NSLog("DRAMAMETA \(key) = \(n)")
+            } else if let d = v as? [String: Any] {
+                NSLog("DRAMAMETA \(key) dict keys=\(d.keys.sorted())")
+            } else if let arr = v as? [[String: Any]] {
+                NSLog("DRAMAMETA \(key) list len=\(arr.count)")
+                if let first = arr.first {
+                    for k in first.keys.sorted() {
+                        NSLog("DRAMAMETA \(key)[0].\(k) = \(String(describing: first[k]).prefix(220))")
+                    }
+                }
+            } else {
+                NSLog("DRAMAMETA \(key) = \(type(of: v))")
+            }
+        }
+        NSLog("DRAMAMETA ===== END =====")
     }
 
     // MARK: 常量解析（随包 video_auto.py，单一事实源在仓库根）
@@ -316,6 +344,34 @@ final class SeriesDownloadCoordinator {
             Self.active.removeAll { $0 === self }
         } else {
             pump()
+        }
+    }
+}
+
+// MARK: - 剧集元数据本地落存
+//
+// DOM/接口双源提取的短剧元数据按剧存一份 JSON（Documents/DramaMeta/<剧ID>.json），
+// 原生剧集页头部直接读它展示封面/简介；Finder 文件共享可拷出查看。
+// 不引入数据库：数据量小、按剧一文件、无查询需求。
+enum DramaMetaStore {
+    static func fileURL(for target: DramaTarget) -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DramaMeta", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(target.dramaID).json")
+    }
+
+    /// 合并写入（DOM 与接口各自写入，双源字段共存）
+    static func save(_ update: [String: Any], for target: DramaTarget) {
+        let url = fileURL(for: target)
+        var merged = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any] ?? [:]
+        for (key, value) in update { merged[key] = value }
+        merged["site"] = target.site
+        merged["drama_id"] = target.dramaID
+        merged["updated_at"] = ISO8601DateFormatter().string(from: Date())
+        if let data = try? JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url)
+            print("DRAMAMETA 已写入 \(url.lastPathComponent)（\(data.count) 字节）")
         }
     }
 }
