@@ -10,6 +10,11 @@ struct BrowserView: View {
         UserDefaults.standard.string(forKey: lastPageKey) ?? "about:blank"
     }
 
+    /// 快捷站点标签：点击直达；地址栏仍可输入任意 URL
+    static let quickLinks: [(name: String, url: String)] = [
+        ("野果短剧", "https://www.yeguodj.com/"),
+    ]
+
     @ObservedObject var manager: DownloadManager
     @StateObject private var store = WebViewStore()
     @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
@@ -27,7 +32,26 @@ struct BrowserView: View {
                 Button("访问") { store.load(address) }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.top, 6)
+
+            // 快捷站点标签行
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Self.quickLinks, id: \.name) { link in
+                        Button {
+                            address = link.url
+                            store.load(link.url)
+                        } label: {
+                            Label(link.name, systemImage: "play.tv")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
 
             if let loadError = store.loadError {
                 Text("⚠️ 网页加载失败: \(loadError)")
