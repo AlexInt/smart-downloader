@@ -246,7 +246,8 @@ final class DownloadManager: ObservableObject {
     }
 
     /// 目录名 -> 集号：第01集 / 第01集(1)（重下防覆盖后缀）；不匹配返回 nil
-    static func episodeSort(fromFolderName name: String) -> Int? {
+    /// nonisolated：纯字符串解析、不碰任何 UI 状态，允许非 MainActor 的磁盘扫描复用
+    nonisolated static func episodeSort(fromFolderName name: String) -> Int? {
         guard name.hasPrefix("第") else { return nil }
         let body = name.dropFirst()
         guard let range = body.range(of: "集") else { return nil }

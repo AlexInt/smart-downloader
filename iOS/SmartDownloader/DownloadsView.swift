@@ -199,6 +199,8 @@ struct SeriesDetailView: View {
     @ObservedObject var manager: DownloadManager
     let seriesName: String
     @State private var playerItem: PlayerItem?
+    /// 剧集点播走沉浸式播放页；playerItem 仅作非 HLS 文件夹的 AVKit 回退
+    @State private var immersivePlayback: ImmersivePlaybackRequest?
     @State private var confirmDelete = false
 
     private var episodes: [DownloadTask] {
@@ -236,12 +238,31 @@ struct SeriesDetailView: View {
         .sheet(item: $playerItem) { item in
             PlayerView(item: item)
         }
+        .fullScreenCover(item: $immersivePlayback) { request in
+            DramaPlayerContainer(request: request)
+        }
     }
 
+    /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit
     private func playIfDone(_ task: DownloadTask) {
-        if task.state == .done, let url = task.outputURL {
-            playerItem = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
+        guard task.state == .done, let url = task.outputURL else { return }
+        guard task.isHLSFolder else {
+            playerItem = PlayerItem(url: url, isHLSFolder: false)
+            return
         }
+        let episodes = DramaPlaybackLibrary.episodes(forSeries: seriesName)
+        guard !episodes.isEmpty else {
+            playerItem = PlayerItem(url: url, isHLSFolder: true)
+            return
+        }
+        let sort = DownloadManager.episodeSort(fromFolderName: task.title)
+        let start = episodes.firstIndex(where: { $0.sort == sort }) ?? 0
+        immersivePlayback = ImmersivePlaybackRequest(
+            seriesName: seriesName,
+            intro: nil,
+            episodes: episodes,
+            startIndex: start
+        )
     }
 }
 

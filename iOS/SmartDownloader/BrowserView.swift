@@ -467,7 +467,8 @@ struct DramaNativePage: View {
     @State private var session: DramaSession?
     @State private var downloadedSorts: Set<Int> = []
     @State private var selected: Set<Int> = []
-    @State private var playerItem: PlayerItem?
+    /// 已下载集点播：拉起沉浸式竖屏播放页（可上下滑切集）
+    @State private var immersivePlayback: ImmersivePlaybackRequest?
     /// 当前列表是否来自本地缓存（缓存优先，刷新按钮强制更新）
     @State private var fromCache = false
     @State private var reloadID = UUID()
@@ -500,8 +501,8 @@ struct DramaNativePage: View {
         .navigationTitle(info?.name ?? "剧集页")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .sheet(item: $playerItem) { item in
-            PlayerView(item: item)
+        .fullScreenCover(item: $immersivePlayback) { request in
+            DramaPlayerContainer(request: request)
         }
         .task(id: reloadID) { await load() }
         .onAppear { preloadHeaderFromCache() }
@@ -716,21 +717,19 @@ struct DramaNativePage: View {
         .disabled(!ep.playable)
     }
 
-    /// 已下载集：从剧目录找该集的 playlist.m3u8，拉起播放器（本地 HTTP 服务已支持剧集两级路径）
+    /// 已下载集：拉起沉浸式竖屏播放页，带上该剧全部已下载集以支持上下滑切集。
+    /// 简介取自本地 SQLite 缓存（离线可用），不额外发网络请求。
     private func playDownloaded(_ ep: ApiDramaEpisode) {
         guard let info else { return }
-        let fm = FileManager.default
-        let seriesDir = DownloadEngine.seriesDirectory(for: info.name)
-        guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return }
-        let playlist = subs
-            .filter {
-                fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path)
-                    && DownloadManager.episodeSort(fromFolderName: $0.lastPathComponent) == ep.sort
-            }
-            .map { $0.appendingPathComponent("playlist.m3u8") }
-            .first
-        guard let playlist else { return }
-        playerItem = PlayerItem(url: playlist, isHLSFolder: true)
+        let episodes = DramaPlaybackLibrary.episodes(forSeries: info.name)
+        guard let start = episodes.firstIndex(where: { $0.sort == ep.sort }) else { return }
+        let intro = DramaCache.load(site: target.site, dramaID: target.dramaID)?.intro
+        immersivePlayback = ImmersivePlaybackRequest(
+            seriesName: info.name,
+            intro: intro,
+            episodes: episodes,
+            startIndex: start
+        )
     }
 
     private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
