@@ -154,17 +154,21 @@ struct DownloadsView: View {
         if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
     }
 
-    /// 编辑模式下整行点击=勾选；普通模式点击=播放
+    /// 编辑模式下整行点击=勾选（Button(.plain)，不用 onTapGesture 以免与 List 手势冲突）；普通模式点击=播放
     @ViewBuilder
     private func sectionRow(task: DownloadTask) -> some View {
         if selectionMode {
-            HStack(spacing: 12) {
-                Image(systemName: selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selected.contains(task.id) ? .blue : .secondary)
-                TaskRow(task: task)
+            Button {
+                toggleSelection(task.id)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundColor(selected.contains(task.id) ? .blue : .secondary)
+                    TaskRow(task: task)
+                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-            .onTapGesture { toggleSelection(task.id) }
+            .buttonStyle(.plain)
         } else {
             TaskRow(task: task)
                 .contentShape(Rectangle())
@@ -176,15 +180,17 @@ struct DownloadsView: View {
     private func seriesSelectionRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
         let ids = Set(group.episodes.map(\.id))
         let allIn = ids.isSubset(of: selected)
-        return HStack(spacing: 12) {
-            Image(systemName: allIn ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(allIn ? .blue : .secondary)
-            seriesRow(group)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
+        return Button {
             if allIn { selected.subtract(ids) } else { selected.formUnion(ids) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: allIn ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(allIn ? .blue : .secondary)
+                seriesRow(group)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }
 

@@ -100,9 +100,11 @@ final class DownloadManager: ObservableObject {
     }
 
     /// 任务内部状态（进度/完成/失败）变化时转发本管理器的 objectWillChange：
-    /// 分区归属依赖任务 state，不转发则完成后要重启 App 才换区
+    /// 分区归属依赖任务 state，不转发则完成后要重启 App 才换区。
+    /// receive(on: main) 保证回调线程，避免 sink 在后台线程触发主线程隔离断言
     private func observeTaskState(_ task: DownloadTask) {
         task.objectWillChange
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.objectWillChange.send() }
             }
