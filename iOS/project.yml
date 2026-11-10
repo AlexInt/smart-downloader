@@ -1,0 +1,26 @@
+name: SmartDownloader
+options:
+  bundleIdPrefix: com.firefish
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "26.0"
+targets:
+  SmartDownloader:
+    type: application
+    platform: iOS
+    sources:
+      - path: SmartDownloader
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.firefish.smartdownloader
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: SmartDownloader/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+schemes:
+  SmartDownloader:
+    build:
+      targets:
+        SmartDownloader: all
+    run:
+      config: Debug

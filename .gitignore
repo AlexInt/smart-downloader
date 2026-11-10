@@ -32,3 +32,18 @@ mac_app/dist/
 
 # Logs
 *.log
+
+# iOS App 构建产物
+iOS/build/
+
+# Xcode 用户数据
+xcuserdata/
+*.xcuserstate
+
+# iOS 冒烟测试产物
+iOS/smoke/coretest
+iOS/smoke/playtest
+iOS/smoke/fetchtest
+iOS/smoke/yeguocli
+iOS/smoke/out/
+iOS/smoke_screenshot*.png
