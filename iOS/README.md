@@ -15,20 +15,30 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 
 1. 「浏览」页自动恢复上次访问的页面（首次为空白起始页，地址栏输入视频资源站点即可）；在网页里正常登录、点开剧集播放
 2. 播放后底部「**下载视频 (n)**」按钮亮起（嗅探到的 m3u8 实时累积；多个时可点击选择）
-3. 点击开始下载 → 切到「下载」页看进度（6 并发）
-4. 点击已完成条目**直接播放**；左滑删除（同时删除沙盒文件）
-5. 文件位置：App 沙盒 `Documents/Downloads/<剧名>/`。已开启文件共享，iPhone 连 Mac 时 Finder 左侧可看到并拷出
+3. **选集下载**：打开剧集页（形如 `<站点>/drama/video/<剧ID>/` 或 `/drama/detail/<剧ID>/`）时自动弹出半屏选集面板：
+   grid 展示全集，点击集号选中（可全选/多选），已下载过的集打绿勾且不可点（开面板时扫剧目录，文件系统就是账本，无数据库），
+   付费锁定集灰显带锁；「下载所选」一次排队下载（同时最多 2 集），每集下载前重调站点接口取新鲜直链；
+   关掉面板后可用底部「**选集**」按钮重开
+4. 点「下载」页看进度（多集调度最多 2 集并行，每集内部 6 并发切片）；下载页按剧分组：
+   正在下载 / 剧集（点进二级页看集列表）/ 散装条目；剧详情页点集即播、左滑删单集、右上角删全剧
+5. 点击已完成条目**直接播放**；左滑删除（同时删除沙盒文件）
+6. 文件位置：App 沙盒 `Documents/Downloads/`。选集下载按剧分目录：`Downloads/<剧名>/第NN集/playlist.m3u8`；
+   散装下载仍是 `Downloads/<标题>/`。已开启文件共享，iPhone 连 Mac 时 Finder 左侧可看到并拷出
 
 ## 三、架构
 
 ```
 「浏览」页
   WKWebView 加载视频资源站点 (cookie 共享, 登录态/付费内容自动解锁)
-  └ 注入嗅探 JS (atDocumentStart): Hook XHR/fetch + performance 历史 + video/source DOM 扫描
-      → window.webkit.messageHandlers 回传 m3u8 → 按钮激活
+  ├ 注入嗅探 JS (atDocumentStart): Hook XHR/fetch + performance 历史 + video/source DOM 扫描
+  │     → window.webkit.messageHandlers 回传 m3u8 → 按钮激活
+  └ 导航提交后检测剧集页 URL (/drama/(video|detail)/<ID>) → 自动弹半屏选集面板
+        DramaAPI: 登录 → playlet 接口 → AES-128-CBC 解密 → 剧名 + 全集列表
+        （账号/AES 常量从随包 video_auto.py 解析, 不硬编码；站点地址从 URL 推导）
 「下载」DownloadEngine (Swift 版 M3U8Downloader)
   拉清单(多级选最高码率) → 预取 AES-128 密钥 → 6 并发切片下载(重试/Range/解密)
   → 保存为「本地 HLS 文件夹」: playlist.m3u8(重写,去 KEY 行) + seg_*.ts(+init.mp4)
+  选集下载由 SeriesDownloadCoordinator 调度: 每集下载前重调接口取新鲜 auth_key, 最多 2 集并行
   URLSession 被掐(连接层错误)时自动降级 WebKitFetcher(WKDownload, Safari 同源 TLS 栈,
   经由浏览页那个附加在视图树上的 WKWebView 发起——隐藏 webview 在真机上会直接 DownloadFailed)
 「播放」LocalMediaServer (127.0.0.1 回环 HTTP) + AVPlayer 原生 HLS
@@ -59,6 +69,11 @@ SMARTDOWNLOADER_DIR="$PWD/out" ./coretest
 # 期望: RESULT: DONE -> .../out/smoke_test/playlist.m3u8
 # 加 SMARTDOWNLOADER_FORCE_WEBKIT=1 强制走 WebKit 兜底通道，验证 WKDownload 链路
 
+# 1b. 两级库扫描: 空目录造 剧/集/散装/残缺结构, 验证分组与「已下载集」检测
+rm -rf out/library_check
+SMARTDOWNLOADER_DIR="$PWD/out/library_check" ./coretest --library
+# 期望: LIBRARY: series_eps=["第01集", "第02集"] / standalone=2 / downloadedSorts=[1, 2] → RESULT: DONE
+
 # 2. 播放验证: 启动内置本地服务, AVPlayer 实际播放并确认进度推进
 swiftc -O -o playtest playtest.swift ../SmartDownloader/LocalMediaServer.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
 SMARTDOWNLOADER_DIR="$PWD/out" ./playtest out/smoke_test
@@ -88,8 +103,10 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | 文件 | 职责 |
 |---|---|
 | `SmartDownloader/App.swift` | 入口，启动时预启本地媒体服务 |
-| `SmartDownloader/BrowserView.swift` | 浏览页：WKWebView + 嗅探脚本注入(内嵌 JS) + 下载按钮 |
-| `SmartDownloader/Downloader.swift` | 下载核心 + 任务/队列管理 |
+| `SmartDownloader/BrowserView.swift` | 浏览页：WKWebView + 嗅探脚本注入(内嵌 JS) + 下载按钮 + 剧集页选集面板 |
+| `SmartDownloader/Downloader.swift` | 下载核心 + 任务/队列管理 + 两级库扫描（剧目录/散装） |
+| `SmartDownloader/DramaAPI.swift` | 站点剧集接口（独立文件）：URL 解析/登录/AES 解密 + 多集下载调度 |
+| `SmartDownloader/video_auto.py` | → 仓库根 video_auto.py 的 symlink，随包携带供 DramaAPI 解析账号/AES 常量（改动只需改仓库根一处） |
 | `SmartDownloader/WebKitFetcher.swift` | WebKit 网络栈兜底（WKDownload，过 TLS 指纹 WAF） |
 | `SmartDownloader/LocalMediaServer.swift` | 回环 HTTP 服务（Range 支持，仅 127.0.0.1） |
 | `SmartDownloader/DownloadsView.swift` | 下载列表 + AVKit 播放页 |

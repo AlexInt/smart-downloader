@@ -57,7 +57,7 @@ xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
 ## 开发约定
 
 1. **下载能力统一走 `core/downloader.py`**（Python 侧）/ `Downloader.swift`（iOS 侧）。站点特有逻辑（登录、加密 API、嗅探）放独立脚本或独立文件，不要混入通用模块。
-2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由 `quickLinks` 数组（BrowserView.swift）+ 地址栏输入。
+2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由 `quickLinks` 数组（BrowserView.swift）+ 地址栏输入，剧集选集面板由导航 URL 自动检测（DramaTarget.parse）。
 3. **输出目录必须在用户主目录下**（`core/utils.get_download_dir` 有安全检查，越界抛 PermissionError）。
 4. 临时文件放 `temp_*` 目录，任务结束必须清理；同名文件加 `(1)` 后缀防覆盖。
 
@@ -71,6 +71,9 @@ xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
 - 冒烟开关 `SMARTDOWNLOADER_FORCE_WEBKIT=1` 强制走 WebKit 兜底通道验证。
 
 ## iOS 工程注意（Xcode 26 folder-sync 格式）
+
+- 站点接口/选集下载逻辑在 `iOS/SmartDownloader/DramaAPI.swift`（独立文件，勿混入 Downloader.swift）；
+  账号/AES 常量来自随包 symlink `iOS/SmartDownloader/video_auto.py -> 仓库根 video_auto.py`，改常量只改仓库根一处。
 
 - 新 Swift 文件放进 `SmartDownloader/` 自动参与编译；资源目录（Media.xcassets）同理。
 - **Info.plist 在同步文件夹内**：pbxproj 已用 `PBXFileSystemSynchronizedBuildFileExceptionSet` 排除它，否则与 `INFOPLIST_FILE` 冲突报 "Multiple commands produce Info.plist"。

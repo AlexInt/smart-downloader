@@ -19,6 +19,9 @@ struct BrowserView: View {
     @StateObject private var store = WebViewStore()
     @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
     @State private var showPicker = false
+    @State private var dramaTarget: DramaTarget?
+    /// 同一部剧只自动弹一次选集面板；关掉后可用底部「选集」按钮重开
+    @State private var lastAutoDramaKey: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,6 +71,15 @@ struct BrowserView: View {
                 Button { store.goForward() } label: { Image(systemName: "chevron.right") }
                 Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
                 Spacer()
+                // 剧集页（/drama/(video|detail)/<ID>）显示「选集」，重开选集面板
+                if let target = DramaTarget.parse(address) {
+                    Button {
+                        dramaTarget = target
+                    } label: {
+                        Label("选集", systemImage: "square.grid.2x2")
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Button {
                     if manager.foundURLs.count > 1 {
                         showPicker = true
@@ -87,6 +99,18 @@ struct BrowserView: View {
         .sheet(isPresented: $showPicker) {
             pickerSheet
         }
+        .sheet(item: $dramaTarget) { target in
+            DramaPickerSheet(target: target, manager: manager)
+        }
+        .onChange(of: address) { _, newValue in autoDetectDrama(newValue) }
+        .onAppear { autoDetectDrama(address) }
+    }
+
+    /// 识别到剧集页 URL（https://<站点>/drama/(video|detail)/<ID>…）自动弹出半屏选集面板
+    private func autoDetectDrama(_ urlString: String) {
+        guard let target = DramaTarget.parse(urlString), lastAutoDramaKey != target.id else { return }
+        lastAutoDramaKey = target.id
+        dramaTarget = target
     }
 
     private var pickerSheet: some View {
@@ -300,4 +324,178 @@ struct WebViewContainer: UIViewRepresentable {
       } catch (e) {}
     })();
     """#
+}
+
+/// 剧集选集面板（浏览页识别到剧集页 URL 时自动弹出的半屏 sheet）：
+/// grid 展示全集；已下载的集打绿勾且不可点（文件系统就是账本，开面板时扫剧目录）；
+/// 全选只选未下载的可播集，多选/单选后一次排队下载，落到 Downloads/<剧名>/第NN集/
+struct DramaPickerSheet: View {
+    let target: DramaTarget
+    @ObservedObject var manager: DownloadManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var loading = true
+    @State private var loadError: String?
+    @State private var info: DramaInfo?
+    @State private var session: DramaSession?
+    @State private var downloadedSorts: Set<Int> = []
+    @State private var selected: Set<Int> = []
+    @State private var reloadID = UUID()
+
+    /// 未下载且可播放的集
+    private var selectableEpisodes: [DramaEpisode] {
+        info?.episodes.filter { $0.playable && !downloadedSorts.contains($0.sort) } ?? []
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if loading {
+                    ProgressView("正在获取剧集列表…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let loadError {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                            .foregroundColor(.orange)
+                        Text(loadError)
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                        Button("重试") { reloadID = UUID() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let info {
+                    pickerGrid(info)
+                }
+            }
+            .navigationTitle("选集下载")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .task(id: reloadID) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        selected = []
+        let session = DramaSession(target: target)
+        self.session = session
+        do {
+            let info = try await session.fetchInfo()
+            self.info = info
+            downloadedSorts = manager.downloadedEpisodeSorts(forSeries: info.name)
+        } catch {
+            loadError = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func pickerGrid(_ info: DramaInfo) -> some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("《\(info.name)》").font(.headline).lineLimit(1)
+                    Text(headerSubtitle(info))
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("全选") { selected = Set(selectableEpisodes.map(\.id)) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(selectableEpisodes.isEmpty)
+                Button("清空") { selected.removeAll() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(selected.isEmpty)
+            }
+            .padding(.horizontal)
+
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
+                    ForEach(info.episodes) { ep in
+                        episodeCell(ep)
+                    }
+                }
+                .padding(.horizontal)
+            }
+
+            Button {
+                startDownload(info)
+            } label: {
+                if selected.isEmpty && selectableEpisodes.isEmpty {
+                    Label("全部已下载", systemImage: "checkmark.circle")
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Label("下载所选 (\(selected.count))", systemImage: "arrow.down.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selected.isEmpty)
+            .padding(.horizontal)
+            .padding(.bottom, 6)
+        }
+    }
+
+    private func headerSubtitle(_ info: DramaInfo) -> String {
+        let base = "共 \(info.episodes.count) 集 · 可下载 \(selectableEpisodes.count) 集"
+        return downloadedSorts.isEmpty ? base : base + " · 已下载 \(downloadedSorts.count) 集"
+    }
+
+    /// 单元格状态：已下载 = 绿勾禁点；付费锁定 = 灰锁禁点；选中 = 高亮；其余可点选
+    private func episodeCell(_ ep: DramaEpisode) -> some View {
+        let isSelected = selected.contains(ep.id)
+        let isDownloaded = downloadedSorts.contains(ep.sort)
+        return Button {
+            if isSelected { selected.remove(ep.id) } else { selected.insert(ep.id) }
+        } label: {
+            Text(String(format: "第%02d集", ep.sort))
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+                .foregroundStyle(cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
+                .overlay(alignment: .topTrailing) {
+                    if isDownloaded {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                            .offset(x: 5, y: -5)
+                    } else if !ep.playable {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .offset(x: 5, y: -5)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .disabled(!ep.playable || isDownloaded)
+    }
+
+    private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
+        if isSelected { return .accentColor }
+        if isDownloaded { return .green.opacity(0.12) }
+        return playable ? Color(uiColor: .systemGray5) : Color(uiColor: .systemGray6)
+    }
+
+    private func cellForeground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
+        if isSelected { return .white }
+        if isDownloaded { return .secondary }
+        return playable ? .primary : Color(uiColor: .tertiaryLabel)
+    }
+
+    private func startDownload(_ info: DramaInfo) {
+        guard let session else { return }
+        let chosen = info.episodes
+            .filter { selected.contains($0.id) && $0.playable && !downloadedSorts.contains($0.sort) }
+            .sorted { $0.sort < $1.sort }
+        guard !chosen.isEmpty else { return }
+        SeriesDownloadCoordinator.start(target: target, seriesName: info.name,
+                                        episodes: chosen, manager: manager, session: session)
+        dismiss()
+    }
 }
