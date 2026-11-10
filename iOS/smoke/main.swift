@@ -40,6 +40,16 @@ func runLibraryCheck() {
     print("LIBRARY: downloadedSorts=\(downloaded)")
     let ok = series.count == 2 && standalone.count == 2 && downloaded == [1, 2]
     print(ok ? "RESULT: DONE" : "RESULT: FAILED (期望 series=2 standalone=2 sorts=[1,2])")
+
+    // 旧散装收编: 顶层 "剧A 第03集"(带 playlist) 应搬进 剧A/第03集(1)（同号残缺目录已存在 → (1) 后缀）
+    makeHLS("剧A 第03集")
+    manager.collectLegacyEpisodes(forSeries: "剧A")
+    manager.refreshLibrary()
+    let series2 = manager.tasks.filter { $0.seriesName == "剧A" }
+    let downloaded2 = manager.downloadedEpisodeSorts(forSeries: "剧A").sorted()
+    print("LIBRARY: 收编后 series_eps=\(series2.map(\.title).sorted()) downloaded=\(downloaded2)")
+    let ok2 = series2.count == 3 && downloaded2 == [1, 2, 3]
+    print(ok2 ? "RESULT: DONE" : "RESULT: FAILED (期望收编后 series=3 sorts=[1,2,3])")
     finished = true
 }
 

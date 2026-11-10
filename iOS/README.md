@@ -73,6 +73,7 @@ SMARTDOWNLOADER_DIR="$PWD/out" ./coretest
 rm -rf out/library_check
 SMARTDOWNLOADER_DIR="$PWD/out/library_check" ./coretest --library
 # 期望: LIBRARY: series_eps=["第01集", "第02集"] / standalone=2 / downloadedSorts=[1, 2] → RESULT: DONE
+#       收编后 series_eps 含 第03集(1)、downloaded=[1, 2, 3] → RESULT: DONE
 
 # 2. 播放验证: 启动内置本地服务, AVPlayer 实际播放并确认进度推进
 swiftc -O -o playtest playtest.swift ../SmartDownloader/LocalMediaServer.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift

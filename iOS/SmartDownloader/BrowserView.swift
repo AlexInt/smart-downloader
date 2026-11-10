@@ -421,6 +421,9 @@ struct DramaPickerSheet: View {
         do {
             let info = try await session.fetchInfo()
             self.info = info
+            // 先收编旧版散装下载（只搬不删），再算已下载集，两者都能打勾
+            manager.collectLegacyEpisodes(forSeries: info.name)
+            manager.refreshLibrary()
             downloadedSorts = manager.downloadedEpisodeSorts(forSeries: info.name)
         } catch {
             loadError = error.localizedDescription

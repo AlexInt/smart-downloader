@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Combine
 import CommonCrypto
 
 // MARK: - 状态与错误
@@ -66,6 +67,8 @@ final class DownloadTask: ObservableObject, Identifiable {
 final class DownloadManager: ObservableObject {
     @Published private(set) var tasks: [DownloadTask] = []
     @Published private(set) var foundURLs: [String] = []
+    /// 转发每个任务的状态变化，驱动下载页分区实时重算（否则完成任务要重启才换区）
+    private var stateCancellables: Set<AnyCancellable> = []
 
     init() { loadLibrary() }
 
@@ -89,6 +92,17 @@ final class DownloadManager: ObservableObject {
     /// 登记（插入列表头部，不启动）
     func register(_ task: DownloadTask) {
         tasks.insert(task, at: 0)
+        observeTaskState(task)
+    }
+
+    /// 任务内部状态（进度/完成/失败）变化时转发本管理器的 objectWillChange：
+    /// 分区归属依赖任务 state，不转发则完成后要重启 App 才换区
+    private func observeTaskState(_ task: DownloadTask) {
+        task.objectWillChange
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.objectWillChange.send() }
+            }
+            .store(in: &stateCancellables)
     }
 
     /// 启动已登记任务；onFinish 在任务结束（成功/失败）后于主线程回调（多集调度依赖它接力）
@@ -106,6 +120,7 @@ final class DownloadManager: ObservableObject {
     func registerEpisode(title: String, seriesName: String) -> DownloadTask {
         let task = DownloadTask(url: "", title: title, seriesName: seriesName)
         tasks.insert(task, at: 0)
+        observeTaskState(task)
         return task
     }
 
@@ -157,12 +172,56 @@ final class DownloadManager: ObservableObject {
         return sorts
     }
 
+    /// 旧版散装下载收编：把顶层「标题含剧名+第N集」的旧文件夹搬进 Downloads/<剧名>/第NN集/。
+    /// 只搬不删（move/rename，数据不丢）；搬完后正常两级扫描即可识别为已下载集。
+    /// 在选集面板拿到剧名后调用，幂等：搬过一次后不再有匹配项。
+    func collectLegacyEpisodes(forSeries rawSeriesName: String) {
+        let fm = FileManager.default
+        let seriesDir = DownloadEngine.seriesDirectory(for: rawSeriesName)
+        guard let normalized = DownloadEngine.sanitizeTitle(rawSeriesName),
+              let entries = try? fm.contentsOfDirectory(at: DownloadEngine.downloadsDir,
+                                                        includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for entry in entries {
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDirectory,
+                  entry.lastPathComponent != seriesDir.lastPathComponent,
+                  fm.fileExists(atPath: entry.appendingPathComponent("playlist.m3u8").path),
+                  let sort = Self.legacyEpisodeSort(folderName: entry.lastPathComponent,
+                                                    seriesName: normalized) else { continue }
+            do {
+                try fm.createDirectory(at: seriesDir, withIntermediateDirectories: true)
+                let base = String(format: "第%02d集", sort)
+                let name = DownloadEngine.uniqueFolderName(base: base, in: seriesDir)
+                try fm.moveItem(at: entry, to: seriesDir.appendingPathComponent(name, isDirectory: true))
+                print("LIBRARY: 收编旧下载 \(entry.lastPathComponent) -> \(name)")
+            } catch {
+                print("LIBRARY: 收编失败 \(entry.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 重扫沙盒库（收编后调用，让下载页的剧集/散装分组立即反映磁盘现状）
+    func refreshLibrary() {
+        tasks.removeAll { $0.isFromLibrary }
+        loadLibrary()
+    }
+
     /// 目录名 -> 集号：第01集 / 第01集(1)（重下防覆盖后缀）；不匹配返回 nil
     static func episodeSort(fromFolderName name: String) -> Int? {
         guard name.hasPrefix("第") else { return nil }
         let body = name.dropFirst()
         guard let range = body.range(of: "集") else { return nil }
         let digits = body[..<range.lowerBound]
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isNumber }) else { return nil }
+        return Int(digits)
+    }
+
+    /// 旧版散装文件夹名 -> 集号：要求含剧名且含「第N集」数字段（页面标题清理营销词后的形态，如 "剧名 第03集"）
+    static func legacyEpisodeSort(folderName: String, seriesName: String) -> Int? {
+        guard folderName.contains(seriesName) else { return nil }
+        guard let start = folderName.range(of: "第")?.upperBound else { return nil }
+        guard let end = folderName[start...].firstIndex(of: "集") else { return nil }
+        let digits = folderName[start..<end]
         guard !digits.isEmpty, digits.allSatisfy({ $0.isNumber }) else { return nil }
         return Int(digits)
     }
