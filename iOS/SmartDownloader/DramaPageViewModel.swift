@@ -24,6 +24,8 @@ final class DramaPageViewModel: ObservableObject {
     /// 头部元数据（缓存 + 后台收割）
     @Published private(set) var coverURL: URL?
     @Published private(set) var intro: String?
+    /// 话题标签（DOM 收割，空格分隔；P7）
+    @Published private(set) var tags: String?
     /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
     @Published var playbackRequest: ImmersivePlaybackRequest?
 
@@ -125,11 +127,13 @@ final class DramaPageViewModel: ObservableObject {
         await fetchAndCache()
     }
 
-    /// 缓存里已有的封面/简介先上头部（无网络也能显示）
+    /// 缓存里已有的封面/简介/标签先上头部（无网络也能显示）
     func preloadHeaderFromCache() {
         if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
             if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
             if let introText = entry.intro, !introText.isEmpty { intro = introText }
+            // 空串 = 采集失败，不是「已缓存」：归 nil 才能让 harvestIfNeeded 继续收割
+            tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
         }
     }
 
@@ -174,18 +178,25 @@ final class DramaPageViewModel: ObservableObject {
         DramaCache.reconcileDownloaded(site: target.site, dramaID: target.dramaID, folders: folders)
     }
 
-    /// 头部缺封面/简介时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）
+    /// 头部缺封面/简介/标签时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）。
+    /// tags 纳入触发条件是 P7 采集需要；空串视为缺失 —— 采集失败后可重试
+    ///（DramaMetaHarvester.harvestedKeys 只在进程内去重，重进 App 会清空）
     private func harvestIfNeeded() {
-        guard coverURL == nil || intro == nil else {
-            print("PLAYER_DBG [Entry] harvest SKIP reason=headerCached cover=\(coverURL != nil) intro=\(intro != nil)")
+        // 空串也算「没有 tags」：旧实现把 "" 写进缓存列，这里误判已缓存 → 永久跳过收割
+        let hasTags = !(tags?.isEmpty ?? true)
+        // -captureDramaMeta：请求拦截调查期强制收割补采样本（绕过头部缓存判定）
+        let force = ProcessInfo.processInfo.arguments.contains("captureDramaMeta")
+        guard force || coverURL == nil || intro == nil || !hasTags else {
+            print("PLAYER_DBG [Entry] harvest SKIP reason=headerCached cover=\(coverURL != nil) intro=\(intro != nil) tags=\(hasTags)")
             return
         }
-        print("PLAYER_DBG [Entry] harvest trigger reason=headerMissing cover=\(coverURL != nil) intro=\(intro != nil)")
+        print("PLAYER_DBG [Entry] harvest trigger reason=\(force ? "forcedCapture" : "headerMissing") cover=\(coverURL != nil) intro=\(intro != nil) tags=\(hasTags)")
         Task {
             await DramaMetaHarvester.harvest(target: target)
             if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
                 if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
                 if let introText = entry.intro, !introText.isEmpty { intro = introText }
+                tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
             }
         }
     }
@@ -202,6 +213,7 @@ final class DramaPageViewModel: ObservableObject {
         playbackRequest = ImmersivePlaybackRequest(
             seriesName: info.name,
             intro: intro,
+            tags: tags,
             startSort: ep.sort,
             knownSorts: info.episodes.map(\.sort)   // 剧集页已持有全剧集数，直接同步给调度 service
         )

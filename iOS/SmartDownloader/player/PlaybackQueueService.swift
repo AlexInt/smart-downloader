@@ -12,6 +12,8 @@ import Foundation
 struct PlaybackQueueService {
     let seriesName: String
     let intro: String?
+    /// 话题标签（随请求透传给卡片；下载页入口为 nil）
+    let tags: String?
 
     /// 候选池：按全剧集号升序；只有已知真实存在的集才会出现在这里。
     /// 推荐算法可以从这里挑任意槽位，不必受集号顺序约束。
@@ -36,6 +38,7 @@ struct PlaybackQueueService {
     init(request: ImmersivePlaybackRequest) {
         self.seriesName = request.seriesName
         self.intro = request.intro
+        self.tags = request.tags
         slots = Self.buildSlots(forSeries: request.seriesName, knownSorts: request.knownSorts)
         current = slots.first { $0.sort == request.startSort }
             ?? slots.first { $0.isAvailable }

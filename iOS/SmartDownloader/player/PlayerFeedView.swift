@@ -52,6 +52,7 @@ struct PlayerFeedView: View {
         DramaPlayerView(
             episode: .local(seriesName: vm.seriesName,
                             intro: vm.intro,
+                            tags: vm.tags,
                             index: slot.sort,
                             total: vm.totalEpisodes),
             playback: vm.playback,

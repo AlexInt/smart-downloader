@@ -29,15 +29,15 @@ struct DramaEpisode {
 }
 
 extension DramaEpisode {
-    /// 由本地已下载剧集构造：剧名来自剧目录、简介来自 DramaCache、集号来自磁盘目录名。
-    /// 字幕为 nil —— 没有字幕轨就不占位。
-    static func local(seriesName: String, intro: String?, index: Int, total: Int) -> DramaEpisode {
+    /// 由本地已下载剧集构造：剧名来自剧目录、简介/标签来自 DramaCache、集号来自磁盘目录名。
+    /// 字幕为 nil —— 没有字幕轨就不占位；无真实标签时回落占位文案
+    static func local(seriesName: String, intro: String?, tags: String?, index: Int, total: Int) -> DramaEpisode {
         let trimmed = intro?.trimmingCharacters(in: .whitespacesAndNewlines)
         return DramaEpisode(
             account: "本地已下载",
             title: seriesName,
             caption: (trimmed?.isEmpty == false) ? trimmed : nil,
-            tags: "离线播放 · 本地 HLS",
+            tags: (tags?.isEmpty == false) ? tags : "离线播放 · 本地 HLS",
             audio: "原声",
             subtitleLines: nil,
             episodeIndex: index,

@@ -150,6 +150,17 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 - 图标为 SwiftUI 绘制（圆角矩形描边 + 激活时金色斜线），与静音图标同一视觉语言；素材库无需新增图片。
 - 新按钮**零手势代码**：Button 天然优先于卡片点按（手势架构简化的直接收益）。
 
+### tags 来源改走请求拦截（2026-11-11，待真机样本）
+
+窗口法（长 token 定界 + 黑名单）评估后回退：堆黑名单/正则/锚点本质还是在解析渲染文本，越堆越脆。治本 = 拿 JSON 字段当数据协议，拦截网页自己调的 API 响应。playlet 接口 P7 已证明无 tags，故目标是网页另调的接口或 SSR 直出——先抓一轮样本再写定向提取，不猜字段名/选择器。
+
+- **捕获模式**：收割器 webview 注入 `apiCaptureScript`（嗅探器同骨架 Hook XHR/fetch，扩展为连响应体回传；只捕 JSON/text 或 api/drama/playlet URL，单条 ≤200KB、总量 ≤40），落盘 `Documents/DramaMeta/api_<site>_<dramaID>.json`；主文档完整 HTML 同时落 `html_*.html`（meta keywords / class 选择器样本一次拿齐）。捕获只搬运不解析；加密信封原样落盘，原生有现成 decryptPayload 可离线解。
+- **强制采集开关**：`-captureDramaMeta` 启动参数让 harvestIfNeeded 绕过头部缓存判定（已缓存剧否则不触发收割）。真机：`xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader -captureDramaMeta`，进一次剧集页，Finder 拷出 api_*/html_*。
+- **过渡期止血**：锚点法 parseTags 回退保留 + 垃圾切片拒收（含超长 token / >8 短词 → nil，缓存保持可重收割，堵自锁）+ 失败分支日志。样本拿到后按 JSON 字段定向提取取代。
+- handler 收尾 removeScriptMessageHandler 防循环引用；`harvest finish apiCaptures=N` 看捕获条数。
+
+验证看点：强制采集出 `harvest trigger reason=forcedCapture` + `DramaMetaDump ok name=api_…/html_…`；拷出 api_*.json 看 tags 字段在哪个响应（加密信封先解密再读）。
+
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
 依赖方向：**View → ViewModel → Service → 系统/Model**，单向不可反向；组装根只做 DI。
@@ -193,10 +204,10 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | P8 | **DramaNativePage 拆 DramaPageViewModel**：业务状态（loading/info/downloadedSorts/selected/fromCache/coverURL/intro/playbackRequest）与编排（缓存优先加载/选集下载/播放入口/收割触发）全部入 VM；View 只渲染+转发意图；harvester/JS/Dump 工具随迁独立文件；BrowserView.swift 935→482 行 | 本提交 |
 | P9 | 浏览页下载入口锁（isSubmitting）与 beginDownload 编排并入 WebViewStore（@MainActor），View 只剩渲染派生 | `7727353` |
 | P10 | **DownloadsView 拆 DownloadsViewModel**：编辑模式/勾选/批量删除/整剧删除确认/排序偏好持久化与两个区域派生列表全部入 VM；SeriesDetailView/TaskRow/PlayerView 不动 | 本提交 |
-| P7 | 真实 tags 接入（阻塞：等用户拷 harvest_*.json 确认字段） | 阻塞 |
+| P7 | **真实 tags 接入**（已定案：tags 在剧集页 DOM「催更/播放」之间，作者名不存在）：harvester 解析 tags 入缓存（drama_cache 新增 tags 列 + v2 迁移）；剧集页头部补 tags 行；tags 经 ImmersivePlaybackRequest → PlaybackQueueService → DramaEpisode.local 透传到播放卡片（无标签时回落占位文案） | 本提交 |
 | P11 | 真机回归（用户） | 待办 |
 
-**P11 真机回归清单**（P8/P9/P10 均为行为不变的纯重构，重点验行为等价）：① 剧集页全链路：点剧集→原生页渲染→选集下载（排队态/幂等）→已下载 ▶ 播放→↻ 合并新集；② 下载页：双 tab 横滑、排序切换（重进 App 后保留）、编辑模式全选/整剧勾选/批量删除、左滑删任务/删整剧确认；③ 浏览页：下载按钮连点不重复入队、单链接已在队列态、Picker 逐条禁用；④ 播放页：上下滑切集、秒开无转圈、长按 2x、清屏 + 清屏下任意位置横滑 seek、邻卡不显示当前集时间/点赞/2x 胶囊、未下载集 toast 引导、边缘返回。
+**P11 真机回归清单**（P8/P9/P10 均为行为不变的纯重构，重点验行为等价；⑤ 是新功能 P7）：① 剧集页全链路：点剧集→原生页渲染→选集下载（排队态/幂等）→已下载 ▶ 播放→↻ 合并新集；② 下载页：双 tab 横滑、排序切换（重进 App 后保留）、编辑模式全选/整剧勾选/批量删除、左滑删任务/删整剧确认；③ 浏览页：下载按钮连点不重复入队、单链接已在队列态、Picker 逐条禁用；④ 播放页：上下滑切集、秒开无转圈、长按 2x、清屏 + 清屏下任意位置横滑 seek、邻卡不显示当前集时间/点赞/2x 胶囊、未下载集 toast 引导、边缘返回；⑤ **P7 tags 链路**：旧版 App 数据升级后不崩（`drama_cache` 自动加 tags 列，原有剧名/集数/下载标记不丢）→ 进剧集页触发收割、从 Finder 拷出 `Documents/DramaMeta/harvest_*.json` 确认 text 含「催更…播放」→ 头部显示真实标签（样本期望「反差 都市 OL」）→ 点已下载集进播放页，卡片 tags 行显示同一标签；从「下载」页入口播放（无元数据）回落「离线播放 · 本地 HLS」；若某次收割没解析到 tags，缓存列保持 NULL（不是空串），重启 App 后应能再次收割（`DramaMetaHarvester.harvestedKeys` 仅进程内去重，同次运行内重进页不重试）。
 
 ## 5. 待办清单（按优先级）
 
@@ -208,6 +219,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 4 | ~~未下载占位页拦截~~ | ✅ 已完成（`5abcc8f`）：停稳在未下载集时 toast「第N集尚未下载 · 回剧集页下载后可看」，占位卡内联提示保留 | 已完成 |
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
+| 7 | tags 定向提取（请求拦截） | 真机 `-captureDramaMeta` 拷出 api_*/html_* 样本后按 JSON 字段提取取代锚点止血；若 tags 系 SSR 直出则用 HTML 样本写 class 选择器 | 中（待样本） |
 
 ## 6. 验证与调试
 

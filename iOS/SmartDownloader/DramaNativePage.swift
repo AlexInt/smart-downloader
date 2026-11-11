@@ -64,6 +64,9 @@ struct DramaNativePage: View {
                         Text(info.name).font(.headline).lineLimit(2)
                         Text(vm.headerSubtitle)
                             .font(.caption).foregroundColor(.secondary)
+                        if let tags = vm.tags, !tags.isEmpty {
+                            Text(tags).font(.caption).foregroundColor(.secondary)
+                        }
                         if let intro = vm.intro {
                             Text(intro).font(.caption).foregroundColor(.secondary).lineLimit(4)
                         }
@@ -207,6 +210,7 @@ let dramaMetaJS = """
     title: document.title || '',
     ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
     ogTitle: q('meta[property="og:title"]'),
+    keywords: q('meta[name="keywords"]'),
     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
     imgs: imgs,
     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
@@ -244,8 +248,12 @@ enum DramaMetaDump {
 
 /// 一次性隐藏 webview：加载剧集页提取元数据（og:image/标题/简介），落库后释放。
 /// 仅在纯原生页缺封面/简介时使用；同一剧每次运行只收割一次。
+/// 2026-11-11 tags 来源改走请求拦截：注入响应捕获脚本，把剧集页全部 API 响应
+/// （api_*.json）与主文档完整 HTML（html_*.html）落盘，真机样本拿到后按 JSON
+/// 字段定向提取 tags（取代锚点法止血）。`-captureDramaMeta` 启动参数强制收割
+/// （绕过头部缓存判定），供已缓存剧补采样本。
 @MainActor
-final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
+final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     static var harvestedKeys: Set<String> = []
 
     static func harvest(target: DramaTarget) async {
@@ -272,11 +280,17 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
     private var pendingTarget: DramaTarget?
     private var finishHandler: (() -> Void)?
     private var finished = false
+    /// 捕获到的 API 响应（JSON 串数组，逐条追加重写落盘）
+    private var apiCaptures: [String] = []
 
     private func begin(target: DramaTarget) {
         pendingTarget = target
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()  // 与主浏览页共享登录态
+        // 请求拦截：捕获 XHR/fetch 响应体回传原生落盘（捕获模式只搬运不解析）
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.apiCaptureScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        config.userContentController.add(self, name: "apicap")
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: config)
         view.navigationDelegate = self
         webView = view
@@ -291,15 +305,111 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
     private func finish() {
         guard !finished else { return }
         finished = true
-        print("PLAYER_DBG [Entry] harvest finish")
+        // userContentController 强持有 handler，不解除会 harvester↔webview 循环引用
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "apicap")
+        print("PLAYER_DBG [Entry] harvest finish apiCaptures=\(apiCaptures.count)")
         finishHandler?()
         finishHandler = nil
+    }
+
+    // MARK: 请求拦截（tags 数据源调查）
+
+    /// JS -> 原生：一条 API 响应 {url,status,body}。追加数组并重写 api_*.json
+    /// （条数有 JS 侧上限，重写成本可忽略）；加密信封原样落盘，原生有现成
+    /// decryptPayload 可离线解。
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "apicap", let raw = message.body as? String,
+              let target = pendingTarget else { return }
+        apiCaptures.append(raw)
+        DramaMetaDump.write("[" + apiCaptures.joined(separator: ",\n") + "]",
+                            name: "api_\(target.site)_\(target.dramaID).json")
+    }
+
+    /// 响应捕获脚本：与嗅探器同骨架（Hook XHR/fetch），扩展为连响应体一起回传。
+    /// 只捕 JSON/text 类或 api/drama/playlet 相关 URL，单条 ≤200KB、总量 ≤40 条，
+    /// 避免静态资源灌爆落盘。不改变页面行为（fetch 返回原 resp，XHR 只监听 load）。
+    static let apiCaptureScript = #"""
+    (function () {
+      if (window.__apiCapLoaded) return;
+      window.__apiCapLoaded = true;
+      var count = 0;
+      function post(url, status, body) {
+        if (count >= 40) return;
+        count++;
+        try {
+          window.webkit.messageHandlers.apicap.postMessage(JSON.stringify({
+            url: String(url), status: status, body: String(body).slice(0, 200 * 1024)
+          }));
+        } catch (e) {}
+      }
+      function want(url, ct) {
+        return /json|text|javascript/.test(ct) || /api|drama|playlet/.test(String(url));
+      }
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        this.__capUrl = url;
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        var xhr = this;
+        xhr.addEventListener('load', function () {
+          try {
+            if (want(xhr.__capUrl, xhr.getResponseHeader('content-type') || '')) {
+              post(xhr.__capUrl, xhr.status, xhr.responseText);
+            }
+          } catch (e) {}
+        });
+        return origSend.apply(this, arguments);
+      };
+      if (window.fetch) {
+        var origFetch = window.fetch;
+        window.fetch = function (input) {
+          var url = typeof input === 'string' ? input : (input && input.url);
+          return origFetch.apply(this, arguments).then(function (resp) {
+            try {
+              if (want(url, resp.headers.get('content-type') || '')) {
+                resp.clone().text().then(function (t) { post(url, resp.status, t); }).catch(function () {});
+              }
+            } catch (e) {}
+            return resp;
+          });
+        };
+      }
+    })();
+    """#
+
+    /// 从页面可见文本提取话题标签（锚点法，过渡期止血）：站点布局「剧名 催更 <tag…> 播放 …」。
+    /// 2026-11-11 定案改走请求拦截（apiCaptureScript 落盘 API 响应/HTML），拿到样本后
+    /// 按 JSON 字段定向提取取代本函数；窗口法（黑名单/长 token 定界）因脆已回退。
+    /// 垃圾切片拒收：含超长 token 或短词成堆 = 定界失效，返回 nil 保持缓存可重收割，
+    /// 防「非空垃圾 → harvestIfNeeded 判已缓存」自锁。失败分支必须打日志。
+    /// 站点布局相关，勿移入下载核心（AGENTS：站点特有逻辑不进 core）。
+    static func parseTags(fromPageText text: String) -> [String]? {
+        let tokens = text.split(separator: " ").map(String.init)
+        guard let start = tokens.firstIndex(of: "催更"),
+              let end = tokens[(start + 1)...].firstIndex(of: "播放"), end > start + 1 else {
+            print("PLAYER_DBG [Entry] tags FAIL reason=anchorsMissing head=\(Array(tokens.prefix(12)))")
+            return nil
+        }
+        let tags = tokens[(start + 1)..<end].filter { !$0.isEmpty }
+        guard !tags.isEmpty, tags.count <= 8, !tags.contains(where: { $0.count >= 20 }) else {
+            print("PLAYER_DBG [Entry] tags FAIL reason=garbageSlice tags=\(tags)")
+            return nil
+        }
+        return tags
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // SPA 渲染滞后：轮询提取直到拿到 og/desc 或超时收尾
         Task { [weak self] in
             guard let self, let target = self.pendingTarget else { return }
+            // 主文档完整 HTML 一次性落盘：meta keywords / class 选择器的样本，
+            // SSR 直出 tags 时也是兜底证据（不用靠 innerText 猜选择器）
+            if let html = try? await webView.evaluateJavaScript("document.documentElement.outerHTML") as? String {
+                DramaMetaDump.write(String(html.prefix(2_000_000)),
+                                    name: "html_\(target.site)_\(target.dramaID).html")
+            }
             for _ in 0..<5 {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let result = try? await webView.evaluateJavaScript(dramaMetaJS) as? String,
@@ -308,6 +418,10 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
                 if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
                 if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
+                if let text = d["text"] as? String,
+                   let parsed = Self.parseTags(fromPageText: text) {
+                    update["tags"] = parsed.joined(separator: " ")
+                }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
                 let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"

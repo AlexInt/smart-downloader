@@ -25,6 +25,7 @@ final class PlayerFeedViewModel: ObservableObject {
 
     var seriesName: String { queue?.seriesName ?? "" }
     var intro: String? { queue?.intro }
+    var tags: String? { queue?.tags }
     var totalEpisodes: Int { slots.count }
 
     func configure(request: ImmersivePlaybackRequest) {

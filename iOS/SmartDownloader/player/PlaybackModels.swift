@@ -17,6 +17,8 @@ struct ImmersivePlaybackRequest: Identifiable {
     let id = UUID()
     let seriesName: String
     let intro: String?
+    /// 话题标签（剧集页 DOM 收割；下载页入口无元数据时为 nil）
+    var tags: String? = nil
     let startSort: Int
     var knownSorts: [Int] = []
 }

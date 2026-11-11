@@ -363,6 +363,7 @@ struct WebViewContainer: UIViewRepresentable {
                     title: document.title || '',
                     ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
                     ogTitle: q('meta[property="og:title"]'),
+                    keywords: q('meta[name="keywords"]'),
                     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
                     imgs: imgs,
                     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)

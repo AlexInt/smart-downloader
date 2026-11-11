@@ -20,6 +20,8 @@ enum DramaCache {
         var updateStatus: String?
         var cover: String?
         var intro: String?
+        /// 话题标签（DOM 收割，空格分隔；P7）
+        var tags: String?
         var episodes: [ApiDramaEpisode]  // 按 sort 升序，含 downloaded/folder
         var fetchedAt: String?
     }
@@ -65,6 +67,8 @@ enum DramaCache {
         if sqlite3_exec(db, schema, nil, nil, nil) != SQLITE_OK {
             fail(db, "schema")
         }
+        // v2 迁移：tags 列（话题标签，来自 DOM 收割 P7）。列已存在时 ALTER 报错，静默忽略
+        sqlite3_exec(db, "ALTER TABLE drama_cache ADD COLUMN tags TEXT;", nil, nil, nil)
         return db
     }
 
@@ -126,12 +130,12 @@ enum DramaCache {
     static func load(site: String, dramaID: String) -> Entry? {
         guard let db = openDB() else { return nil }
         defer { sqlite3_close(db) }
-        let infoSQL = "SELECT name, update_status, cover, intro, fetched_at FROM drama_cache WHERE site=? AND drama_id=?;"
+        let infoSQL = "SELECT name, update_status, cover, intro, tags, fetched_at FROM drama_cache WHERE site=? AND drama_id=?;"
         let epSQL = """
         SELECT episode_id, sort, playable, downloaded, folder
         FROM drama_episodes WHERE site=? AND drama_id=? ORDER BY sort;
         """
-        var name: String?, status: String?, cover: String?, intro: String?, fetchedAt: String?
+        var name: String?, status: String?, cover: String?, intro: String?, tags: String?, fetchedAt: String?
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, infoSQL, -1, &stmt, nil) == SQLITE_OK else {
@@ -141,7 +145,7 @@ enum DramaCache {
         bind(stmt, 2, dramaID)
         if sqlite3_step(stmt) == SQLITE_ROW {
             name = text(stmt, 0); status = text(stmt, 1); cover = text(stmt, 2)
-            intro = text(stmt, 3); fetchedAt = text(stmt, 4)
+            intro = text(stmt, 3); tags = text(stmt, 4); fetchedAt = text(stmt, 5)
         } else {
             sqlite3_finalize(stmt)
             return nil  // 剧不存在 → 视为无缓存
@@ -164,7 +168,7 @@ enum DramaCache {
                                          downloaded: downloaded, folder: folder))
         }
         sqlite3_finalize(stmt)
-        return Entry(name: name, updateStatus: status, cover: cover, intro: intro,
+        return Entry(name: name, updateStatus: status, cover: cover, intro: intro, tags: tags,
                      episodes: episodes, fetchedAt: fetchedAt)
     }
 
@@ -281,6 +285,12 @@ enum DramaCache {
         let existing = load(site: site, dramaID: dramaID)
         let cover = (update["cover"] as? String) ?? (update["ogImage"] as? String) ?? existing?.cover ?? ""
         let intro = (update["intro"] as? String) ?? (update["desc"] as? String) ?? existing?.intro ?? ""
+        // 本轮 DOM 没抓到 tags 时保留旧值、都没有则写 NULL，**绝不写空串**：
+        // 空串会被 VM 当成「已缓存」而永久跳过收割（P7 采集失败不可恢复的 bug）。
+        // 历史脏数据里的空串也一并归为「无」，让重进页/重启后能重新收割。
+        let existingTags = existing?.tags.flatMap { $0.isEmpty ? nil : $0 }
+        let newTags = (update["tags"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let tags = newTags ?? existingTags
         var pageMeta: [String: Any] = [:]
         let sql = "SELECT page_meta FROM drama_cache WHERE site=? AND drama_id=?;"
         var sel: OpaquePointer?
@@ -298,17 +308,22 @@ enum DramaCache {
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
         execWrite(db, """
-        INSERT INTO drama_cache (site, drama_id, cover, intro, page_meta, fetched_at)
-        VALUES (?,?,?,?,?,?)
+        INSERT INTO drama_cache (site, drama_id, cover, intro, tags, page_meta, fetched_at)
+        VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(site, drama_id) DO UPDATE SET
-          cover=excluded.cover, intro=excluded.intro, page_meta=excluded.page_meta
+          cover=excluded.cover, intro=excluded.intro, tags=excluded.tags, page_meta=excluded.page_meta
         """, what: "page meta upsert") { stmt in
             bind(stmt, 1, site)
             bind(stmt, 2, dramaID)
             bind(stmt, 3, cover)
             bind(stmt, 4, intro)
-            bind(stmt, 5, metaJSON)
-            bind(stmt, 6, ISO8601DateFormatter().string(from: Date()))
+            if let tags {
+                bind(stmt, 5, tags)
+            } else {
+                sqlite3_bind_null(stmt, 5)
+            }
+            bind(stmt, 6, metaJSON)
+            bind(stmt, 7, ISO8601DateFormatter().string(from: Date()))
         }
     }
 }
