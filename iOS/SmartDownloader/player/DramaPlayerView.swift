@@ -22,6 +22,13 @@ struct DramaPlayerView: View {
     var isEpisodeAvailable = true
     var nextEpisodeAvailable = true
     var toastText: String? = nil
+    /// 长按松手后 250ms 内到达的单击 = 同一次抬手的误触，吞掉。
+    /// 真机日志实证：短按 2x 快速松手会被同时认成长按结束和单击
+    /// （LONGPRESS ended → TAP → togglePlayback → 误暂停）
+    @State private var suppressTapUntil = Date.distantPast
+    /// 本次触摸是否由长按独占（未被 seek 抢占）：只有它才需要吞松手误触；
+    /// 被 seek 抢占的长按（拖动 >10pt）抬手本来就不可能再出单击
+    @State private var longPressOwnedTouch = false
     private var timeText: String {
         playback.isReady ? playback.currentTimeText : (episode.previewCurrentTime ?? "00:00")
     }
@@ -97,19 +104,38 @@ struct DramaPlayerView: View {
         .ignoresSafeArea()
         .background(DWColor.background.ignoresSafeArea())
         // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
-        // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）
+        // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）。
+        // 长按 2x 与水平 seek 的冲突仲裁 = 「先起者独占本次触摸」（真机日志实证三类冲突）：
+        //   ① 拖动先起 → seek 独占：拖动中长按被识别也不得起 2x（pressing 查 isSeekGestureActive）
+        //   ② 长按先起 → 2x 独占：2x 期间 seek 全跳过（VM.seek guard isFastForwarding）；
+        //      maximumDistance 放开到 10_000 —— 2x 不靠位移距离掐断（原 40pt：按住 2x
+        //      手一漂就掉回 1x），漂移中的误 seek 由 ①② 闸门挡住
+        //   ③ 短按 2x 快速松手 → 同一次抬手还会被认成单击，误暂停（250ms 抑制窗吞掉）
         .contentShape(Rectangle())
         .onTapGesture {
+            if Date() < suppressTapUntil {
+                print("PLAYER_DBG [CHECK] TAP SKIP reason=justEndedLongPress")
+                return
+            }
             print("PLAYER_DBG [CHECK] TAP → togglePlayback")
             playback.togglePlayback()
         }
-        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 40, pressing: { pressing in
+        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 10_000, pressing: { pressing in
             if pressing {
+                guard !playback.isSeekGestureActive else {
+                    print("PLAYER_DBG [CHECK] LONGPRESS SKIP reason=seeking")
+                    return
+                }
+                longPressOwnedTouch = true
                 print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
                 playback.beginFastForward()
             } else {
                 print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
                 playback.endFastForward()
+                if longPressOwnedTouch {
+                    suppressTapUntil = Date().addingTimeInterval(0.25)
+                }
+                longPressOwnedTouch = false
             }
         }, perform: {})
     }

@@ -37,10 +37,26 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证方法（真机抓 log，见 §6）：预热生效应看到 `preload OK sort=N` → 滑动后 `makeItem HIT` → `load OK ... waitedMs=<几十>`（旧轮询是 `waited=1~3` 即 100–300ms），且滑动切集不再出现转圈。
 
-**真机首测暴露两个 bug，已修（2026-11-11）**：
-1. **seek 非第一页全失效**：`location(in: scrollView)` 是内容坐标（含 contentOffset），未换算成屏幕坐标就喂给 `isInSeekBand`；第一页 offset=0 掩盖了问题。已在 shouldBegin / didSeekPan 减 contentOffset（log 现在同时打 screenY 与 contentY）。
-2. **预热池被自己的淘汰逻辑打穿（全 MISS）**：pageSettled 只报邻居为 wanted，每次滑动先把上一轮为当前集预热的资产淘汰掉再 makeItem。修复：wanted = [当前集] + 邻居（调用方 `preloadNeighbors(of:current:)` 保证）。曾试过在 service 加 `playingSort` 过滤避免重复预热，但它把「刚离开的集」也剔出 wanted——该集资产已被消费又永不重暖，**回滑必 MISS**，已删；重暖刚离开的集本来就是来回滑动的 HIT 保险（它总是新当前的邻居），代价仅一次回环 m3u8 解析。
-3. 附带修正 `waitedMs` 日志换算（`components.seconds` 只有整秒，亚秒在 attoseconds，此前 <1s 全打成 0ms）。
+**真机首测暴露两个 bug，已修（2026-11-11，复测日志确认生效）**：
+1. **seek 非第一页全失效**：`location(in: scrollView)` 是内容坐标（含 contentOffset），未换算成屏幕坐标就喂给 `isInSeekBand`；第一页 offset=0 掩盖了问题。已在 shouldBegin / didSeekPan 减 contentOffset（log 现在同时打 screenY 与 contentY）。复测：任意页 `inBand=true`、fraction 跟手。
+2. **预热池被自己的淘汰逻辑打穿（全 MISS）**：pageSettled 只报邻居为 wanted，每次滑动先把上一轮为当前集预热的资产淘汰掉再 makeItem。修复：wanted = [当前集] + 邻居（调用方 `preloadNeighbors(of:current:)` 保证）。曾试过在 service 加 `playingSort` 过滤避免重复预热，但它把「刚离开的集」也剔出 wanted——该集资产已被消费又永不重暖，**回滑必 MISS**，已删；重暖刚离开的集本来就是来回滑动的 HIT 保险（它总是新当前的邻居），代价仅一次回环 m3u8 解析。复测：正滑 / 回滑全部 `makeItem HIT`。
+3. 附带修正 `waitedMs` 日志换算（`components.seconds` 只有整秒，亚秒在 attoseconds，此前 <1s 全打成 0ms）。复测：HIT 实测 642–871ms、入口 MISS 1008–1177ms。
+
+### 长按 2x 与滑动的冲突仲裁（2026-11-11 第二批，待真机验证）
+
+用户报告「滑动与长按 2 倍偶尔冲突」，日志实证三类，规则定为 **「先起者独占本次触摸」**：
+
+| 冲突 | 日志实证 | 修复 |
+|---|---|---|
+| 慢起拖拽误触发 2x | `seekPan shouldBegin → LONGPRESS began → 2x →（拖动继续）`：长按 maxDistance=40 远大于 pan 起手阈值 ~10pt，拖拽 0.15s 内位移 <40pt 长照样识别 | ① 拖动先起 → seek 独占：pressing 起手 guard `isSeekGestureActive` |
+| 按住 2x 指头漂移误 seek | 2x 保持中 `seekPan x=235 dx=27 dy=-6 → seek fraction=0.59` 位置跳变；且漂移 >40pt 时 2x 掉回 1x | ② 长按先起 → 2x 独占：`VM.seek` guard `isFastForwarding`；`maximumDistance` 40→10_000（2x 不靠位移掐断） |
+| 短按 2x 快速松手误暂停 | `LONGPRESS ended → 1x → TAP → togglePlayback → pause`，之后 `beginFastForward SKIP control=0` 证明暂停生效（同一次抬手被同时认成长按结束和单击） | ③ 250ms 抑制窗（`suppressTapUntil`）+ `longPressOwnedTouch`：只有未被 seek 抢占的长按才吞松手误触（被抢占的拖动抬手不可能出单击） |
+
+配套改动：`didSeekPan` 只在 `.changed` 寻址，`.ended/.cancelled/.failed` 只调 `endSeekGesture()`——**抬手不补 seek**（fraction 取绝对位置，最后一次 .changed 已到位；且防「松手先清 2x → .ended 的 seek 穿过闸门」竞态跳变）。`isSeekGestureActive` 为非渲染状态（故意不用 @Published），load/stop 兜底清位。
+
+验证日志看点：拖动中只出 `LONGPRESS SKIP reason=seeking`（不再有拖动中的 `LONGPRESS began`）；按住 2x 漂移只出 `seek SKIP reason=fastForwarding`、无位置跳变、2x 不中断；2x 松手后若出 `TAP SKIP reason=justEndedLongPress` 即误触被吞；正常单击仍出 `TAP → togglePlayback`。
+
+已知观察（未改，待用户定夺）：预热 HIT 后就绪仍需 642–1177ms（m3u8 已解析，剩首段拉取+解码），300ms spinner 延迟被普遍超过 → 每次滑动都会闪一下转圈。可选：把延迟提到 ~800ms（HIT 路径基本无感，真正慢的入口 MISS 仍会显示）。
 
 ### 交互细节修复批（同日第二批，待真机验证）
 

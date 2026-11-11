@@ -11,6 +11,10 @@ final class DramaPlayerViewModel: ObservableObject {
 
     @Published private(set) var isReady = false
     @Published private(set) var isFastForwarding = false
+    /// seek 手势进行中（seekPan 的 .changed 已在寻址）：「拖动先起」的触摸由 seek 独占，
+    /// 长按不得中途插入起 2x —— 与 isFastForwarding 构成双向互斥（谁先起谁独占本次触摸）。
+    /// 非渲染状态，故意不用 @Published（避免每次 seek 触发无意义的视图刷新）
+    private(set) var isSeekGestureActive = false
     @Published private(set) var currentTimeText = "00:00"
     @Published private(set) var durationText = "00:00"
     @Published private(set) var progress: Double = 0
@@ -63,6 +67,7 @@ final class DramaPlayerViewModel: ObservableObject {
     func load(episode: PlayableEpisode) async {
         print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable)")
         endFastForward()
+        endSeekGesture()
         loadError = nil
         isReady = false
         resetTimes()
@@ -140,6 +145,15 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     func seek(fraction: Double) {
+        isSeekGestureActive = true
+        guard !isFastForwarding else {
+            // 「长按先起」的触摸由 2x 独占：按住 2x 期间指头在进度带内漂移不得 seek
+            if abs(fraction - lastLoggedSeek) > 0.05 {
+                lastLoggedSeek = fraction
+                print("PLAYER_DBG [Playback] seek SKIP reason=fastForwarding fraction=\(String(format: "%.2f", fraction))")
+            }
+            return
+        }
         guard let item = player.currentItem else {
             print("PLAYER_DBG [Playback] seek SKIP reason=noItem fraction=\(String(format: "%.2f", fraction))")
             return
@@ -159,9 +173,17 @@ final class DramaPlayerViewModel: ObservableObject {
         syncTime(target)
     }
 
+    /// seekPan 抬手 / 被系统滚动抢占：结束「拖动独占」标记，下一次长按可正常起 2x
+    func endSeekGesture() {
+        guard isSeekGestureActive else { return }
+        isSeekGestureActive = false
+        print("PLAYER_DBG [Playback] seekGesture end")
+    }
+
     func stop() {
         print("PLAYER_DBG [Playback] stop")
         isFastForwarding = false
+        endSeekGesture()
         cancelSpinnerDelay()
         playerService.clear()
         if let timeObserver {

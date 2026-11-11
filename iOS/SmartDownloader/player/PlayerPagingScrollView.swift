@@ -127,18 +127,26 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         }
 
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
-            guard pan.state == .changed || pan.state == .ended,
-                  let view = pan.view as? UIScrollView else { return }
-            let t = pan.translation(in: view)
-            guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
-            // 同 shouldBegin：内容坐标 → 屏幕坐标（纵向分页 contentOffset.x 恒为 0，防御性换算）
-            let x = pan.location(in: view).x - view.contentOffset.x
-            let fraction = PlayerGesturePolicy.seekFraction(screenX: x, screenSize: view.bounds.size)
-            if abs(fraction - lastLoggedSeek) > 0.05 {
-                lastLoggedSeek = fraction
-                print("PLAYER_DBG [CHECK] seekPan x=\(Int(x)) dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction))")
+            guard let view = pan.view as? UIScrollView else { return }
+            switch pan.state {
+            case .changed:
+                let t = pan.translation(in: view)
+                guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
+                // 同 shouldBegin：内容坐标 → 屏幕坐标（纵向分页 contentOffset.x 恒为 0，防御性换算）
+                let x = pan.location(in: view).x - view.contentOffset.x
+                let fraction = PlayerGesturePolicy.seekFraction(screenX: x, screenSize: view.bounds.size)
+                if abs(fraction - lastLoggedSeek) > 0.05 {
+                    lastLoggedSeek = fraction
+                    print("PLAYER_DBG [CHECK] seekPan x=\(Int(x)) dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction))")
+                }
+                parent.playback.seek(fraction: fraction)
+            case .ended, .cancelled, .failed:
+                // 抬手不补 seek：fraction 取自绝对位置，最后一次 .changed 已到位；
+                // 也避免「2x 长按抬手先清了 isFastForwarding → .ended 的 seek 反而穿过闸门」的竞态跳变。
+                // 只结束「拖动独占」标记，下一次长按可正常起 2x
+                parent.playback.endSeekGesture()
+            default: break
             }
-            parent.playback.seek(fraction: fraction)
         }
 
         // MARK: 页面管理
