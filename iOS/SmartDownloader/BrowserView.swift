@@ -534,7 +534,7 @@ struct DramaNativePage: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .fullScreenCover(item: $immersivePlayback) { request in
-            DramaPlayerContainer(request: request)
+            DramaPlayerContainer(request: request, onClose: { immersivePlayback = nil })
         }
         .task(id: reloadID) { await load() }
         .onAppear { preloadHeaderFromCache() }

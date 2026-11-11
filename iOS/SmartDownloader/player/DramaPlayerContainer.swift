@@ -230,13 +230,16 @@ final class PlayerSurfaceUIView: UIView {
 /// 散装单集没有「上下滑切集」语义，仍走 DownloadsView 的 AVKit PlayerView。
 struct DramaPlayerContainer: View {
     let request: ImmersivePlaybackRequest
+    /// 显式关闭：把外层 fullScreenCover(item:) 的绑定置 nil，比只调 dismiss() 可靠
+    var onClose: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @StateObject private var vm = DramaPlayerViewModel()
     @State private var index: Int
-    @State private var dragY: CGFloat = 0
 
-    init(request: ImmersivePlaybackRequest) {
+    /// 自定义 init 会隐藏成员构造器，新增参数必须在这里显式接收
+    init(request: ImmersivePlaybackRequest, onClose: @escaping () -> Void = {}) {
         self.request = request
+        self.onClose = onClose
         let last = max(0, request.episodes.count - 1)
         _index = State(initialValue: min(max(0, request.startIndex), last))
     }
@@ -255,11 +258,14 @@ struct DramaPlayerContainer: View {
                                     index: current.sort,
                                     total: request.episodes.count),
                     vm: vm,
-                    onClose: { dismiss() },
-                    hasNextEpisode: index < request.episodes.count - 1
+                    onClose: {
+                        onClose()          // 先清绑定，确保 cover 真的关闭
+                        dismiss()
+                    },
+                    hasNextEpisode: index < request.episodes.count - 1,
+                    onNextEpisode: { nextEpisode() },
+                    onPreviousEpisode: { previousEpisode() }
                 )
-                .offset(y: dragY)
-                .gesture(swipeGesture)
                 .task(id: current.id) {
                     await vm.load(episode: current)
                 }
@@ -273,7 +279,7 @@ struct DramaPlayerContainer: View {
                         Text("没有可播放的已下载集")
                             .font(DWFont.cn(13))
                             .foregroundStyle(DWColor.textBody)
-                        Button("返回") { dismiss() }
+                        Button("返回") { onClose(); dismiss() }
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -282,20 +288,14 @@ struct DramaPlayerContainer: View {
         .onDisappear { vm.stop() }
     }
 
-    /// 只响应纵向主导的拖动；横向留给进度条 seek
-    private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onChanged { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                dragY = value.translation.height * 0.35
-            }
-            .onEnded { value in
-                let dy = value.translation.height
-                let dx = value.translation.width
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { dragY = 0 }
-                guard abs(dy) > abs(dx), abs(dy) > 60 else { return }
-                if dy < 0, index < request.episodes.count - 1 { index += 1 }
-                if dy > 0, index > 0 { index -= 1 }
-            }
+    /// 切集：手势已在 DramaPlayerView 内统一识别，这里只负责改索引
+    private func nextEpisode() {
+        guard index < request.episodes.count - 1 else { return }
+        index += 1
+    }
+
+    private func previousEpisode() {
+        guard index > 0 else { return }
+        index -= 1
     }
 }

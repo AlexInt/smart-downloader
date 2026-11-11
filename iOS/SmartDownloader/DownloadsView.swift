@@ -379,7 +379,7 @@ struct SeriesDetailView: View {
             PlayerView(item: item)
         }
         .fullScreenCover(item: $immersivePlayback) { request in
-            DramaPlayerContainer(request: request)
+            DramaPlayerContainer(request: request, onClose: { immersivePlayback = nil })
         }
     }
 
