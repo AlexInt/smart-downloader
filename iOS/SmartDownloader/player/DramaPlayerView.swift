@@ -74,8 +74,11 @@ struct DramaPlayerView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
                 .allowsHitTesting(false)
 
-                // ── ④ 手势：点按 / 长按上移到 PlayerFeedView 的 ScrollView 同层级。
-                //    卡片内不放任何覆盖全屏的手势层，确保系统 pan 不被子视图抢走。 ─
+                // ── ④ 手势（离散）：点按暂停 / 长按倍速放卡片自身（body 末尾的
+                //    onTapGesture / onLongPressGesture）。SwiftUI 手势深度优先解析：
+                //    Button（返回/静音/点赞/收藏）天然优先于卡片手势，点控件不连带
+                //    暂停，无需控件区几何判定。连续手势（水平 seek / 左缘返回）仍在
+                //    UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
 
                 // ── ⑤ 设计稿 UI 层（390×840，只含文字/按钮/图标） ─
                 designOverlay
@@ -87,6 +90,22 @@ struct DramaPlayerView: View {
         }
         .ignoresSafeArea()
         .background(DWColor.background.ignoresSafeArea())
+        // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
+        // 点静音/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）
+        .contentShape(Rectangle())
+        .onTapGesture {
+            print("PLAYER_DBG [CHECK] TAP → togglePlayback")
+            playback.togglePlayback()
+        }
+        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 40, pressing: { pressing in
+            if pressing {
+                print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
+                playback.beginFastForward()
+            } else {
+                print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
+                playback.endFastForward()
+            }
+        }, perform: {})
     }
 
     /// 设计稿节点，坐标一律来自设计文件，勿凭目测调整。

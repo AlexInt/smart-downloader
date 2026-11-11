@@ -32,19 +32,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         }
         print("PLAYER_DBG [UIScroll] makeUIView paging=\(scroll.isPagingEnabled) interaction=\(scroll.isUserInteractionEnabled)")
 
-        let tap = UITapGestureRecognizer(target: context.coordinator,
-                                         action: #selector(Coordinator.didTap(_:)))
-        tap.cancelsTouchesInView = false
-        scroll.addGestureRecognizer(tap)
-
-        // 长按倍速：0.25s 体感偏慢（用户反馈「长按一段时间才出 2x」），收紧到 0.15s
-        let longPress = UILongPressGestureRecognizer(target: context.coordinator,
-                                                    action: #selector(Coordinator.didLongPress(_:)))
-        longPress.minimumPressDuration = 0.15
-        longPress.allowableMovement = 40
-        longPress.cancelsTouchesInView = false
-        scroll.addGestureRecognizer(longPress)
-
+        // 只挂「连续」手势：水平 seek 与左缘返回必须与系统分页 pan 共存，所以留在 UIKit 层。
+        // 点按暂停 / 长按倍速是离散手势，已放回卡片内用 SwiftUI 手势（深度优先解析，
+        // Button 天然优先于卡片手势，点控件不连带暂停，无需控件区判定表）。
         let seekPan = UIPanGestureRecognizer(target: context.coordinator,
                                              action: #selector(Coordinator.didSeekPan(_:)))
         seekPan.cancelsTouchesInView = false
@@ -95,32 +85,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
         // MARK: 离散手势
 
-        /// 点按 → 暂停。控件区（返回/静音/点赞/收藏）内的点按交给 SwiftUI Button，
-        /// 不再连带触发暂停（此前点静音会先暂停视频）。
-        @objc func didTap(_ tap: UITapGestureRecognizer) {
-            guard let view = tap.view else { return }
-            let loc = tap.location(in: view)
-            let onControl = PlayerGesturePolicy.isTapOnControl(
-                screenX: loc.x, screenY: loc.y, screenSize: view.bounds.size)
-            if onControl {
-                print("PLAYER_DBG [CHECK] TAP on control (\(Int(loc.x)),\(Int(loc.y))) → ignore pause")
-                return
-            }
-            print("PLAYER_DBG [CHECK] TAP (\(Int(loc.x)),\(Int(loc.y))) → togglePlayback")
-            parent.playback.togglePlayback()
-        }
-
-        @objc func didLongPress(_ gesture: UILongPressGestureRecognizer) {
-            switch gesture.state {
-            case .began:
-                print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
-                parent.playback.beginFastForward()
-            case .ended, .cancelled, .failed:
-                print("PLAYER_DBG [CHECK] LONGPRESS \(gesture.state == .ended ? "ended" : "cancelled") → 1x")
-                parent.playback.endFastForward()
-            default: break
-            }
-        }
+        // 点按暂停 / 长按倍速已移回卡片内 SwiftUI 手势（见 DramaPlayerView body 末尾），
+        // 这里不再挂 UITapGestureRecognizer / UILongPressGestureRecognizer。
 
         /// 左缘右滑返回：拖过 50pt 即触发（不必等抬手），每次手势只触发一次
         @objc func didEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {

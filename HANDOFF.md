@@ -43,7 +43,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 1. **底部布局收紧**：左下信息簇（账号/标题/简介/标签/音频）整体下移 44pt，进度条 y 700→744、宽 290→350（左右边距对称各 20pt），时长文字右对齐到进度条右端；进度条与「上滑观看下一集」间距 97→53pt。
 2. **点赞/收藏文字居中**：文字框改为与按钮框同位同宽（中心 347），修掉右偏 10pt。
 3. **静音图标**：无独立静音素材，`ic_sound` 静音时变灰 + 叠加金色 45° 斜线。
-4. **点控件不再连带暂停**：`didTap` 先过 `PlayerGesturePolicy.isTapOnControl`（返回/静音/点赞/收藏控件区外扩 12pt），区域内点按交给 SwiftUI Button。
+4. **点控件不再连带暂停**：点按/长按从 UIScrollView 识别器移回**卡片内 SwiftUI 手势**（`.onTapGesture` / `.onLongPressGesture(pressing:)`）——SwiftUI 深度优先解析让 Button（返回/静音/点赞/收藏）天然优先，删掉了 `isTapOnControl` 几何判定表（用户指出维护成本高：每加一个控件都要登记）。离散手势与系统分页不冲突，只有连续手势必须留在 UIKit 层。
 5. **左缘右滑返回**：fullScreenCover 无系统边缘返回，`UIScreenEdgePanGestureRecognizer`（.left，与系统 pan 同时识别）拖过 50pt 即触发 `onClose`。
 6. **长按 2x 提速**：`minimumPressDuration` 0.25→0.15s，提示淡入 0.15→0.1s。
 7. **松手立即回 1x**：根因是 `endFastForward` 只在 `.playing` 时置 `rate=1`，缓冲等待态（`.waitingToPlayAtSpecifiedRate`）被漏掉，缓冲恢复后仍是 2x；现在只要非暂停一律拨回 `rate=1`，`beginFastForward` 也接受等待态起 2x。
@@ -88,6 +88,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 3 | 非当前卡片的状态显示隔离 | 相邻卡片复用了当前卡的进度/点赞/收藏显示（`DramaPlayerView` 里 playback 是共享单例），需按 isActive 隔离为静态预览值 | 中 |
 | 4 | 未下载占位页拦截 | 有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」空页；用户明确**记下待办、本次不做**，期望是滑到未下载集时提示「已经到底了」式引导 | 低（用户定级） |
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
+| 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
 
 ## 6. 验证与调试
 
@@ -102,7 +103,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 
 - 排障一律**先加 log 再请用户提供 log**，靠日志判读，不靠猜测改代码（这是本项目的协作模式，用户会贴 log）。
 - 秒开链路关键 log 行：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK ... waitedMs=` / `spinner show`（出现即说明 300ms 未就绪）/ `status STALE`。
-- 交互修复链路关键 log 行：`TAP on control (...) → ignore pause`（点控件不暂停）/ `TAP (...) → togglePlayback` / `edgePan dx=.. > 50 → back` / `LONGPRESS began|ended → 2x|1x`。
+- 交互链路关键 log 行：`TAP → togglePlayback` / `LONGPRESS began|ended → 2x|1x` / `edgePan dx=.. > 50 → back`。
 - 冒烟工具（macOS，不需手机）：`iOS/smoke/` 下 coretest / playtest 等，编译命令见 AGENTS.md。
 
 ## 7. 硬性禁止（全文见 AGENTS.md，此处摘要）

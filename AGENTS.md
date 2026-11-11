@@ -87,7 +87,10 @@ View → ViewModel → Service → 系统能力 / Model
 ### 具体约定
 
 1. 上下滑资源调度唯一入口是 `PlaybackQueueService`；**后续本地推荐算法只改 `resolveNext(from:in:)` / `resolvePrevious(from:in:)`**，不动 View / 容器 / ViewModel。
-2. 播放页用 **UIKit 原生分页**：`PlayerPagingScrollView`（`UIViewRepresentable` 包 `UIScrollView.isPagingEnabled = true` + `UIHostingController` 承载 SwiftUI 卡片）。纵向 pan 由 UIKit 独占，**卡片内禁止任何连续手势（包括局部 DragGesture）** —— 曾因进度带 390×120 的局部 DragGesture 吃掉全部纵向滑动，导致分页完全滑不动。点按 / 长按 / 水平 seek / 左缘返回一律用 UIKit recognizer 挂在同一 UIScrollView 上，`cancelsTouchesInView = false`；seekPan 与左缘 edgePan 通过 delegate 与系统 pan 同时识别；seekPan 只在「起点落在进度带 + 水平主导」时生效。**点按暂停必须先过 `PlayerGesturePolicy.isTapOnControl` 排除控件区**（返回/静音/点赞/收藏，外扩 12pt）——否则点静音会连带暂停。几何判定全在 `PlayerGesturePolicy`（纯函数），**其中坐标值必须与 `DramaPlayerView` 的 designFrame 同步修改**（进度条移动/加宽时曾需同时改 seek 带与 fraction 宽度）。边界提示由 ViewModel 在停到末页时给出。
+2. 播放页用 **UIKit 原生分页**：`PlayerPagingScrollView`（`UIViewRepresentable` 包 `UIScrollView.isPagingEnabled = true` + `UIHostingController` 承载 SwiftUI 卡片）。纵向 pan 由 UIKit 独占，**卡片内禁止任何连续手势（包括局部 DragGesture）** —— 曾因进度带 390×120 的局部 DragGesture 吃掉全部纵向滑动，导致分页完全滑不动。手势分两类落位：
+   - **连续手势**（水平 seekPan / 左缘 edgePan 返回）→ UIKit recognizer 挂在同一 UIScrollView 上，`cancelsTouchesInView = false`，通过 delegate 与系统 pan 同时识别；seekPan 只在「起点落在进度带 + 水平主导」时生效。
+   - **离散手势**（点按暂停 / 长按倍速）→ **卡片内 SwiftUI 手势**（`.onTapGesture` / `.onLongPressGesture(pressing:)`）。SwiftUI 手势按深度优先解析：卡片上的 Button（返回/静音/点赞/收藏）天然优先于卡片手势，点控件不会连带暂停，**不需要控件区判定表**（曾用 `PlayerGesturePolicy.isTapOnControl` 几何表排除控件区，因每个新控件都要登记、维护成本高，已删）。
+   - 几何判定全在 `PlayerGesturePolicy`（纯函数），**其中坐标值必须与 `DramaPlayerView` 的 designFrame 同步修改**（进度条移动/加宽时曾需同时改 seek 带与 fraction 宽度）。边界提示由 ViewModel 在停到末页时给出。
    - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
 3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `asset.load(.isPlayable)` 完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT）+ `DramaPlayerViewModel` 的 **KVO 事件流就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 300ms 延迟显示**（`isLoadingSlow`）。
 4. 进度只在进度条上下各 60pt 带内响应水平滑动；带外水平滑动无效果；垂直滑动只切集，不碰进度。

@@ -101,7 +101,7 @@ final class PlaybackPlayerService {
         let asset = AVURLAsset(url: url)
         do {
             // .isPlayable 会完成 m3u8 的拉取与解析 —— 预热的核心收益
-            try await asset.load(.isPlayable)
+            _ = try await asset.load(.isPlayable)
         } catch {
             print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=\(error.localizedDescription)")
             return
