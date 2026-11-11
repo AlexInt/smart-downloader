@@ -41,9 +41,10 @@ struct DramaPlayerView: View {
     private var progressValue: CGFloat {
         CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
     }
-    /// 进度 HUD 可见性：非清屏常驻；清屏下仅 seek 进行中（含松手 800ms 停留）显示
+    /// 进度 HUD 可见性：非清屏常驻；清屏下仅 seek 进行中（含松手 800ms 停留）显示。
+    /// isActive 参与判定：isScrubbing 是当前集的共享状态，邻卡不跟着闪 HUD
     private var isProgressVisible: Bool {
-        !playback.isCleanScreen || playback.isScrubbing
+        isActive && (!playback.isCleanScreen || playback.isScrubbing)
     }
 
     var body: some View {
@@ -386,7 +387,8 @@ struct DramaPlayerView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(.black.opacity(0.55), in: Capsule())
-            .opacity(playback.isFastForwarding ? 1 : 0)
+            // isActive：isFastForwarding 是当前集的共享状态，邻卡不跟着显示 2x 胶囊
+            .opacity(isActive && playback.isFastForwarding ? 1 : 0)
             .animation(.easeIn(duration: 0.1), value: playback.isFastForwarding)
             .designFrame(95, 300, 200, 34)
             .allowsHitTesting(false)
