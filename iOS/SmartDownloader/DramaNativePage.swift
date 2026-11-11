@@ -221,9 +221,11 @@ let dramaMetaJS = """
 enum DramaMetaDump {
     /// 文件名 sanitize：site 形如 https://yeguodj.com，直接拼进文件名时
     /// 斜杠会让 write 把它当子路径解析（真机日志实证：文件夹“yeguodj.com_4094.json”不存在）；
-    /// 非字母数字一律替换为 _
+    /// 仅替换路径非法字符，保留点号与连字符——否则 .json 扩展名也变 _json，文件无法直接打开
+    ///（真机实证：harvest_https___yeguodj_com_4073_json）
     static func sanitized(_ raw: String) -> String {
-        String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        return String(raw.map { allowed.contains($0) ? $0 : "_" })
     }
 
     static func write(_ string: String, name: String) {
