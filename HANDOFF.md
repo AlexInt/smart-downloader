@@ -114,6 +114,20 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证日志看点：清屏下拖动进度带 → `scrub show clean=1` 且进度条+时间淡入；松手 → `seekGesture end`，800ms 后 `scrub hide reason=linger800ms`；带内纵向滑动（切集）不出 `scrub show`（.changed 的水平主导 guard 先拦）；2x 按住漂移不出 `scrub show`（fastForwarding guard 先拦）。
 
+### 清屏盲操作 seek 命中率（2026-11-11 第五批，待真机验证）
+
+用户报告「清屏下左右滑动经常看不到进度条，也经常没有实际影响进度」。真机日志（a9e9400 构建）实证，**不是仲裁错**：带内触摸（screenY 714/719/722/725/744）全部 seek 成功、全部 LONGPRESS 被 .began 闸门正确压制（全程无一次误触 2x）。真正根因是**几何命中带太窄 + 盲按落点在带外**：
+
+1. seek 带设计 ±60（y 684..804），402×874 机型 scale≈1.031 → 实际屏幕带 [709,833]；
+2. 清屏下进度条不可见，用户盲按落点集中在 screenY 649–704 —— 整批落在带顶上方 5~60pt → `seekStartInBand=false` → `.changed` 全程不 seek、无 HUD（静默失败。带外横滑无效果是约定语义，但盲按不知道带在哪就等于不可用）。
+
+修复（两件）：
+
+1. **清屏命中带放宽 ±120**（设计 624..844，覆盖底部 1/4 屏幕，用户全部落点 626~720 设计值入带）：`PlayerGesturePolicy.isInSeekBand(screenY:screenSize:expanded:)`，档位由 `playback.isCleanScreen` 在 seekPan .began 处选择；普通模式 ±60 不变（进度条可见、可精确暗准）。fraction 映射不变。
+2. **开启清屏闪现进度条+时间 1.5s**（`scrub show reason=cleanScreenOn` → `scrub hide reason=linger1500ms`）：给盲操作一次「带在哪」的空间参照；init 恢复清屏态时同样触发（每次进清屏播放页提示一次）。日志格式变更：`scrub show` 现在带 `reason=`（seek / cleanScreenOn），`scrub hide` 的 reason 改为 `linger800ms`/`linger1500ms`。
+
+验证日志看点：清屏下 screenY 650~700 起手的横滑应出 `startInBand=true expanded=true` 并正常 seek+出 HUD；开清屏出 1.5s 进度条闪现；普通模式带外横滑仍静默（不回归）；2x 仲裁行为不变（闸门仍 .began 即翻转）。
+
 ### 清屏模式
 
 - 静音旁（左侧，设计稿 277,41）新增「清屏」按钮：隐藏界面信息组（字幕/左下信息区/互动栏/上滑提示/上下压暗；进度条+时间已拆出为 seek 瞬态 HUD，见上节），保留常驻控件（返回/静音/清屏/集数胶囊）与瞬态反馈（倍速/加载/错误/toast）。切换 0.2s 交叉淡入淡出。

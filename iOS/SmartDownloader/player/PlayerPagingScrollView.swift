@@ -129,8 +129,10 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                 // location(in: scrollView) 是内容坐标（含 contentOffset），喂 PlayerGesturePolicy
                 // 前必须减 contentOffset 换算成屏幕坐标（第一页 offset=0 会掩盖此问题）。
                 let y = pan.location(in: view).y - view.contentOffset.y
-                seekStartInBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size)
-                print("PLAYER_DBG [CHECK] seekPan began screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) startInBand=\(seekStartInBand)")
+                // 清屏下进度带不可见，用放宽的 ±120 盲操作命中带；普通模式维持 ±60
+                let expanded = parent.playback.isCleanScreen
+                seekStartInBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size, expanded: expanded)
+                print("PLAYER_DBG [CHECK] seekPan began screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) startInBand=\(seekStartInBand) expanded=\(expanded)")
                 parent.playback.beginSeekGesture()
             case .changed:
                 // 起点在带外的触摸全程不 seek（带外水平滑动无效果），但仲裁闸门照常生效

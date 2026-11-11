@@ -15,10 +15,16 @@ struct PlayerGesturePolicy {
         (size.height - 840 * scale(in: size)) / 2
     }
 
-    /// 屏幕 y 是否落在进度条(y=744) 上下各 60 的带内
-    static func isInSeekBand(screenY y: CGFloat, screenSize size: CGSize) -> Bool {
-        let top = offsetY(in: size) + 684 * scale(in: size)
-        let bottom = offsetY(in: size) + 804 * scale(in: size)
+    /// 屏幕 y 是否落在进度条(y=744)的 seek 命中带内。
+    /// 普通模式 ±60（设计 684..804）；清屏下进度条不可见、全靠盲按，±60 太窄——
+    /// 真机日志实证盲按落点集中在带顶上方 5~60pt（402×874 机型带顶 709，落点 649~704
+    /// 整批被拒，静默无 seek 无 HUD），放宽到 ±120（设计 624..844）覆盖底部 1/4 屏幕。
+    /// fraction 映射不变：仍按进度条 x=20..350 宽度换算。
+    static func isInSeekBand(screenY y: CGFloat, screenSize size: CGSize, expanded: Bool) -> Bool {
+        let topDesign: CGFloat = expanded ? 624 : 684
+        let bottomDesign: CGFloat = expanded ? 844 : 804
+        let top = offsetY(in: size) + topDesign * scale(in: size)
+        let bottom = offsetY(in: size) + bottomDesign * scale(in: size)
         return y >= top && y <= bottom
     }
 

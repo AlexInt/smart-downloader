@@ -43,6 +43,14 @@ final class DramaPlayerViewModel: ObservableObject {
         didSet {
             preferences.isCleanScreen = isCleanScreen
             print("PLAYER_DBG [Playback] cleanScreen=\(isCleanScreen) → persist")
+            // 开启清屏（含 init 恢复）时让进度条+时间闪现 1.5s：盲操作前给一次
+            // 「带在哪」的空间参照——用户不知道往哪儿按，带外起点整批静默拒绝
+            //（真机日志实证）。瞬态反馈，与 seek HUD 同类；init 恢复时触发是
+            // 有意的：每次进清屏播放页都提示一次位置。
+            if isCleanScreen {
+                showScrubHud(reason: "cleanScreenOn")
+                scheduleScrubLinger(ms: 1500)
+            }
         }
     }
     @Published var liked = false {
@@ -176,7 +184,7 @@ final class DramaPlayerViewModel: ObservableObject {
             lastLoggedSeek = ratio
             print("PLAYER_DBG [CHECK] seek fraction=\(String(format: "%.2f", ratio)) total=\(Int(total))")
         }
-        showScrubHud()
+        showScrubHud(reason: "seek")
         let target = CMTime(seconds: total * ratio, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         syncTime(target)
@@ -299,24 +307,24 @@ final class DramaPlayerViewModel: ObservableObject {
 
     // MARK: 清屏瞬态进度 HUD
 
-    /// seek 实际生效：HUD 淡入（拖动中每次 .changed 都会取消未完成的淡出，持续续命）
-    private func showScrubHud() {
+    /// HUD 淡入：seek 实际生效（拖动中每次 .changed 续命）/ 开启清屏时的位置参照闪现
+    private func showScrubHud(reason: String) {
         scrubLingerTask?.cancel()
         scrubLingerTask = nil
         guard !isScrubbing else { return }
         isScrubbing = true
-        print("PLAYER_DBG [Playback] scrub show clean=\(isCleanScreen)")
+        print("PLAYER_DBG [Playback] scrub show reason=\(reason) clean=\(isCleanScreen)")
     }
 
-    /// 抬手后 HUD 停留 800ms 再淡出（800ms 内的新 seek 会取消本任务）
-    private func scheduleScrubLinger() {
+    /// HUD 停留一段时间再淡出；seek 抬手默认 800ms，清屏参照闪现 1500ms
+    private func scheduleScrubLinger(ms: Int = 800) {
         guard isScrubbing else { return }
         scrubLingerTask?.cancel()
         scrubLingerTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(800))
+            try? await Task.sleep(for: .milliseconds(ms))
             guard let self, !Task.isCancelled, self.isScrubbing else { return }
             self.isScrubbing = false
-            print("PLAYER_DBG [Playback] scrub hide reason=linger800ms")
+            print("PLAYER_DBG [Playback] scrub hide reason=linger\(ms)ms")
         }
     }
 
