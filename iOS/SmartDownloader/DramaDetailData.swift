@@ -264,18 +264,51 @@ struct BadgeInfo: Codable {
         case expiresAt = "expires_at"
         case serverTime = "server_time"
     }
+
+    /// 站点角标字段有时直出字符串（如「完结」）、有时对象，两形态都收
+    init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            type = nil; text = s; expiresAt = nil; serverTime = nil
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        expiresAt = try c.decodeIfPresent(Int.self, forKey: .expiresAt)
+        serverTime = try c.decodeIfPresent(Int.self, forKey: .serverTime)
+    }
 }
 
 // MARK: - App 角标
 struct AppBadge: Codable {
     let type: String?
     let text: String?
+
+    init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            type = nil; text = s
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+    }
 }
 
 // MARK: - 封面角标
 struct CoverBadge: Codable {
     let type: String?
     let text: String?
+
+    init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            type = nil; text = s
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+    }
 }
 
 // MARK: - 相关推荐短剧
@@ -395,5 +428,45 @@ struct SEOInfo: Codable {
         case ogTitle, ogDescription, ogType, ogSiteName, ogLocale, ogImageAlt
         case twitterCard, twitterSite, twitterTitle, twitterDescription
         case ogImage, twitterImage
+    }
+}
+
+// MARK: - Nuxt _payload.json 还原（请求拦截定向提取）
+
+extension DramaDetailData {
+    /// web 端 detail 走 Nuxt `_payload.json`：devalue 扁平数组——顶层节点是字面量，
+    /// 字典值/数组元素全是顶层数组下标（-1 = undefined）。按索引递归还原，
+    /// 取 video_id 命中的节点解码（相关推荐节点也带 video_id+tags，必须比对）。
+    /// 真机样本实证（3445：tags root[11] → ["姐姐","姐妹","家庭","都市"]）。
+    static func fromNuxtPayload(_ data: Data, videoID: String) -> DramaDetailData? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return nil }
+        for n in root {
+            guard let d = n as? [String: Any], d["video_id"] != nil, d["tags"] != nil else { continue }
+            let resolved = payloadNode(d, root: root, depth: 0)
+            guard let obj = try? JSONSerialization.data(withJSONObject: resolved),
+                  let detail = try? JSONDecoder().decode(DramaDetailData.self, from: obj),
+                  String(detail.videoId) == videoID else { continue }
+            return detail
+        }
+        return nil
+    }
+
+    /// 节点：dict/array 递归走值槽；字面量（含 bool/null）原样返回
+    private static func payloadNode(_ n: Any, root: [Any], depth: Int) -> Any {
+        guard depth < 32 else { return NSNull() }
+        if let d = n as? [String: Any] { return d.mapValues { payloadSlot($0, root: root, depth: depth + 1) } }
+        if let a = n as? [Any] { return a.map { payloadSlot($0, root: root, depth: depth + 1) } }
+        return n
+    }
+
+    /// 值槽：Int 是下标（bool 的 NSNumber 不得当下标）；越界/-1 → null
+    private static func payloadSlot(_ v: Any, root: [Any], depth: Int) -> Any {
+        if let num = v as? NSNumber {
+            if CFGetTypeID(num) == CFBooleanGetTypeID() { return num }
+            let i = num.intValue
+            guard root.indices.contains(i) else { return NSNull() }
+            return payloadNode(root[i], root: root, depth: depth + 1)
+        }
+        return payloadNode(v, root: root, depth: depth)
     }
 }

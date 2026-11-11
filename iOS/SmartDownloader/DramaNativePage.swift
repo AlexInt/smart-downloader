@@ -340,6 +340,10 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
             detail = try? JSONDecoder().decode(DramaDetailData.self, from: data)
             via = "envelope"
         }
+        if detail == nil, let d = DramaDetailData.fromNuxtPayload(Data(body.utf8), videoID: target.dramaID) {
+            detail = d
+            via = "payload"
+        }
         guard let detail else {
             // 候选体量（>200B）的解码失败都打：空 beacon/短响应是噪音不记；
             // bodyHead 一眼判读 明文/信封/JS chunk/HTML（曾「只打首条」被空 beacon 占用，真失败被静默）
