@@ -219,15 +219,23 @@ let dramaMetaJS = """
 /// dumpDramaMeta 启动参数门控（见 DramaAPI），不从这里走。
 @MainActor
 enum DramaMetaDump {
+    /// 文件名 sanitize：site 形如 https://yeguodj.com，直接拼进文件名时
+    /// 斜杠会让 write 把它当子路径解析（真机日志实证：文件夹“yeguodj.com_4094.json”不存在）；
+    /// 非字母数字一律替换为 _
+    static func sanitized(_ raw: String) -> String {
+        String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+    }
+
     static func write(_ string: String, name: String) {
+        let safeName = sanitized(name)
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("DramaMeta", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try string.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
-            print("PLAYER_DBG [Entry] DramaMetaDump ok name=\(name) bytes=\(string.count)")
+            try string.write(to: dir.appendingPathComponent(safeName), atomically: true, encoding: .utf8)
+            print("PLAYER_DBG [Entry] DramaMetaDump ok name=\(safeName) bytes=\(string.count)")
         } catch {
-            print("PLAYER_DBG [Entry] DramaMetaDump FAIL name=\(name) error=\(error.localizedDescription)")
+            print("PLAYER_DBG [Entry] DramaMetaDump FAIL name=\(safeName) error=\(error.localizedDescription)")
         }
     }
 }
