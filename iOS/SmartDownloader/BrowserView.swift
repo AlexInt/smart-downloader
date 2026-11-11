@@ -80,12 +80,12 @@ struct BrowserView: View {
                     if manager.foundURLs.count > 1 {
                         showPicker = true
                     } else {
-                        startDownload(from: manager.foundURLs.first)
+                        store.beginDownload(from: manager.foundURLs.first, manager: manager)
                     }
                 } label: {
                     Label(downloadButtonTitle, systemImage: downloadButtonIcon)
                 }
-                .disabled(manager.foundURLs.isEmpty || isSubmitting || singleURLAlreadyQueued)
+                .disabled(manager.foundURLs.isEmpty || store.isSubmitting || singleURLAlreadyQueued)
                 .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 10)
@@ -142,7 +142,7 @@ struct BrowserView: View {
             List(manager.foundURLs, id: \.self) { found in
                 Button {
                     showPicker = false
-                    startDownload(from: found)
+                    store.beginDownload(from: found, manager: manager)
                 } label: {
                     HStack(spacing: 8) {
                         Text(found).font(.footnote).lineLimit(2)
@@ -161,27 +161,6 @@ struct BrowserView: View {
         }
     }
 
-    /// 取网页标题作文件名后开始下载（嗅探到的 m3u8 一般带时效签名，尽快开下）
-    private func startDownload(from raw: String?) {
-        guard let raw, let url = URL(string: raw),
-              url.scheme == "http" || url.scheme == "https" else { return }
-        // 取标题是异步的，这个窗口内连点会排多个任务；用 isSubmitting 把入口锁住
-        guard !isSubmitting else { return }
-        guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
-        isSubmitting = true
-        Task { @MainActor in
-            defer { isSubmitting = false }
-            var title = ""
-            if let webView = store.webView {
-                title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
-            }
-            manager.startDownload(urlString: url.absoluteString, title: title)
-        }
-    }
-
-    /// 异步取标题期间的连点锁
-    @State private var isSubmitting = false
-
     private var singleURLAlreadyQueued: Bool {
         guard manager.foundURLs.count == 1, let url = manager.foundURLs.first else { return false }
         return manager.hasActiveTask(forURL: url)
@@ -189,7 +168,7 @@ struct BrowserView: View {
 
     private var downloadButtonTitle: String {
         if manager.foundURLs.isEmpty { return "未检测到视频" }
-        if isSubmitting { return "正在添加…" }
+        if store.isSubmitting { return "正在添加…" }
         if singleURLAlreadyQueued { return "已在下载队列" }
         return "下载视频 (\(manager.foundURLs.count))"
     }
@@ -199,13 +178,17 @@ struct BrowserView: View {
     }
 }
 
-/// WKWebView 命令通道：让 SwiftUI 工具栏驱动网页后退/前进/刷新/加载
+/// WKWebView 命令通道：让 SwiftUI 工具栏驱动网页后退/前进/刷新/加载。
+/// 页面状态与下载入口锁都是主线程状态，整体 @MainActor。
+@MainActor
 final class WebViewStore: ObservableObject {
     weak var webView: WKWebView?
     @Published var loadError: String?
     @Published var pageTitle: String?
     /// 页面元数据提取结果（JSON 字符串，原生解析后展示/落盘）
     @Published var pageMetaJSON: String?
+    /// 下载入口连点锁（异步取标题期间置位；架构评估 P9 从 View 收纳）
+    @Published private(set) var isSubmitting = false
 
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
@@ -216,6 +199,25 @@ final class WebViewStore: ObservableObject {
         if !text.lowercased().hasPrefix("http") { text = "https://" + text }
         guard let url = URL(string: text) else { return }
         webView?.load(URLRequest(url: url))
+    }
+
+    /// 下载入口编排：取网页标题作文件名后开始下载（嗅探到的 m3u8 一般带时效签名，尽快开下）。
+    /// 取标题是异步的，这个窗口内连点会排多个任务；isSubmitting 把入口锁住；
+    /// 同 URL 已有活跃任务时直接忽略（按钮态与 Picker 行均已禁用，这里是最后防线）。
+    func beginDownload(from raw: String?, manager: DownloadManager) {
+        guard let raw, let url = URL(string: raw),
+              url.scheme == "http" || url.scheme == "https" else { return }
+        guard !isSubmitting else { return }
+        guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
+        isSubmitting = true
+        Task {
+            defer { self.isSubmitting = false }
+            var title = ""
+            if let webView = self.webView {
+                title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
+            }
+            manager.startDownload(urlString: url.absoluteString, title: title)
+        }
     }
 }
 
