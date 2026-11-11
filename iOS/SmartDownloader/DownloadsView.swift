@@ -383,25 +383,19 @@ struct SeriesDetailView: View {
         }
     }
 
-    /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit
+    /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
+    /// 全剧集数同步与滑动调度交给 PlaybackQueueService，这里只说明剧名与起始集号。
     private func playIfDone(_ task: DownloadTask) {
         guard task.state == .done, let url = task.outputURL else { return }
         guard task.isHLSFolder else {
             playerItem = PlayerItem(url: url, isHLSFolder: false)
             return
         }
-        let episodes = DramaPlaybackLibrary.episodes(forSeries: seriesName)
-        guard !episodes.isEmpty else {
-            playerItem = PlayerItem(url: url, isHLSFolder: true)
-            return
-        }
-        let sort = DownloadManager.episodeSort(fromFolderName: task.title)
-        let start = episodes.firstIndex(where: { $0.sort == sort }) ?? 0
+        let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 1
         immersivePlayback = ImmersivePlaybackRequest(
             seriesName: seriesName,
             intro: nil,
-            episodes: episodes,
-            startIndex: start
+            startSort: sort
         )
     }
 }

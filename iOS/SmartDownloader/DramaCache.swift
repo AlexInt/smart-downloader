@@ -94,6 +94,29 @@ enum DramaCache {
 
     // MARK: 读
 
+    /// 按剧名反查该剧全部集号。下载页只有剧名（无 site/dramaID），
+    /// 单击播放时用它同步整部剧集数，让播放页能按全剧集号上下滑。
+    static func allSorts(forSeriesName name: String) -> [Int] {
+        guard let db = openDB() else { return [] }
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT e.sort FROM drama_episodes e
+        JOIN drama_cache c ON c.site = e.site AND c.drama_id = e.drama_id
+        WHERE c.name = ? ORDER BY e.sort;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            fail(db, "allSorts prepare"); return []
+        }
+        bind(stmt, 1, name)
+        var sorts: [Int] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            sorts.append(Int(sqlite3_column_int(stmt, 0)))
+        }
+        sqlite3_finalize(stmt)
+        return sorts
+    }
+
     static func load(site: String, dramaID: String) -> Entry? {
         guard let db = openDB() else { return nil }
         defer { sqlite3_close(db) }

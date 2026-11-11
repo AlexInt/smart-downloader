@@ -14,6 +14,12 @@ struct DramaPlayerView: View {
     @ObservedObject var vm: DramaPlayerViewModel
     var onClose: () -> Void = {}
     var hasNextEpisode = false
+    /// 当前集是否已下载；未下载时显示占位而不是加载圈
+    var isEpisodeAvailable = true
+    /// 下一集是否已下载：底部提示据此说明滑过去能看到什么
+    var nextEpisodeAvailable = true
+    /// 到边界时的短暂提示（由容器在 move 返回 false 时设置）
+    var toastText: String? = nil
     /// 切集回调：手势在本视图内识别，由容器改变当前集
     var onNextEpisode: () -> Void = {}
     var onPreviousEpisode: () -> Void = {}
@@ -251,28 +257,30 @@ struct DramaPlayerView: View {
                     .allowsHitTesting(false)
             }
 
-            // 播放进度
-            RoundedRectangle(cornerRadius: DWRadius.progress)
-                .fill(.white.opacity(0.30))
-                .designFrame(20, 700, 290, 3)
-                .allowsHitTesting(false)
+            if isEpisodeAvailable {
+                // 播放进度
+                RoundedRectangle(cornerRadius: DWRadius.progress)
+                    .fill(.white.opacity(0.30))
+                    .designFrame(20, 700, 290, 3)
+                    .allowsHitTesting(false)
 
-            RoundedRectangle(cornerRadius: DWRadius.progress)
-                .fill(DWColor.primary)
-                .designFrame(20, 700, 290 * progressValue, 3)
-                .allowsHitTesting(false)
+                RoundedRectangle(cornerRadius: DWRadius.progress)
+                    .fill(DWColor.primary)
+                    .designFrame(20, 700, 290 * progressValue, 3)
+                    .allowsHitTesting(false)
 
-            Text(timeText)
-                .font(DWFont.en(11, .medium))
-                .foregroundStyle(DWColor.textTime)
-                .designFrame(20, 708, 60, 13, alignment: .leading)
-                .allowsHitTesting(false)
+                Text(timeText)
+                    .font(DWFont.en(11, .medium))
+                    .foregroundStyle(DWColor.textTime)
+                    .designFrame(20, 708, 60, 13, alignment: .leading)
+                    .allowsHitTesting(false)
 
-            Text(durationText)
-                .font(DWFont.en(11, .medium))
-                .foregroundStyle(DWColor.textTime)
-                .designFrame(254, 708, 56, 13, alignment: .trailing)
-                .allowsHitTesting(false)
+                Text(durationText)
+                    .font(DWFont.en(11, .medium))
+                    .foregroundStyle(DWColor.textTime)
+                    .designFrame(254, 708, 56, 13, alignment: .trailing)
+                    .allowsHitTesting(false)
+            }
 
             // 进度控制已并入全屏 panGesture：只在进度条上下各 60 的带内响应水平滑动，
             // 避免这里的独占手势抢走上下滑切集、或按下即按绝对 x 误跳进度。
@@ -328,7 +336,9 @@ struct DramaPlayerView: View {
                 .designFrame(145, 800, 18, 18)
                 .allowsHitTesting(false)
 
-            Text(hasNextEpisode ? "上滑观看下一集" : "已是最后一集")
+            Text(hasNextEpisode
+                 ? (nextEpisodeAvailable ? "上滑观看下一集" : "下一集尚未下载")
+                 : "已是最后一集")
                 .font(DWFont.cn(11, .medium))
                 .foregroundStyle(DWColor.textSwipe)
                 .designFrame(169, 801, 120, 16, alignment: .leading)
@@ -364,10 +374,27 @@ struct DramaPlayerView: View {
                 .designFrame(60, 370, 270, 90)
                 .allowsHitTesting(false)
             } else if !vm.isReady {
-                ProgressView()
-                    .tint(.white)
-                    .designFrame(180, 405, 30, 30)
+                if isEpisodeAvailable {
+                    ProgressView()
+                        .tint(.white)
+                        .designFrame(180, 405, 30, 30)
+                        .allowsHitTesting(false)
+                } else {
+                    // 全剧集号里的未下载槽位：不转圈、不假装能播，明示状态且仍可上下滑
+                    VStack(spacing: 10) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title2)
+                            .foregroundStyle(DWColor.textHint)
+                        Text("该集尚未下载")
+                            .font(DWFont.cn(13, .medium))
+                            .foregroundStyle(DWColor.textBody)
+                        Text("上下滑动浏览其他集")
+                            .font(DWFont.cn(11))
+                            .foregroundStyle(DWColor.textHint)
+                    }
+                    .designFrame(60, 355, 270, 100)
                     .allowsHitTesting(false)
+                }
             }
 
             // 返回按钮：放在最后 + 最高层级，确保关闭入口不被任何覆盖层挡住
@@ -383,6 +410,19 @@ struct DramaPlayerView: View {
             .buttonStyle(.plain)
             .designFrame(8, 44, 44, 44)
             .zIndex(10)
+
+            // 边界 toast：没有更多真实资源时短暂提示，不造任何槽位
+            Text(toastText ?? "")
+                .font(DWFont.cn(13, .medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .background(.black.opacity(0.72), in: Capsule())
+                .opacity(toastText == nil ? 0 : 1)
+                .animation(.easeInOut(duration: 0.2), value: toastText)
+                .designFrame(95, 350, 200, 36)
+                .allowsHitTesting(false)
+                .zIndex(20)
         }
     }
 }

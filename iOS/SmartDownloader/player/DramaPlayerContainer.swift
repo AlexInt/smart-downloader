@@ -1,40 +1,6 @@
 import SwiftUI
 import AVFoundation
 
-// MARK: - 可播放集与播放请求
-
-/// 磁盘上的一个已下载集。文件系统就是账本：剧目录下含 playlist.m3u8 的子目录即已下载。
-struct PlayableEpisode: Identifiable, Equatable {
-    let sort: Int
-    let playlistURL: URL
-    var id: String { playlistURL.path }
-}
-
-/// 从原生剧集页 / 剧详情页拉起沉浸式播放页所需的上下文
-struct ImmersivePlaybackRequest: Identifiable {
-    let id = UUID()
-    let seriesName: String
-    let intro: String?
-    let episodes: [PlayableEpisode]
-    let startIndex: Int
-}
-
-enum DramaPlaybackLibrary {
-    /// 扫描某剧的全部已下载集，按集号升序（与 DownloadManager.downloadedEpisodeFolders 同一命名规则）
-    static func episodes(forSeries name: String) -> [PlayableEpisode] {
-        let fm = FileManager.default
-        let dir = DownloadEngine.seriesDirectory(for: name)
-        guard let subs = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return [] }
-        return subs.compactMap { folder -> PlayableEpisode? in
-            let playlist = folder.appendingPathComponent("playlist.m3u8")
-            guard fm.fileExists(atPath: playlist.path),
-                  let sort = DownloadManager.episodeSort(fromFolderName: folder.lastPathComponent) else { return nil }
-            return PlayableEpisode(sort: sort, playlistURL: playlist)
-        }
-        .sorted { $0.sort < $1.sort }
-    }
-}
-
 // MARK: - 播放状态（AVPlayer + 时间观察 + 本地互动状态）
 
 @MainActor
@@ -64,18 +30,25 @@ final class DramaPlayerViewModel: ObservableObject {
 
     /// 切集时重新取本地播放地址（LocalMediaServer 已支持剧集两级路径）
     func load(episode: PlayableEpisode) async {
-        ensureObserver()
         endFastForward()          // 切集前先恢复 1×，避免倍速状态跨集残留
         loadError = nil
         isReady = false
         resetTimes()
 
-        currentKey = Self.key(for: episode.playlistURL)
+        // 全剧集号里的未下载槽位：清空播放项，只保留占位态（视图显示「该集尚未下载」）
+        guard let playlist = episode.playlistURL else {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            return
+        }
+        ensureObserver()
+
+        currentKey = Self.key(for: playlist)
         liked = UserDefaults.standard.bool(forKey: "DramaPlayer.liked.\(currentKey)")
         saved = UserDefaults.standard.bool(forKey: "DramaPlayer.saved.\(currentKey)")
 
         let playback = await LocalMediaServer.shared.playbackURL(
-            forFolder: episode.playlistURL.deletingLastPathComponent())
+            forFolder: playlist.deletingLastPathComponent())
         guard playback.scheme == "http" else {
             loadError = "本地播放服务启动失败"
             return
@@ -226,45 +199,61 @@ final class PlayerSurfaceUIView: UIView {
 
 // MARK: - 沉浸式播放容器（fullScreenCover 内容）
 
-/// 负责切集、把本地 HLS 交给 ViewModel、把设计稿视图挂到真实数据上。
-/// 散装单集没有「上下滑切集」语义，仍走 DownloadsView 的 AVKit PlayerView。
+/// 把本地 HLS 交给 ViewModel、把设计稿视图挂到真实数据上；
+/// 上下滑动的资源调度全部委托给 PlaybackQueueService（含后续本地推荐算法）。
+/// 散装单集没有剧的概念，仍走 DownloadsView 的 AVKit PlayerView。
 struct DramaPlayerContainer: View {
     let request: ImmersivePlaybackRequest
     /// 显式关闭：把外层 fullScreenCover(item:) 的绑定置 nil，比只调 dismiss() 可靠
     var onClose: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @StateObject private var vm = DramaPlayerViewModel()
-    @State private var index: Int
+    @State private var queue: PlaybackQueueService
+    @State private var toastText: String?
+    @State private var toastID = 0
 
     /// 自定义 init 会隐藏成员构造器，新增参数必须在这里显式接收
     init(request: ImmersivePlaybackRequest, onClose: @escaping () -> Void = {}) {
         self.request = request
         self.onClose = onClose
-        let last = max(0, request.episodes.count - 1)
-        _index = State(initialValue: min(max(0, request.startIndex), last))
+        _queue = State(initialValue: PlaybackQueueService(request: request))
     }
 
-    private var current: PlayableEpisode? {
-        guard request.episodes.indices.contains(index) else { return nil }
-        return request.episodes[index]
+    /// 到边界时只给反馈，不创建任何资源
+    private func handleSwipe(_ direction: PlaybackQueueService.Direction) {
+        if queue.move(direction) { return }
+        showToast(direction == .next ? "已经到底了" : "已经是第一集了")
+    }
+
+    private func showToast(_ text: String) {
+        toastID += 1
+        let id = toastID
+        toastText = text
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            if toastID == id { toastText = nil }
+        }
     }
 
     var body: some View {
         Group {
-            if let current {
+            if let current = queue.current {
                 DramaPlayerView(
-                    episode: .local(seriesName: request.seriesName,
-                                    intro: request.intro,
+                    episode: .local(seriesName: queue.seriesName,
+                                    intro: queue.intro,
                                     index: current.sort,
-                                    total: request.episodes.count),
+                                    total: queue.totalEpisodes),
                     vm: vm,
                     onClose: {
                         onClose()          // 先清绑定，确保 cover 真的关闭
                         dismiss()
                     },
-                    hasNextEpisode: index < request.episodes.count - 1,
-                    onNextEpisode: { nextEpisode() },
-                    onPreviousEpisode: { previousEpisode() }
+                    hasNextEpisode: queue.hasNext,
+                    isEpisodeAvailable: current.isAvailable,
+                    nextEpisodeAvailable: queue.nextIsAvailable,
+                    toastText: toastText,
+                    onNextEpisode: { handleSwipe(.next) },
+                    onPreviousEpisode: { handleSwipe(.previous) }
                 )
                 .task(id: current.id) {
                     await vm.load(episode: current)
@@ -276,7 +265,7 @@ struct DramaPlayerContainer: View {
                         Image(systemName: "film")
                             .font(.largeTitle)
                             .foregroundStyle(DWColor.textHint)
-                        Text("没有可播放的已下载集")
+                        Text("没有可播放的剧集")
                             .font(DWFont.cn(13))
                             .foregroundStyle(DWColor.textBody)
                         Button("返回") { onClose(); dismiss() }
@@ -286,16 +275,5 @@ struct DramaPlayerContainer: View {
             }
         }
         .onDisappear { vm.stop() }
-    }
-
-    /// 切集：手势已在 DramaPlayerView 内统一识别，这里只负责改索引
-    private func nextEpisode() {
-        guard index < request.episodes.count - 1 else { return }
-        index += 1
-    }
-
-    private func previousEpisode() {
-        guard index > 0 else { return }
-        index -= 1
     }
 }

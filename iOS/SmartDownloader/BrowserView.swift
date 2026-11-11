@@ -786,18 +786,16 @@ struct DramaNativePage: View {
         .disabled(!ep.playable || isQueued)
     }
 
-    /// 已下载集：拉起沉浸式竖屏播放页，带上该剧全部已下载集以支持上下滑切集。
+    /// 已下载集：拉起沉浸式竖屏播放页。全剧集数同步与滑动调度交给 PlaybackQueueService。
     /// 简介取自本地 SQLite 缓存（离线可用），不额外发网络请求。
     private func playDownloaded(_ ep: ApiDramaEpisode) {
         guard let info else { return }
-        let episodes = DramaPlaybackLibrary.episodes(forSeries: info.name)
-        guard let start = episodes.firstIndex(where: { $0.sort == ep.sort }) else { return }
         let intro = DramaCache.load(site: target.site, dramaID: target.dramaID)?.intro
         immersivePlayback = ImmersivePlaybackRequest(
             seriesName: info.name,
             intro: intro,
-            episodes: episodes,
-            startIndex: start
+            startSort: ep.sort,
+            knownSorts: info.episodes.map(\.sort)   // 剧集页已持有全剧集数，直接同步给调度 service
         )
     }
 

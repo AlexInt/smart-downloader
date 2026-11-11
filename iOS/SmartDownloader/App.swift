@@ -3,7 +3,8 @@ import SwiftUI
 @main
 struct SmartDownloaderApp: App {
     @StateObject private var manager = DownloadManager()
-    @State private var selectedTab = 0
+    /// 启动默认落在「下载」tab（tag=1）；浏览页为 tag=0
+    @State private var selectedTab = 1
     /// 防止 onAppear 重复触发自动冒烟
     @MainActor private static var autoTestStarted = false
 
