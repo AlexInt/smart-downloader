@@ -30,14 +30,16 @@ struct DramaPlayerView: View {
     /// 本次触摸是否按满 0.15s 真正起过 2x（perform 里置位）：只有它才需要在
     /// 抬手时吞松手误触；未起 2x 的触摸（快速滑动/普通点按）抬手不动作
     @State private var longPressOwnedTouch = false
+    /// 相邻卡片（isActive=false）一律回落到静态稿面值：播放进度是当前集的共享状态，
+    /// 邻卡若直接读会显示成「别人集的时间/进度」（待办 #3 状态显示隔离）
     private var timeText: String {
-        playback.isReady ? playback.currentTimeText : (episode.previewCurrentTime ?? "00:00")
+        (isActive && playback.isReady) ? playback.currentTimeText : (episode.previewCurrentTime ?? "00:00")
     }
     private var durationText: String {
-        playback.isReady ? playback.durationText : (episode.previewDuration ?? "00:00")
+        (isActive && playback.isReady) ? playback.durationText : (episode.previewDuration ?? "00:00")
     }
     private var progressValue: CGFloat {
-        CGFloat(playback.isReady ? playback.progress : episode.previewProgress)
+        CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
     }
     /// 进度 HUD 可见性：非清屏常驻；清屏下仅 seek 进行中（含松手 800ms 停留）显示
     private var isProgressVisible: Bool {
@@ -236,11 +238,16 @@ struct DramaPlayerView: View {
                         .designFrame(326, 458, 48, 48)
                         .allowsHitTesting(false)
 
-                    Button { playback.liked.toggle() } label: {
+                    // 点赞/收藏按集记忆（PlayerPreferences.key）：邻卡读到的都是当前集的状态，
+                    // 显示会错标 —— 邻卡强制未点亮态、动作不落账（待办 #3 状态显示隔离）
+                    Button {
+                        guard isActive else { return }
+                        playback.liked.toggle()
+                    } label: {
                         Image("ic_like")
                             .renderingMode(.template)
                             .resizable().scaledToFit()
-                            .foregroundStyle(playback.liked ? DWColor.primary : .white)
+                            .foregroundStyle(isActive && playback.liked ? DWColor.primary : .white)
                             .frame(width: 30, height: 30)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
@@ -251,16 +258,19 @@ struct DramaPlayerView: View {
                     // 文字框与按钮框同宽同位：中心对齐 icon 垂直中轴（此前右偏 10pt）
                     Text("点赞")
                         .font(DWFont.cn(11, .medium))
-                        .foregroundStyle(playback.liked ? DWColor.primary : .white)
+                        .foregroundStyle(isActive && playback.liked ? DWColor.primary : .white)
                         .multilineTextAlignment(.center)
                         .designFrame(325, 579, 44, 14)
                         .allowsHitTesting(false)
 
-                    Button { playback.saved.toggle() } label: {
+                    Button {
+                        guard isActive else { return }
+                        playback.saved.toggle()
+                    } label: {
                         Image("ic_save")
                             .renderingMode(.template)
                             .resizable().scaledToFit()
-                            .foregroundStyle(playback.saved ? DWColor.gold : .white)
+                            .foregroundStyle(isActive && playback.saved ? DWColor.gold : .white)
                             .frame(width: 30, height: 30)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
@@ -270,7 +280,7 @@ struct DramaPlayerView: View {
 
                     Text("收藏")
                         .font(DWFont.cn(11, .medium))
-                        .foregroundStyle(playback.saved ? DWColor.gold : .white)
+                        .foregroundStyle(isActive && playback.saved ? DWColor.gold : .white)
                         .multilineTextAlignment(.center)
                         .designFrame(325, 666, 44, 14)
                         .allowsHitTesting(false)
@@ -316,7 +326,11 @@ struct DramaPlayerView: View {
                 .allowsHitTesting(false)
 
             // 静音（状态本地记住）
-            Button { playback.isMuted.toggle() } label: {
+            // 静音/清屏是全局偏好，但仅当前卡可操作：邻卡半遮挡状态下误触易困惑
+            Button {
+                guard isActive else { return }
+                playback.isMuted.toggle()
+            } label: {
                 ZStack {
                     Image("ic_sound")
                         .renderingMode(.template)
@@ -339,7 +353,10 @@ struct DramaPlayerView: View {
 
             // 清屏（状态本地记住）：隐藏界面信息只看画面。
             // 矩形+斜线与静音图标同一视觉语言：激活时描边变灰 + 金色斜线
-            Button { playback.isCleanScreen.toggle() } label: {
+            Button {
+                guard isActive else { return }
+                playback.isCleanScreen.toggle()
+            } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(playback.isCleanScreen ? DWColor.textHint : .white,
