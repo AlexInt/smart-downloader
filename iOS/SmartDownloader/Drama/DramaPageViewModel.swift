@@ -8,6 +8,8 @@ import Combine
 final class DramaPageViewModel: ObservableObject {
     let target: DramaTarget
     private let manager: DownloadManager
+    /// 收藏持久化交给 Service（AGENTS.md 第 5 条：VM 不直接写 UserDefaults）
+    private let favorites = DramaFavorites()
     /// 缓存路径打开的页面没有 session：下载/刷新时现建（每集下载前仍会重调接口取新鲜直链）
     private var session: DramaSession?
 
@@ -47,8 +49,7 @@ final class DramaPageViewModel: ObservableObject {
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
         self.manager = manager
-        // 剧集收藏与播放页偏好分开存，避免污染 PlayerPreferences（它是播放页单向偏好服务）
-        isFavorite = UserDefaults.standard.bool(forKey: Self.favoriteKey(for: target))
+        isFavorite = favorites.isFavorite(target.id)
     }
 
     // MARK: - 派生状态
@@ -116,7 +117,7 @@ final class DramaPageViewModel: ObservableObject {
 
     func toggleFavorite() {
         isFavorite.toggle()
-        UserDefaults.standard.set(isFavorite, forKey: Self.favoriteKey(for: target))
+        favorites.setFavorite(isFavorite, for: target.id)
         showToast(isFavorite ? "已加入收藏" : "已取消收藏")
     }
 
@@ -162,10 +163,6 @@ final class DramaPageViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.toastText = nil
         }
-    }
-
-    private static func favoriteKey(for target: DramaTarget) -> String {
-        "DramaDetail.favorite.\(target.id)"
     }
 
     /// 重试按钮：换 reload 版本号触发 .task(id:) 重新加载

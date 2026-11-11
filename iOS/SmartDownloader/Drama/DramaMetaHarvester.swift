@@ -1,30 +1,8 @@
-import SwiftUI
+import Foundation
 import WebKit
 
-/// 原生剧集页入口（纯原生，无网页）：点击剧集路由过来后交给 DramaDetailView 渲染。
-/// 本文件只做依赖组装与生命周期编排；屏内视觉在 DramaDetailView.swift，
-/// 业务状态与编排在 DramaPageViewModel.swift，元数据收割器保留在本文件下半部分。
-/// MVVM（架构评估 P8）：View → ViewModel → Service，单向依赖。
-struct DramaNativePage: View {
-    @ObservedObject var manager: DownloadManager
-    @StateObject private var vm: DramaPageViewModel
-
-    init(target: DramaTarget, manager: DownloadManager) {
-        self.manager = manager
-        _vm = StateObject(wrappedValue: DramaPageViewModel(target: target, manager: manager))
-    }
-
-    var body: some View {
-        DramaDetailView(vm: vm)
-            .fullScreenCover(item: $vm.playbackRequest) { request in
-                DramaPlayerContainer(request: request, onClose: { vm.playbackRequest = nil })
-            }
-            .task(id: vm.reloadID) { await vm.load() }
-            .onAppear { vm.preloadHeaderFromCache() }
-            .onReceive(manager.objectWillChange) { _ in vm.refreshDownloadedSorts() }
-    }
-
-}
+// 元数据收割（Service）：从 DramaNativePage.swift 拆出，逐字迁移不改行为。
+// 站点特有逻辑（请求拦截 / DOM 提取 / 落盘）独立成域内 Service，不留在 View 文件里。
 
 // MARK: - 元数据收割器 + 提取 JS
 

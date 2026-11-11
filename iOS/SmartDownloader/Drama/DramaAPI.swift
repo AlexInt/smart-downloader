@@ -9,45 +9,6 @@ import Foundation
 // 站点地址一律从输入 URL 推导；账号/AES 常量不硬编码、不打印，
 // 运行时从随包携带的 video_auto.py 解析（与 videocli 读仓库根文件同一思路）。
 
-/// 剧集页 URL 解析出的下载目标
-struct DramaTarget: Identifiable, Hashable {
-    let site: String
-    let dramaID: String
-    var id: String { "\(site)#\(dramaID)" }
-    /// 原生剧集页内嵌 webview 加载的详情页地址
-    var pageURLString: String { "\(site)/drama/detail/\(dramaID)/" }
-
-    /// 形如 https://<站点>/drama/{video|detail}/<ID>[/ep-N]/；无法识别返回 nil
-    static func parse(_ raw: String) -> DramaTarget? {
-        guard let comps = URLComponents(string: raw.trimmingCharacters(in: .whitespaces)),
-              let scheme = comps.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = comps.host else { return nil }
-        let parts = comps.path.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[0] == "drama",
-              parts[1] == "video" || parts[1] == "detail",
-              Int(parts[2]) != nil else { return nil }
-        var site = "\(scheme)://\(host)"
-        if let port = comps.port { site += ":\(port)" }
-        return DramaTarget(site: site, dramaID: parts[2])
-    }
-}
-
-struct ApiDramaEpisode: Identifiable, Equatable, Codable {
-    let id: Int
-    let sort: Int
-    let playable: Bool
-    /// 下载状态与落盘目录名（磁盘对账/下载完成回调写入缓存）
-    var downloaded: Bool = false
-    var folder: String? = nil
-}
-
-struct DramaInfo: Equatable {
-    let name: String
-    let updateStatus: String?
-    let episodes: [ApiDramaEpisode]  // 已按 sort 升序；广告集已剔除
-}
-
 /// 一次选集下载的会话：登录一次，之后每集下载前重调接口保证 auth_key 新鲜
 @MainActor
 final class DramaSession {
@@ -276,28 +237,6 @@ final class DramaSession {
         if let int = value as? Int { return int != 0 }
         if let string = value as? String { return string == "1" || string == "true" }
         return false
-    }
-}
-
-enum DramaError: LocalizedError {
-    case configMissing
-    case badRequest
-    case badResponse
-    case apiError(String)
-    case episodeMissing
-    case noVideoURL
-    case decryptFailed
-
-    var errorDescription: String? {
-        switch self {
-        case .configMissing: return "站点配置缺失（App 包内未找到 video_auto.py）"
-        case .badRequest: return "接口地址无效"
-        case .badResponse: return "接口响应缺少字段"
-        case .apiError(let snippet): return "接口错误: \(snippet)"
-        case .episodeMissing: return "接口未返回该集信息"
-        case .noVideoURL: return "接口未返回播放地址"
-        case .decryptFailed: return "响应解密失败"
-        }
     }
 }
 
