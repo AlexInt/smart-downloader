@@ -56,46 +56,17 @@ enum DownloadPage: Int, Hashable {
 /// 排序与编辑（批量删除）在工具栏统一控制，两个区域都支持左滑删除。
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
-    @State private var playerItem: PlayerItem?
-    /// 编辑模式：点行勾选（剧行勾选整剧），底部栏全选/批量删除；跨两个区域一起生效
-    @State private var selectionMode = false
-    @State private var selected = Set<UUID>()
-    /// 排序偏好与剧详情页共享，重启 App 后保留
-    @AppStorage("DownloadsView.sortOrder") private var sortOrder: DownloadSortOrder = .newestFirst
-    /// 顶部 tab 与内容分页共用同一个 selection，点 tab 或左右滑都会同步
-    @State private var page: DownloadPage = .inProgress
-    /// 剧行左滑删除整剧前的确认目标
-    @State private var pendingDeleteSeries: String?
+    @StateObject private var vm: DownloadsViewModel
 
-    /// 未完成任务（等待/解析/下载中/失败）
-    private var activeTasks: [DownloadTask] {
-        sortOrder.order(manager.tasks.filter { $0.state != .done })
-    }
-    /// 散装已完成条目（不属于任何剧）
-    private var standaloneItems: [DownloadTask] {
-        sortOrder.order(manager.tasks.filter { $0.state == .done && $0.seriesName == nil })
-    }
-    /// 剧 -> 已落盘的集。组内按创建时间排；剧之间「最新优先」看最近一集、「最早优先」看最早一集。
-    private var seriesGroups: [(name: String, episodes: [DownloadTask])] {
-        let grouped = Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
-                                 by: { $0.seriesName! })
-        let groups = grouped.map { (name: $0.key, episodes: sortOrder.order($0.value)) }
-        return groups.sorted { a, b in
-            let timesA = a.episodes.map(\.createdAt)
-            let timesB = b.episodes.map(\.createdAt)
-            let keyA = sortOrder == .newestFirst ? timesA.max() : timesA.min()
-            let keyB = sortOrder == .newestFirst ? timesB.max() : timesB.min()
-            if let keyA, let keyB, keyA != keyB {
-                return sortOrder == .newestFirst ? keyA > keyB : keyA < keyB
-            }
-            return a.name < b.name
-        }
+    init(manager: DownloadManager) {
+        self.manager = manager
+        _vm = StateObject(wrappedValue: DownloadsViewModel(manager: manager))
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("下载区域", selection: $page) {
+                Picker("下载区域", selection: $vm.page) {
                     Text("下载中").tag(DownloadPage.inProgress)
                     Text("已下载").tag(DownloadPage.completed)
                 }
@@ -103,7 +74,7 @@ struct DownloadsView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
-                TabView(selection: $page) {
+                TabView(selection: $vm.page) {
                     inProgressPage
                         .tag(DownloadPage.inProgress)
                     completedPage
@@ -118,7 +89,7 @@ struct DownloadsView: View {
                 if !manager.tasks.isEmpty {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
-                            Picker("排列顺序", selection: $sortOrder) {
+                            Picker("排列顺序", selection: $vm.sortOrder) {
                                 ForEach(DownloadSortOrder.allCases) { order in
                                     Label(order.label, systemImage: order.icon).tag(order)
                                 }
@@ -128,24 +99,23 @@ struct DownloadsView: View {
                         }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(selectionMode ? "完成" : "编辑") {
-                            if selectionMode { selected.removeAll() }
-                            selectionMode.toggle()
+                        Button(vm.selectionMode ? "完成" : "编辑") {
+                            vm.toggleEditMode()
                         }
                     }
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if selectionMode {
+                if vm.selectionMode {
                     HStack {
-                        Button(allSelected ? "全不选" : "全选") { toggleSelectAll() }
+                        Button(vm.allSelected ? "全不选" : "全选") { vm.toggleSelectAll() }
                             .buttonStyle(.bordered)
                         Spacer()
-                        Button("删除所选 (\(selected.count))", role: .destructive) {
-                            deleteSelected()
+                        Button("删除所选 (\(vm.selected.count))", role: .destructive) {
+                            vm.deleteSelected()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(selected.isEmpty)
+                        .disabled(vm.selected.isEmpty)
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 8)
@@ -153,21 +123,20 @@ struct DownloadsView: View {
                 }
             }
             .confirmationDialog(
-                "删除《\(pendingDeleteSeries ?? "")》全部集及其文件？",
+                "删除《\(vm.pendingDeleteSeries ?? "")》全部集及其文件？",
                 isPresented: Binding(
-                    get: { pendingDeleteSeries != nil },
-                    set: { if !$0 { pendingDeleteSeries = nil } }
+                    get: { vm.pendingDeleteSeries != nil },
+                    set: { if !$0 { vm.cancelDeleteSeries() } }
                 ),
                 titleVisibility: .visible
             ) {
                 Button("删除全剧", role: .destructive) {
-                    if let name = pendingDeleteSeries { manager.deleteSeries(name) }
-                    pendingDeleteSeries = nil
+                    vm.confirmDeleteSeries()
                 }
-                Button("取消", role: .cancel) { pendingDeleteSeries = nil }
+                Button("取消", role: .cancel) { vm.cancelDeleteSeries() }
             }
         }
-        .sheet(item: $playerItem) { item in
+        .sheet(item: $vm.playerRequest) { item in
             PlayerView(item: item)
         }
     }
@@ -175,7 +144,7 @@ struct DownloadsView: View {
     /// 左页：进行中（等待/解析/下载/保存/失败），左滑删除任务
     @ViewBuilder
     private var inProgressPage: some View {
-        if activeTasks.isEmpty {
+        if vm.activeTasks.isEmpty {
             ContentUnavailableView(
                 "暂无进行中的下载",
                 systemImage: "arrow.down.circle",
@@ -183,12 +152,12 @@ struct DownloadsView: View {
         } else {
             List {
                 Section {
-                    ForEach(activeTasks) { task in
+                    ForEach(vm.activeTasks) { task in
                         sectionRow(task: task)
                     }
-                    .onDelete { manager.delete(at: globalOffsets($0, in: activeTasks)) }
+                    .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.activeTasks)) }
                 } header: {
-                    Text("共 \(activeTasks.count) 个任务 · 按创建时间排列")
+                    Text("共 \(vm.activeTasks.count) 个任务 · 按创建时间排列")
                 }
             }
             .listStyle(.insetGrouped)
@@ -198,17 +167,17 @@ struct DownloadsView: View {
     /// 右页：已下载。剧集分组可进二级页 / 排序 / 删整剧，散装单条放在下方
     @ViewBuilder
     private var completedPage: some View {
-        if seriesGroups.isEmpty && standaloneItems.isEmpty {
+        if vm.seriesGroups.isEmpty && vm.standaloneItems.isEmpty {
             ContentUnavailableView(
                 "还没有下载完的内容",
                 systemImage: "square.stack.3d.up",
                 description: Text("下载完成后，剧集和单条视频会出现在这里，可排序、可删除"))
         } else {
             List {
-                if !seriesGroups.isEmpty {
+                if !vm.seriesGroups.isEmpty {
                     Section {
-                        ForEach(seriesGroups, id: \.name) { group in
-                            if selectionMode {
+                        ForEach(vm.seriesGroups, id: \.name) { group in
+                            if vm.selectionMode {
                                 seriesSelectionRow(group)
                             } else {
                                 NavigationLink {
@@ -219,23 +188,23 @@ struct DownloadsView: View {
                             }
                         }
                         .onDelete { offsets in
-                            guard !selectionMode else { return }
-                            if let index = offsets.first, seriesGroups.indices.contains(index) {
-                                pendingDeleteSeries = seriesGroups[index].name
+                            guard !vm.selectionMode else { return }
+                            if let index = offsets.first, vm.seriesGroups.indices.contains(index) {
+                                vm.pendingDeleteSeries = vm.seriesGroups[index].name
                             }
                         }
                     } header: {
-                        Text("剧集 · \(seriesGroups.count) 部")
+                        Text("剧集 · \(vm.seriesGroups.count) 部")
                     } footer: {
                         Text("左滑删除整剧，点进剧名可逐集管理")
                     }
                 }
-                if !standaloneItems.isEmpty {
+                if !vm.standaloneItems.isEmpty {
                     Section("其他下载") {
-                        ForEach(standaloneItems) { task in
+                        ForEach(vm.standaloneItems) { task in
                             sectionRow(task: task)
                         }
-                        .onDelete { manager.delete(at: globalOffsets($0, in: standaloneItems)) }
+                        .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.standaloneItems)) }
                     }
                 }
             }
@@ -257,53 +226,22 @@ struct DownloadsView: View {
     /// 剧行副标题带上时间，让「最新/最早优先」的排序依据可见
     private func seriesSubtitle(_ group: (name: String, episodes: [DownloadTask])) -> String {
         let times = group.episodes.map(\.createdAt)
-        let key = sortOrder == .newestFirst ? times.max() : times.min()
+        let key = vm.sortOrder == .newestFirst ? times.max() : times.min()
         let base = "已下载 \(group.episodes.count) 集"
         guard let key else { return base }
         return base + " · \(key.downloadsListText)"
     }
 
-    private func playIfDone(_ task: DownloadTask) {
-        if task.state == .done, let url = task.outputURL {
-            playerItem = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
-        }
-    }
-
-    /// 左滑删除的局部下标 -> manager.tasks 全局下标
-    private func globalOffsets(_ offsets: IndexSet, in subset: [DownloadTask]) -> IndexSet {
-        IndexSet(offsets.compactMap { offset in
-            manager.tasks.firstIndex { $0.id == subset[offset].id }
-        })
-    }
-
-    private var allSelected: Bool {
-        !manager.tasks.isEmpty && selected.count == manager.tasks.count
-    }
-
-    private func toggleSelectAll() {
-        if allSelected { selected.removeAll() } else { selected = Set(manager.tasks.map(\.id)) }
-    }
-
-    private func deleteSelected() {
-        manager.deleteTasks(ids: selected)
-        selected.removeAll()
-        if manager.tasks.isEmpty { selectionMode = false }
-    }
-
-    private func toggleSelection(_ id: UUID) {
-        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
-    }
-
     /// 编辑模式下整行点击=勾选（Button(.plain)，不用 onTapGesture 以免与 List 手势冲突）；普通模式点击=播放
     @ViewBuilder
     private func sectionRow(task: DownloadTask) -> some View {
-        if selectionMode {
+        if vm.selectionMode {
             Button {
-                toggleSelection(task.id)
+                vm.toggleSelection(task.id)
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(selected.contains(task.id) ? .blue : .secondary)
+                    Image(systemName: vm.selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundColor(vm.selected.contains(task.id) ? .blue : .secondary)
                     TaskRow(task: task)
                 }
                 .contentShape(Rectangle())
@@ -312,16 +250,15 @@ struct DownloadsView: View {
         } else {
             TaskRow(task: task)
                 .contentShape(Rectangle())
-                .onTapGesture { playIfDone(task) }
+                .onTapGesture { vm.handleTap(task) }
         }
     }
 
     /// 编辑模式下剧行点击=勾选整剧（该剧全部已下载集）
     private func seriesSelectionRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
-        let ids = Set(group.episodes.map(\.id))
-        let allIn = ids.isSubset(of: selected)
+        let allIn = vm.seriesAllSelected(group)
         return Button {
-            if allIn { selected.subtract(ids) } else { selected.formUnion(ids) }
+            vm.toggleSeriesSelection(group)
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: allIn ? "checkmark.circle.fill" : "circle")

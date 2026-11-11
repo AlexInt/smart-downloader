@@ -191,18 +191,21 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | P5 | 停稳在未下载集时 toast 引导「第N集尚未下载 · 回剧集页下载后可看」（不改 resolve 语义） | `5abcc8f` |
 | P6 | harvest 结果落盘 Documents/DramaMeta/harvest_<site>_<dramaID>.json（Finder 可拷，tags/作者字段调查数据源）；DRAMAMETA-DOM 双份 NSLog 收敛为单行摘要 | `f322e0f` |
 | P8 | **DramaNativePage 拆 DramaPageViewModel**：业务状态（loading/info/downloadedSorts/selected/fromCache/coverURL/intro/playbackRequest）与编排（缓存优先加载/选集下载/播放入口/收割触发）全部入 VM；View 只渲染+转发意图；harvester/JS/Dump 工具随迁独立文件；BrowserView.swift 935→482 行 | 本提交 |
-| P9/P10 | 浏览页/下载页 MVVM 化 | 进行中 |
+| P9 | 浏览页下载入口锁（isSubmitting）与 beginDownload 编排并入 WebViewStore（@MainActor），View 只剩渲染派生 | `7727353` |
+| P10 | **DownloadsView 拆 DownloadsViewModel**：编辑模式/勾选/批量删除/整剧删除确认/排序偏好持久化与两个区域派生列表全部入 VM；SeriesDetailView/TaskRow/PlayerView 不动 | 本提交 |
 | P7 | 真实 tags 接入（阻塞：等用户拷 harvest_*.json 确认字段） | 阻塞 |
 | P11 | 真机回归（用户） | 待办 |
+
+**P11 真机回归清单**（P8/P9/P10 均为行为不变的纯重构，重点验行为等价）：① 剧集页全链路：点剧集→原生页渲染→选集下载（排队态/幂等）→已下载 ▶ 播放→↻ 合并新集；② 下载页：双 tab 横滑、排序切换（重进 App 后保留）、编辑模式全选/整剧勾选/批量删除、左滑删任务/删整剧确认；③ 浏览页：下载按钮连点不重复入队、单链接已在队列态、Picker 逐条禁用；④ 播放页：上下滑切集、秒开无转圈、长按 2x、清屏 + 清屏下任意位置横滑 seek、邻卡不显示当前集时间/点赞/2x 胶囊、未下载集 toast 引导、边缘返回。
 
 ## 5. 待办清单（按优先级）
 
 | # | 事项 | 说明 | 优先级 |
 |---|---|---|---|
-| 1 | **用户真机确认秒开体验** | 本次优化只过了编译；重点看 HIT 路径 log 与「切集无转圈」体感 | 高（验证） |
+| 1 | **用户真机确认秒开体验 + 架构清偿回归** | 秒开三件套 + 交互修复批 + 清屏 seek 全屏化 + 架构清偿（P4/P5/P8/P9/P10）全部过了编译，需一次真机回归（清单见「架构债务清偿」小节末尾） | 高（验证） |
 | 2 | 相邻卡片首帧海报 | 相邻页现在是渐变占位；可做首帧缓存（AVAssetImageGenerator）+ 磁盘缓存，更接近抖音观感。预热池里的 asset 可直接复用 | 中 |
-| 3 | 非当前卡片的状态显示隔离 | 相邻卡片复用了当前卡的进度/点赞/收藏显示（`DramaPlayerView` 里 playback 是共享单例），需按 isActive 隔离为静态预览值 | 中 |
-| 4 | 未下载占位页拦截 | 有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」空页；用户明确**记下待办、本次不做**，期望是滑到未下载集时提示「已经到底了」式引导 | 低（用户定级） |
+| 3 | ~~非当前卡片的状态显示隔离~~ | ✅ 已完成（`0ad7361` + `7337126`）：进度/时间/点赞/收藏/静音/清屏显示与按钮全部按 isActive 隔离，邻卡回落稿面值 | 已完成 |
+| 4 | ~~未下载占位页拦截~~ | ✅ 已完成（`5abcc8f`）：停稳在未下载集时 toast「第N集尚未下载 · 回剧集页下载后可看」，占位卡内联提示保留 | 已完成 |
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
 
