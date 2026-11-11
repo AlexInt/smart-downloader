@@ -28,6 +28,8 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 清屏模式（隐藏界面信息只看画面，状态本地记住） | ✅ 编译通过，**待用户真机体验确认** |
 | 滑动误触 2x 修复（起 2x 移到 perform，落指不再闪倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 清屏下 seek 瞬态进度 HUD（拖动时进度条+时间淡入，松手 800ms 淡出） | ✅ 编译通过，**待用户真机体验确认**（见下） |
+| 清屏盲操作命中带放宽 ±120（第五批） | ✅ 被第六批全屏化取代（闪现参照保留） |
+| 横向 seek 全屏化：相对映射 + 左缘排除（第六批，用户拍板） | ✅ 编译通过，**待用户真机验证**（见下） |
 | 清屏快滑仍闪 2x 修复（seekPan 全域起手 + .began 即翻转仲裁闸门） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
@@ -127,6 +129,18 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 2. **开启清屏闪现进度条+时间 1.5s**（`scrub show reason=cleanScreenOn` → `scrub hide reason=linger1500ms`）：给盲操作一次「带在哪」的空间参照；init 恢复清屏态时同样触发（每次进清屏播放页提示一次）。日志格式变更：`scrub show` 现在带 `reason=`（seek / cleanScreenOn），`scrub hide` 的 reason 改为 `linger800ms`/`linger1500ms`。
 
 验证日志看点：清屏下 screenY 650~700 起手的横滑应出 `startInBand=true expanded=true` 并正常 seek+出 HUD；开清屏出 1.5s 进度条闪现；普通模式带外横滑仍静默（不回归）；2x 仲裁行为不变（闸门仍 .began 即翻转）。
+
+### 横向 seek 全屏化：相对映射（2026-11-11 第六批，用户拍板方案 A，待真机验证）
+
+用户发起讨论「左右滑动是否放到全屏范围」后拍板方案 A：**全屏横向拖动 = 相对 scrub**。动机：命中带几何是「清屏盲按整批静默被拒」类问题的根，第五批 ±120 只是止血；主流短剧 App 均为全屏横滑 seek，肌肉记忆已成。
+
+- **映射**：`.began` 捕获 `playback.progress` 为基准，`.changed` 以 基准 + 位移/屏宽 连续换算（一屏宽≈全片时长，clamp 0..1），无起手跳变。命中带、`isInSeekBand`、`seekFraction`、contentOffset y 换算全部删除——`PlayerGesturePolicy` 只剩 `scrubDelta` 纯函数，手势几何与 designFrame 的同步约束消失。
+- **左缘保护**：x<30 起手不 seek（`scrubBaseFraction=nil`），保留给 edgePan 返回；闸门照常翻转。
+- **不变**：垂直翻页独占、水平主导 + dx>6、a9e9400 仲裁（.began 翻闸门压 2x、250ms 抑制窗、抬手不补 seek）、清屏 HUD 与开屏 1.5s 参照闪现。`VM.seek(fraction:)` 签名未动。
+- 第五批的清屏 ±120 被本批取代（命中带不存在了）；闪现参照保留，第五批作为证据链保留在 git 历史。
+- 日志变更：`.began` → `seekPan began x= scrubBase=`（或 `reason=leftEdgeGuard`）；`.changed` → `seekPan dx= dy= fraction= base=`；不再有 `startInBand=`/`screenY=`。
+
+验证日志看点：任意（非左缘）位置横滑 → seek 跟手、HUD 显示；左缘起手右滑 → 只触发返回不 seek；垂直快滑仍翻页；长按 2x 与拖拽仲裁行为不变；第五批的验证点（带顶盲按）自然失效——已无带。
 
 ### 清屏模式
 

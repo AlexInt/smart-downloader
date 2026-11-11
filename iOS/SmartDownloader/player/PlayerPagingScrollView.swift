@@ -77,8 +77,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedSize = ""
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
-        /// 本次 seekPan 触摸的起点是否在进度带内（.began 时捕获；带外起点全程不 seek）
-        private var seekStartInBand = false
+        /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
+        private var scrubBaseFraction: Double?
         private var edgeBackFired = false
 
         init(_ parent: PlayerPagingScrollView) {
@@ -121,36 +121,36 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             switch pan.state {
             case .began:
                 // 起手（约 10pt 位移）即判「拖动先起」，立刻翻转仲裁闸门（VM.beginSeekGesture）。
-                // 不能等 .changed 攒够「水平主导 + dx>6」才置位：清屏下进度带不可见，
-                // 横滑起点常落在带外（旧代码 shouldBegin 按带内过滤，识别器直接 fail，
-                // 一个事件都收不到），斜起手快速转水平的带内快滑同理——长按 0.15s 的
-                // perform 都会插进这个空窗误起 2x（闪倍速提示）。慢漂移（走 10pt 超过
-                // 0.15s）仍长按先起，2x 不受影响。是否真 seek 由 .changed 按起点在带内判定。
-                // location(in: scrollView) 是内容坐标（含 contentOffset），喂 PlayerGesturePolicy
-                // 前必须减 contentOffset 换算成屏幕坐标（第一页 offset=0 会掩盖此问题）。
-                let y = pan.location(in: view).y - view.contentOffset.y
-                // 清屏下进度带不可见，用放宽的 ±120 盲操作命中带；普通模式维持 ±60
-                let expanded = parent.playback.isCleanScreen
-                seekStartInBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size, expanded: expanded)
-                print("PLAYER_DBG [CHECK] seekPan began screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) startInBand=\(seekStartInBand) expanded=\(expanded)")
+                // 不能等 .changed 攒够「水平主导 + dx>6」才置位：斜起手快速转水平的快滑、
+                // 清屏下的横滑，都会给长按 0.15s 的 perform 留出插空窗误起 2x（闪倍速提示）。
+                // 慢漂移（走 10pt 超过 0.15s）仍长按先起，2x 不受影响。
+                // 捕获 scrub 基准：相对映射（拖动位移/屏宽 = 进度增量，一屏宽≈全片时长），
+                // 起点无关 —— 横向 seek 全屏有效，无命中带（2026-11-11 用户拍板方案 A）。
+                // 左缘 30pt 保留给返回手势（edgePan），从那里起手不 seek。
+                let x = pan.location(in: view).x
+                if x < 30 {
+                    scrubBaseFraction = nil
+                    print("PLAYER_DBG [CHECK] seekPan began x=\(Int(x)) reason=leftEdgeGuard → no scrub")
+                } else {
+                    scrubBaseFraction = parent.playback.progress
+                    print("PLAYER_DBG [CHECK] seekPan began x=\(Int(x)) scrubBase=\(String(format: "%.2f", scrubBaseFraction ?? 0))")
+                }
                 parent.playback.beginSeekGesture()
             case .changed:
-                // 起点在带外的触摸全程不 seek（带外水平滑动无效果），但仲裁闸门照常生效
-                guard seekStartInBand else { return }
                 let t = pan.translation(in: view)
                 guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
-                // 同 shouldBegin：内容坐标 → 屏幕坐标（纵向分页 contentOffset.x 恒为 0，防御性换算）
-                let x = pan.location(in: view).x - view.contentOffset.x
-                let fraction = PlayerGesturePolicy.seekFraction(screenX: x, screenSize: view.bounds.size)
+                guard let base = scrubBaseFraction else { return }
+                let fraction = min(max(base + PlayerGesturePolicy.scrubDelta(translationX: t.x, screenWidth: view.bounds.width), 0), 1)
                 if abs(fraction - lastLoggedSeek) > 0.05 {
                     lastLoggedSeek = fraction
-                    print("PLAYER_DBG [CHECK] seekPan x=\(Int(x)) dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction))")
+                    print("PLAYER_DBG [CHECK] seekPan dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction)) base=\(String(format: "%.2f", base))")
                 }
                 parent.playback.seek(fraction: fraction)
             case .ended, .cancelled, .failed:
-                // 抬手不补 seek：fraction 取自绝对位置，最后一次 .changed 已到位；
+                // 抬手不补 seek：最后一次 .changed 已到位；
                 // 也避免「2x 长按抬手先清了 isFastForwarding → .ended 的 seek 反而穿过闸门」的竞态跳变。
                 // 只结束「拖动独占」标记，下一次长按可正常起 2x
+                scrubBaseFraction = nil
                 parent.playback.endSeekGesture()
             default: break
             }
