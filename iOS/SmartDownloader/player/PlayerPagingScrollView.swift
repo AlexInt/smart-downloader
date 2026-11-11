@@ -1,0 +1,281 @@
+import SwiftUI
+import UIKit
+
+/// UIKit 原生纵向分页容器（ZFPlayer / 开源抖音实践）。
+/// `UIScrollView.isPagingEnabled` 由 UIKit 独占 pan。
+///
+/// 卡片是 UIHostingController.rootView，只在 `refreshCards` 时重设；
+/// 因此当前页 **与** 播放就绪状态任一变化都必须刷新，否则视频层会一直被
+/// `opacity(isActive && isReady ? 1 : 0)` 藏在渐变后面（播放器在播但画面不显示）。
+struct PlayerPagingScrollView: UIViewRepresentable {
+    let slots: [PlayableEpisode]
+    @Binding var currentSort: Int?
+    let playback: DramaPlayerViewModel
+    let vmCurrentSort: Int?
+    /// 播放是否就绪：变化时需要刷新卡片 rootView
+    let isReady: Bool
+    let makeCard: (PlayableEpisode) -> AnyView
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> PagingScrollView {
+        let scroll = PagingScrollView()
+        scroll.isPagingEnabled = true
+        scroll.showsVerticalScrollIndicator = false
+        scroll.backgroundColor = .clear
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.delegate = context.coordinator
+        scroll.onLayout = { [weak coordinator = context.coordinator] in
+            coordinator?.layoutPages(in: scroll)
+        }
+        print("PLAYER_DBG [UIScroll] makeUIView paging=\(scroll.isPagingEnabled) interaction=\(scroll.isUserInteractionEnabled)")
+
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.didTap))
+        tap.cancelsTouchesInView = false
+        scroll.addGestureRecognizer(tap)
+
+        let longPress = UILongPressGestureRecognizer(target: context.coordinator,
+                                                    action: #selector(Coordinator.didLongPress(_:)))
+        longPress.minimumPressDuration = 0.25
+        longPress.allowableMovement = 40
+        longPress.cancelsTouchesInView = false
+        scroll.addGestureRecognizer(longPress)
+
+        let seekPan = UIPanGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.didSeekPan(_:)))
+        seekPan.cancelsTouchesInView = false
+        seekPan.delegate = context.coordinator
+        scroll.addGestureRecognizer(seekPan)
+        context.coordinator.seekPan = seekPan
+        print("PLAYER_DBG [CHECK] seekPan installed gestures=\(scroll.gestureRecognizers?.count ?? 0)")
+        return scroll
+    }
+
+    func updateUIView(_ scroll: PagingScrollView, context: Context) {
+        context.coordinator.parent = self
+        print("PLAYER_DBG [CHECK] update binding=\(currentSort.map(String.init) ?? "nil") vm=\(vmCurrentSort.map(String.init) ?? "nil") isReady=\(isReady) slots=\(slots.count)")
+        context.coordinator.rebuildIfNeeded(in: scroll)
+        context.coordinator.refreshCardsIfNeeded()
+        context.coordinator.applyStartOffsetIfNeeded(in: scroll)
+    }
+
+    // MARK: - Coordinator
+
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+        var parent: PlayerPagingScrollView
+        var seekPan: UIPanGestureRecognizer?
+        private var builtSorts: [Int] = []
+        private var hosts: [Int: UIHostingController<AnyView>] = [:]
+        private var startApplied = false
+        private var lastRefreshedSort: Int?
+        private var lastRefreshedReady: Bool?
+        private var lastLoggedY: CGFloat = -999
+        private var lastLoggedSize = ""
+        private var lastPendingReason = ""
+        private var lastLoggedSeek: Double = -1
+
+        init(_ parent: PlayerPagingScrollView) {
+            self.parent = parent
+        }
+
+        // MARK: 离散手势
+
+        @objc func didTap() {
+            print("PLAYER_DBG [CHECK] TAP → togglePlayback")
+            parent.playback.togglePlayback()
+        }
+
+        @objc func didLongPress(_ gesture: UILongPressGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
+                parent.playback.beginFastForward()
+            case .ended, .cancelled, .failed:
+                print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
+                parent.playback.endFastForward()
+            default: break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  pan === seekPan, let view = pan.view else { return true }
+            let y = pan.location(in: view).y
+            let inBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size)
+            print("PLAYER_DBG [CHECK] seekPan shouldBegin y=\(Int(y)) inBand=\(inBand) → \(inBand)")
+            return inBand
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            gestureRecognizer === seekPan || other === seekPan
+        }
+
+        @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
+            guard pan.state == .changed || pan.state == .ended,
+                  let view = pan.view else { return }
+            let t = pan.translation(in: view)
+            guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
+            let x = pan.location(in: view).x
+            let fraction = PlayerGesturePolicy.seekFraction(screenX: x, screenSize: view.bounds.size)
+            if abs(fraction - lastLoggedSeek) > 0.05 {
+                lastLoggedSeek = fraction
+                print("PLAYER_DBG [CHECK] seekPan x=\(Int(x)) dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction))")
+            }
+            parent.playback.seek(fraction: fraction)
+        }
+
+        // MARK: 页面管理
+
+        func refreshCardsIfNeeded() {
+            let changed = lastRefreshedSort != parent.currentSort || lastRefreshedReady != parent.isReady
+            guard !hosts.isEmpty, changed else { return }
+            lastRefreshedSort = parent.currentSort
+            lastRefreshedReady = parent.isReady
+            let current = parent.currentSort
+            for slot in parent.slots {
+                hosts[slot.sort]?.rootView = parent.makeCard(slot)
+            }
+            print("PLAYER_DBG [CHECK] refreshCards current=\(current.map(String.init) ?? "nil") isReady=\(parent.isReady) activeHost=\(current.flatMap { hosts[$0] } != nil)")
+        }
+
+        func rebuildIfNeeded(in scroll: PagingScrollView) {
+            let sorts = parent.slots.map(\.sort)
+            guard sorts != builtSorts else { return }
+            builtSorts = sorts
+            startApplied = false
+            lastRefreshedSort = nil
+            lastRefreshedReady = nil
+            lastPendingReason = ""
+            print("PLAYER_DBG [CHECK] rebuild sorts=\(sorts) count=\(sorts.count)")
+
+            hosts.values.forEach { $0.view.removeFromSuperview() }
+            hosts.removeAll()
+            for slot in parent.slots {
+                let host = UIHostingController(rootView: parent.makeCard(slot))
+                host.view.backgroundColor = .clear
+                scroll.addSubview(host.view)
+                hosts[slot.sort] = host
+            }
+            layoutPages(in: scroll)
+        }
+
+        func layoutPages(in scroll: PagingScrollView) {
+            let width = scroll.bounds.width
+            let height = scroll.bounds.height
+            let sizeKey = "\(Int(width))x\(Int(height))x\(parent.slots.count)"
+            let shouldLog = sizeKey != lastLoggedSize
+            if shouldLog { lastLoggedSize = sizeKey }
+            guard width > 0, height > 0 else {
+                if shouldLog { print("PLAYER_DBG [CHECK] layout SKIPPED zero bounds=\(width)x\(height)") }
+                return
+            }
+            for (index, slot) in parent.slots.enumerated() {
+                hosts[slot.sort]?.view.frame =
+                    CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
+            }
+            scroll.contentSize = CGSize(width: width,
+                                        height: height * CGFloat(parent.slots.count))
+            if shouldLog {
+                let first = hosts[parent.slots.first?.sort ?? -1]?.view.frame ?? .zero
+                let last = hosts[parent.slots.last?.sort ?? -1]?.view.frame ?? .zero
+                print("PLAYER_DBG [CHECK] layout bounds=\(width)x\(height) contentSize=\(scroll.contentSize) firstFrame=\(first) lastFrame=\(last)")
+            }
+            applyStartOffsetIfNeeded(in: scroll)
+        }
+
+        func applyStartOffsetIfNeeded(in scroll: PagingScrollView) {
+            guard !startApplied else { return }
+            var reason = ""
+            if parent.currentSort == nil { reason = "currentSort=nil" }
+            else if scroll.bounds.height <= 0 { reason = "boundsH=0" }
+            else if scroll.contentSize.height < scroll.bounds.height { reason = "contentSize not ready" }
+            guard reason.isEmpty else {
+                if reason != lastPendingReason {
+                    lastPendingReason = reason
+                    print("PLAYER_DBG [CHECK] startOffset PENDING reason=\(reason)")
+                }
+                return
+            }
+            guard let start = parent.currentSort,
+                  let index = parent.slots.firstIndex(where: { $0.sort == start }) else { return }
+            startApplied = true
+            let offset = CGFloat(index) * scroll.bounds.height
+            print("PLAYER_DBG [CHECK] startOffset APPLY start=\(start) index=\(index) expectedY=\(Int(offset))")
+            DispatchQueue.main.async {
+                scroll.setContentOffset(CGPoint(x: 0, y: offset), animated: false)
+                let actual = scroll.contentOffset.y
+                print("PLAYER_DBG [CHECK] startOffset APPLIED actualY=\(Int(actual)) expectedY=\(Int(offset)) → \(abs(actual - offset) < 2 ? "OK" : "FAIL")")
+            }
+        }
+
+        // MARK: 滚动
+
+        func scrollViewWillEndDragging(_ scrollView: UIScrollView,
+                                       withVelocity velocity: CGPoint,
+                                       targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+            let height = scrollView.bounds.height
+            guard height > 0 else { return }
+            let currentIndex = Int(round(scrollView.contentOffset.y / height))
+            let proposed = targetContentOffset.pointee.y
+            let delta = proposed - CGFloat(currentIndex) * height
+            var nextIndex = currentIndex
+            let triggered = abs(delta) > height * 0.15 || abs(velocity.y) > 0.3
+            if triggered {
+                nextIndex = currentIndex + ((delta > 0 || velocity.y > 0) ? 1 : -1)
+            }
+            nextIndex = max(0, min(parent.slots.count - 1, nextIndex))
+            let targetY = CGFloat(nextIndex) * height
+            let overridden = abs(targetY - proposed) > 1
+            print("PLAYER_DBG [CHECK] willEndDragging y=\(Int(scrollView.contentOffset.y)) proposed=\(Int(proposed)) vY=\(String(format: "%.2f", velocity.y)) delta=\(Int(delta)) currentIdx=\(currentIndex) nextIdx=\(nextIndex) triggered=\(triggered) override=\(overridden) targetY=\(Int(targetY))")
+            if overridden { targetContentOffset.pointee.y = targetY }
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            let y = scrollView.contentOffset.y
+            guard abs(y - lastLoggedY) > 100 else { return }
+            lastLoggedY = y
+            print("PLAYER_DBG [UIScroll] didScroll y=\(Int(y)) dragging=\(scrollView.isDragging) decel=\(scrollView.isDecelerating)")
+        }
+
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            let height = scrollView.bounds.height
+            let y = scrollView.contentOffset.y
+            let index = height > 0 ? Int(round(y / height)) : -1
+            let aligned = height > 0 && abs(y - CGFloat(index) * height) < 2
+            print("PLAYER_DBG [CHECK] endDecel y=\(Int(y)) index=\(index) aligned=\(aligned)")
+            report(scrollView)
+        }
+
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            print("PLAYER_DBG [CHECK] endDrag y=\(Int(scrollView.contentOffset.y)) willDecel=\(decelerate)")
+            if !decelerate { report(scrollView) }
+        }
+
+        private func report(_ scroll: UIScrollView) {
+            guard scroll.bounds.height > 0 else {
+                print("PLAYER_DBG [CHECK] report SKIPPED boundsH=0")
+                return
+            }
+            let index = Int(round(scroll.contentOffset.y / scroll.bounds.height))
+            guard index >= 0, index < parent.slots.count else {
+                print("PLAYER_DBG [CHECK] report OUT_OF_RANGE index=\(index) slots=\(parent.slots.count)")
+                return
+            }
+            let sort = parent.slots[index].sort
+            print("PLAYER_DBG [CHECK] report index=\(index) → sort=\(sort) bindingBefore=\(parent.currentSort.map(String.init) ?? "nil") vm=\(parent.vmCurrentSort.map(String.init) ?? "nil")")
+            parent.currentSort = sort
+        }
+    }
+}
+
+/// bounds 变化后重新排布每一页，避免 SwiftUI 首帧给不出尺寸
+final class PagingScrollView: UIScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
+    }
+}

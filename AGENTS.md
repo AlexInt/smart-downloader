@@ -61,6 +61,52 @@ xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
 3. **输出目录必须在用户主目录下**（`core/utils.get_download_dir` 有安全检查，越界抛 PermissionError）。
 4. 临时文件放 `temp_*` 目录，任务结束必须清理；同名文件加 `(1)` 后缀防覆盖。
 
+## iOS 架构约定（MVVM + Service / SOLID）
+
+适用范围：`iOS/SmartDownloader/`。目标是「代码不要堆在一起」，按单一职责分层。
+
+### 分层与依赖方向（单向，不可反向）
+
+```text
+View → ViewModel → Service → 系统能力 / Model
+```
+
+| 层 | 职责 | 硬性约束 |
+|---|---|---|
+| Model | 纯数据 | 无行为、无 IO、不 import SwiftUI |
+| View | 渲染 + 转发用户意图 | **不写业务判断**（如「下一个是谁」「是否到底」），不自己算状态 |
+| ViewModel | 可绑定状态 + 意图方法 | 不创建 AVPlayer / FileManager / URLSession，不 import UIKit |
+| Service | 一件可复用的能力 | 不 import SwiftUI、不用 @Published、不反向依赖 ViewModel；判据：删掉 UI 后逻辑仍成立 |
+| 组装根 | 只做依赖注入与拼接 | 无业务 if/else |
+
+### 目录
+
+- `player/`：Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `PlayerPreferences` / `PlaybackPlayerService`）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerSurfaceView`）、组装根（`DramaPlayerContainer`）
+- `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定
+
+### 具体约定
+
+1. 上下滑资源调度唯一入口是 `PlaybackQueueService`；**后续本地推荐算法只改 `resolveNext(from:in:)` / `resolvePrevious(from:in:)`**，不动 View / 容器 / ViewModel。
+2. 播放页用 **UIKit 原生分页**：`PlayerPagingScrollView`（`UIViewRepresentable` 包 `UIScrollView.isPagingEnabled = true` + `UIHostingController` 承载 SwiftUI 卡片）。纵向 pan 由 UIKit 独占，**卡片内禁止任何连续手势（包括局部 DragGesture）** —— 曾因进度带 390×120 的局部 DragGesture 吃掉全部纵向滑动，导致分页完全滑不动。点按 / 长按 / 水平 seek 一律用 UIKit recognizer 挂在同一 UIScrollView 上，`cancelsTouchesInView = false`；seekPan 通过 delegate 与系统 pan 同时识别，且只在「起点落在进度带 + 水平主导」时生效，几何判定放 `PlayerGesturePolicy`（纯函数）。边界提示由 ViewModel 在停到末页时给出。
+   - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
+3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；本地回环 HLS 加载快，暂不引入多 player pool。
+4. 进度只在进度条上下各 60pt 带内响应水平滑动；带外水平滑动无效果；垂直滑动只切集，不碰进度。
+5. 偏好持久化统一走 `PlayerPreferences`，不要在 ViewModel 里散落 `UserDefaults.standard`。
+6. 不为了分层而分层：不硬造协议、不搬 Coordinator/Router、不给三行代码加一层；等一个类型出现第二个变更理由再拆。`struct` 做 Service 可以。
+7. 已知低优先级待办：有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」占位页（见 `PlaybackQueueService` 的 resolve 注释）。
+
+## 诊断日志约定
+
+排查跨层问题（播放页 / 分页 / 数据源）时的硬性要求：
+
+1. **统一前缀** `PLAYER_DBG`，分类标签 `[CHECK]` / `[Entry]` / `[Service]` / `[VM]` / `[Container]` / `[FeedView]` / `[UIScroll]` / `[Playback]`。
+2. `[CHECK]` 是断言行，**必须带输入值与判定依据**（如 `expectedY / actualY → OK|FAIL`），拿到日志即可判读，不靠追问。
+3. **覆盖整条链路**：入口（点了哪集、request 内容）→ 数据源（全剧集号来自 knownSorts / SQLite / 磁盘兜底）→ 容器（页高、contentSize、每页 frame）→ 起始定位（PENDING 原因 / APPLY / APPLIED）→ 手势判定（delegate 全过程、误触）→ 状态回写（当前集、停稳防抖）→ 播放源（load 成功与每个失败分支）。
+4. **失败分支必须有日志**，尤其是提前 `return` 的 guard。「日志里什么都没有」本身就是线索 —— 曾因 `applyStartOffset` 静默跳过导致点任意集都停在第一页，排查了四轮。
+5. **降噪**：连续事件（didScroll、seekFraction）按阈值节流；同一原因的 PENDING 只打一次。
+6. 排障结束后**保留**这些日志，不要清理；定位问题靠日志，不要靠猜测反复改代码。
+7. 取日志：Xcode Console 过滤 `PLAYER_DBG`；真机 `xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader`。本项目只禁浏览页截图，不禁 build/run/console。
+
 ## 网络与 WAF（重要背景）
 
 - 部分视频资源站点的 CDN/WAF 按 **TLS 指纹**（ClientHello 特征）掐连接，与请求头无关：

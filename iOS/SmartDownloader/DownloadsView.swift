@@ -386,12 +386,17 @@ struct SeriesDetailView: View {
     /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
     /// 全剧集数同步与滑动调度交给 PlaybackQueueService，这里只说明剧名与起始集号。
     private func playIfDone(_ task: DownloadTask) {
-        guard task.state == .done, let url = task.outputURL else { return }
+        guard task.state == .done, let url = task.outputURL else {
+            print("PLAYER_DBG [Entry] playIfDone SKIP state=\(task.state) output=\(task.outputURL == nil ? "nil" : "yes")")
+            return
+        }
         guard task.isHLSFolder else {
+            print("PLAYER_DBG [Entry] playIfDone → AVKit fallback (non-HLS) title=\(task.title)")
             playerItem = PlayerItem(url: url, isHLSFolder: false)
             return
         }
         let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 1
+        print("PLAYER_DBG [Entry] playIfDone series=\(seriesName) title=\(task.title) parsedSort=\(sort) knownSorts=0 (rely on cache)")
         immersivePlayback = ImmersivePlaybackRequest(
             seriesName: seriesName,
             intro: nil,

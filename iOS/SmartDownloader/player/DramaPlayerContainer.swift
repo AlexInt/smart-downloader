@@ -1,279 +1,32 @@
 import SwiftUI
-import AVFoundation
-
-// MARK: - 播放状态（AVPlayer + 时间观察 + 本地互动状态）
-
-@MainActor
-final class DramaPlayerViewModel: ObservableObject {
-    let player = AVPlayer()
-
-    @Published private(set) var isReady = false
-    /// 长按画面期间的 2× 倍速状态（驱动播放器上的倍速提示）
-    @Published private(set) var isFastForwarding = false
-    @Published private(set) var currentTimeText = "00:00"
-    @Published private(set) var durationText = "00:00"
-    @Published private(set) var progress: Double = 0
-    @Published private(set) var loadError: String?
-
-    /// 点赞/收藏没有账号体系，按「集目录相对路径」存本机；静音是全局播放偏好
-    @Published var isMuted = false { didSet { player.isMuted = isMuted } }
-    @Published var liked = false { didSet { persist() } }
-    @Published var saved = false { didSet { persist() } }
-
-    private var timeObserver: Any?
-    private var currentKey = ""
-
-    init() {
-        player.actionAtItemEnd = .pause
-        ensureObserver()
-    }
-
-    /// 切集时重新取本地播放地址（LocalMediaServer 已支持剧集两级路径）
-    func load(episode: PlayableEpisode) async {
-        endFastForward()          // 切集前先恢复 1×，避免倍速状态跨集残留
-        loadError = nil
-        isReady = false
-        resetTimes()
-
-        // 全剧集号里的未下载槽位：清空播放项，只保留占位态（视图显示「该集尚未下载」）
-        guard let playlist = episode.playlistURL else {
-            player.pause()
-            player.replaceCurrentItem(with: nil)
-            return
-        }
-        ensureObserver()
-
-        currentKey = Self.key(for: playlist)
-        liked = UserDefaults.standard.bool(forKey: "DramaPlayer.liked.\(currentKey)")
-        saved = UserDefaults.standard.bool(forKey: "DramaPlayer.saved.\(currentKey)")
-
-        let playback = await LocalMediaServer.shared.playbackURL(
-            forFolder: playlist.deletingLastPathComponent())
-        guard playback.scheme == "http" else {
-            loadError = "本地播放服务启动失败"
-            return
-        }
-        let item = AVPlayerItem(url: playback)
-        player.replaceCurrentItem(with: item)
-        player.isMuted = isMuted
-        player.play()
-
-        // 等首帧就绪再显露视频层：加载期间保留设计稿渐变，不闪黑屏（最多等 4 秒）
-        for _ in 0..<40 {
-            if item.status == .readyToPlay || item.status == .failed { break }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        if item.status == .failed {
-            loadError = item.error?.localizedDescription ?? "视频加载失败"
-            return
-        }
-        isReady = true
-    }
-
-    func togglePlayback() {
-        if player.timeControlStatus == .playing {
-            player.pause()
-            return
-        }
-        // 播到结尾后再点一次，从头重播
-        if let duration = player.currentItem?.duration,
-           CMTimeGetSeconds(duration).isFinite,
-           CMTimeGetSeconds(player.currentTime()) >= CMTimeGetSeconds(duration) - 0.2 {
-            player.seek(to: .zero)
-        }
-        player.play()
-    }
-
-    /// 进度条拖动/点击：按总时长的比例 seek
-    func seek(fraction: Double) {
-        guard let item = player.currentItem else { return }
-        let total = CMTimeGetSeconds(item.duration)
-        guard total.isFinite, total > 0 else { return }
-        let ratio = min(max(fraction, 0), 1)
-        let target = CMTime(seconds: total * ratio, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-        syncTime(target)
-    }
-
-    func stop() {
-        isFastForwarding = false
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        if let timeObserver {
-            player.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
-        }
-        isReady = false
-    }
-
-    /// 长按达到阈值：以 2× 播放。仅在已就绪且正在播放时生效，暂停态长按不会自动开播。
-    func beginFastForward() {
-        guard isReady, !isFastForwarding, player.timeControlStatus == .playing else { return }
-        isFastForwarding = true
-        player.rate = 2.0
-    }
-
-    /// 松手 / 手势被取消（如改为上下滑切集）/ 切集：恢复 1×。
-    /// 暂停后松手不重新开播，所以只在仍在播放时才改 rate。
-    func endFastForward() {
-        guard isFastForwarding else { return }
-        isFastForwarding = false
-        if player.timeControlStatus == .playing { player.rate = 1.0 }
-    }
-
-    // MARK: 私有
-
-    private func ensureObserver() {
-        guard timeObserver == nil else { return }
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
-            queue: .main,
-            using: { [weak self] time in
-                MainActor.assumeIsolated { self?.syncTime(time) }
-            }
-        )
-    }
-
-    private func syncTime(_ time: CMTime) {
-        let seconds = CMTimeGetSeconds(time)
-        guard seconds.isFinite, seconds >= 0 else { return }
-        currentTimeText = Self.format(seconds)
-        let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
-        guard total.isFinite, total > 0 else { return }
-        durationText = Self.format(total)
-        progress = min(max(seconds / total, 0), 1)
-    }
-
-    private func resetTimes() {
-        currentTimeText = "00:00"
-        durationText = "00:00"
-        progress = 0
-    }
-
-    private func persist() {
-        guard !currentKey.isEmpty else { return }
-        UserDefaults.standard.set(liked, forKey: "DramaPlayer.liked.\(currentKey)")
-        UserDefaults.standard.set(saved, forKey: "DramaPlayer.saved.\(currentKey)")
-    }
-
-    /// 用相对 Downloads 的集目录路径做 key，避免不同剧的「第01集」互相串状态
-    private static func key(for url: URL) -> String {
-        let root = DownloadEngine.downloadsDir.standardizedFileURL.path
-        let folder = url.deletingLastPathComponent().standardizedFileURL.path
-        return folder.hasPrefix(root) ? String(folder.dropFirst(root.count)) : folder
-    }
-
-    private static func format(_ seconds: Double) -> String {
-        let value = max(0, Int(seconds.rounded()))
-        if value >= 3600 {
-            return String(format: "%02d:%02d:%02d", value / 3600, (value % 3600) / 60, value % 60)
-        }
-        return String(format: "%02d:%02d", value / 60, value % 60)
-    }
-}
-
-// MARK: - AVPlayerLayer 承载视图
-
-struct PlayerSurfaceView: UIViewRepresentable {
-    let player: AVPlayer
-
-    func makeUIView(context: Context) -> PlayerSurfaceUIView {
-        let view = PlayerSurfaceUIView()
-        view.playerLayer.player = player
-        view.playerLayer.videoGravity = .resizeAspectFill
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false   // 触摸交给 SwiftUI 层
-        return view
-    }
-
-    func updateUIView(_ uiView: PlayerSurfaceUIView, context: Context) {
-        guard uiView.playerLayer.player !== player else { return }
-        uiView.playerLayer.player = player
-    }
-}
-
-final class PlayerSurfaceUIView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-}
 
 // MARK: - 沉浸式播放容器（fullScreenCover 内容）
 
-/// 把本地 HLS 交给 ViewModel、把设计稿视图挂到真实数据上；
-/// 上下滑动的资源调度全部委托给 PlaybackQueueService（含后续本地推荐算法）。
-/// 散装单集没有剧的概念，仍走 DownloadsView 的 AVKit PlayerView。
+/// 组装根：只注入依赖，不含任何业务逻辑。
+/// 分层：PlaybackQueueService / PlaybackPlayerService / PlayerPreferences（Service）
+/// → DramaPlayerViewModel / PlayerFeedViewModel（ViewModel）
+/// → PlayerFeedView / DramaPlayerView / Components/ToastView（View）。
 struct DramaPlayerContainer: View {
     let request: ImmersivePlaybackRequest
     /// 显式关闭：把外层 fullScreenCover(item:) 的绑定置 nil，比只调 dismiss() 可靠
     var onClose: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var vm = DramaPlayerViewModel()
-    @State private var queue: PlaybackQueueService
-    @State private var toastText: String?
-    @State private var toastID = 0
-
-    /// 自定义 init 会隐藏成员构造器，新增参数必须在这里显式接收
-    init(request: ImmersivePlaybackRequest, onClose: @escaping () -> Void = {}) {
-        self.request = request
-        self.onClose = onClose
-        _queue = State(initialValue: PlaybackQueueService(request: request))
-    }
-
-    /// 到边界时只给反馈，不创建任何资源
-    private func handleSwipe(_ direction: PlaybackQueueService.Direction) {
-        if queue.move(direction) { return }
-        showToast(direction == .next ? "已经到底了" : "已经是第一集了")
-    }
-
-    private func showToast(_ text: String) {
-        toastID += 1
-        let id = toastID
-        toastText = text
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_600_000_000)
-            if toastID == id { toastText = nil }
-        }
-    }
+    @StateObject private var feedVM = PlayerFeedViewModel()
 
     var body: some View {
-        Group {
-            if let current = queue.current {
-                DramaPlayerView(
-                    episode: .local(seriesName: queue.seriesName,
-                                    intro: queue.intro,
-                                    index: current.sort,
-                                    total: queue.totalEpisodes),
-                    vm: vm,
-                    onClose: {
-                        onClose()          // 先清绑定，确保 cover 真的关闭
-                        dismiss()
-                    },
-                    hasNextEpisode: queue.hasNext,
-                    isEpisodeAvailable: current.isAvailable,
-                    nextEpisodeAvailable: queue.nextIsAvailable,
-                    toastText: toastText,
-                    onNextEpisode: { handleSwipe(.next) },
-                    onPreviousEpisode: { handleSwipe(.previous) }
-                )
-                .task(id: current.id) {
-                    await vm.load(episode: current)
-                }
-            } else {
-                ZStack {
-                    DWColor.background.ignoresSafeArea()
-                    VStack(spacing: 12) {
-                        Image(systemName: "film")
-                            .font(.largeTitle)
-                            .foregroundStyle(DWColor.textHint)
-                        Text("没有可播放的剧集")
-                            .font(DWFont.cn(13))
-                            .foregroundStyle(DWColor.textBody)
-                        Button("返回") { onClose(); dismiss() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                }
+        PlayerFeedView(vm: feedVM, onClose: {
+            print("PLAYER_DBG [Container] onClose → clearBinding + dismiss")
+            onClose()
+            dismiss()
+        })
+            .onAppear { print("PLAYER_DBG [Container] appear series=\(request.seriesName)") }
+            .task {
+                print("PLAYER_DBG [Container] task → configure")
+                feedVM.configure(request: request)
             }
-        }
-        .onDisappear { vm.stop() }
+            .onDisappear {
+                print("PLAYER_DBG [Container] disappear → stop")
+                feedVM.stop()
+            }
     }
 }

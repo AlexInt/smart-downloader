@@ -97,7 +97,10 @@ enum DramaCache {
     /// 按剧名反查该剧全部集号。下载页只有剧名（无 site/dramaID），
     /// 单击播放时用它同步整部剧集数，让播放页能按全剧集号上下滑。
     static func allSorts(forSeriesName name: String) -> [Int] {
-        guard let db = openDB() else { return [] }
+        guard let db = openDB() else {
+            print("PLAYER_DBG [Service] DramaCache.allSorts FAIL reason=openDB name=\(name)")
+            return []
+        }
         defer { sqlite3_close(db) }
         let sql = """
         SELECT e.sort FROM drama_episodes e
@@ -106,7 +109,9 @@ enum DramaCache {
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "allSorts prepare"); return []
+            fail(db, "allSorts prepare")
+            print("PLAYER_DBG [Service] DramaCache.allSorts FAIL reason=prepare name=\(name)")
+            return []
         }
         bind(stmt, 1, name)
         var sorts: [Int] = []
@@ -114,6 +119,7 @@ enum DramaCache {
             sorts.append(Int(sqlite3_column_int(stmt, 0)))
         }
         sqlite3_finalize(stmt)
+        print("PLAYER_DBG [Service] DramaCache.allSorts name=\(name) rows=\(sorts.count) sorts=\(Array(sorts.prefix(20)))")
         return sorts
     }
 
