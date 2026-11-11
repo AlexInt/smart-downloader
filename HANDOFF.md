@@ -33,7 +33,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 1. **`PlaybackPlayerService` 相邻集资产预热池**：`preload(_:)` 提前对相邻集 `asset.load(.isPlayable)`（完成 m3u8 拉取解析），`makeItem` 命中池则直接构建 item（log `makeItem HIT`）。停稳播当前集时并行预热两侧；进入播放页时首集也预热（与 150ms 防抖并行）。池按需淘汰，`teardown()` 全清。
 2. **`DramaPlayerViewModel` KVO 事件流**：旧 100ms 轮询删除，改为 `statusEvents(for:timeout:)`（KVO → AsyncStream，`.initial` 覆盖「观察前已 ready」的 HIT 场景，4s 看门狗，取消安全——新滑动自动终止并清理观察器；`item === player.currentItem` 防陈旧回调翻转状态）。
-3. **spinner 300ms 延迟显示**：`isLoadingSlow` 只在 300ms 未就绪时置 true，`DramaPlayerView` 的 ProgressView 挂在它下面；视频/渐变层加 150ms easeOut 交叉淡入。
+3. **spinner 延迟显示**：`isLoadingSlow` 只在延迟期满仍未就绪时置 true，`DramaPlayerView` 的 ProgressView 挂在它下面；视频/渐变层加 150ms easeOut 交叉淡入。初版 300ms，2026-11-11 依真机实测（HIT 就绪 642–871ms）调至 **800ms**。
 
 验证方法（真机抓 log，见 §6）：预热生效应看到 `preload OK sort=N` → 滑动后 `makeItem HIT` → `load OK ... waitedMs=<几十>`（旧轮询是 `waited=1~3` 即 100–300ms），且滑动切集不再出现转圈。
 
@@ -56,7 +56,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证日志看点：拖动中只出 `LONGPRESS SKIP reason=seeking`（不再有拖动中的 `LONGPRESS began`）；按住 2x 漂移只出 `seek SKIP reason=fastForwarding`、无位置跳变、2x 不中断；2x 松手后若出 `TAP SKIP reason=justEndedLongPress` 即误触被吞；正常单击仍出 `TAP → togglePlayback`。
 
-已知观察（未改，待用户定夺）：预热 HIT 后就绪仍需 642–1177ms（m3u8 已解析，剩首段拉取+解码），300ms spinner 延迟被普遍超过 → 每次滑动都会闪一下转圈。可选：把延迟提到 ~800ms（HIT 路径基本无感，真正慢的入口 MISS 仍会显示）。
+已知观察（用户已拍板，2026-11-11 已改）：预热 HIT 后就绪仍需 642–1177ms（m3u8 已解析，剩首段拉取+解码），300ms spinner 延迟被普遍超过 → 每次滑动都闪转圈。已把延迟提至 **800ms**：HIT 路径（642–871ms）基本无感，真正慢的入口 MISS（~1.2s）仍会短暂显示。
 
 ### 交互细节修复批（同日第二批，待真机验证）
 
@@ -132,7 +132,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 ```
 
 - 排障一律**先加 log 再请用户提供 log**，靠日志判读，不靠猜测改代码（这是本项目的协作模式，用户会贴 log）。
-- 秒开链路关键 log 行：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK ... waitedMs=` / `spinner show`（出现即说明 300ms 未就绪）/ `status STALE`。
+- 秒开链路关键 log 行：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK ... waitedMs=` / `spinner show`（出现即说明 800ms 未就绪）/ `status STALE`。
 - 交互链路关键 log 行：`TAP → togglePlayback` / `LONGPRESS began|ended → 2x|1x` / `edgePan dx=.. > 50 → back`。
 - 冒烟工具（macOS，不需手机）：`iOS/smoke/` 下 coretest / playtest 等，编译命令见 AGENTS.md。
 

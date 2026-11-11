@@ -19,7 +19,8 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var durationText = "00:00"
     @Published private(set) var progress: Double = 0
     @Published private(set) var loadError: String?
-    /// spinner 延迟显示：加载超过 300ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
+    /// spinner 延迟显示：加载超过 800ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
+    /// （800ms 依真机实测定：HIT 就绪 642–871ms、入口 MISS 1008–1177ms，原 300ms 每滑必闪）
     @Published private(set) var isLoadingSlow = false
 
     @Published var isMuted = false {
@@ -255,17 +256,17 @@ final class DramaPlayerViewModel: ObservableObject {
         }
     }
 
-    /// spinner 延迟显示：300ms 内就绪的加载完全不出现转圈（预热命中的常态）；
-    /// 超过 300ms 仍未就绪才置 isLoadingSlow，让卡片显示 spinner。
+    /// spinner 延迟显示：800ms 内就绪的加载完全不出现转圈（预热命中的常态）；
+    /// 超过 800ms 仍未就绪才置 isLoadingSlow，让卡片显示 spinner。
     private func beginSpinnerDelay() {
         spinnerDelayTask?.cancel()
         isLoadingSlow = false
         spinnerDelayTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(800))
             guard let self, !Task.isCancelled else { return }
             if !self.isReady, self.loadError == nil {
                 self.isLoadingSlow = true
-                print("PLAYER_DBG [Playback] spinner show reason=notReadyAfter300ms")
+                print("PLAYER_DBG [Playback] spinner show reason=notReadyAfter800ms")
             }
         }
     }

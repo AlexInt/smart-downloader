@@ -392,7 +392,7 @@ struct DramaPlayerView: View {
                 .allowsHitTesting(false)
             } else if isActive, !playback.isReady {
                 if isEpisodeAvailable {
-                    // 300ms 内就绪的加载不显示转圈：预热命中的秒开路径应当无感
+                    // 800ms 内就绪的加载不显示转圈：预热命中的秒开路径应当无感（阈值依真机实测定）
                     if playback.isLoadingSlow {
                         ProgressView()
                             .tint(.white)
