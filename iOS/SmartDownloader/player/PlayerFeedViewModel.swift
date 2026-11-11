@@ -33,6 +33,9 @@ final class PlayerFeedViewModel: ObservableObject {
             return
         }
         configured = true
+        // 防御性复位：VM 当前按容器生命周期每次新建，但若将来被复用，
+        // 上一轮的「已到底」标记不得吞掉本轮的边界提示（评估报告 P2）
+        endToastShown = false
         let q = PlaybackQueueService(request: request)
         queue = q
         slots = q.slots

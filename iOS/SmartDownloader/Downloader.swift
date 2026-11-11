@@ -282,6 +282,8 @@ final class DownloadManager: ObservableObject {
 
     /// 目录名 -> 集号：第01集 / 第01集(1)（重下防覆盖后缀）；不匹配返回 nil
     /// nonisolated：纯字符串解析、不碰任何 UI 状态，允许非 MainActor 的磁盘扫描复用
+    /// 【player 模块隐性契约】PlaybackQueueService 磁盘槽位扫描依赖集号解析；
+    /// 改命名规则或签名前必须同步评估 player/PlaybackQueueService 与 player/PlayerPreferences。
     nonisolated static func episodeSort(fromFolderName name: String) -> Int? {
         guard name.hasPrefix("第") else { return nil }
         let body = name.dropFirst()
@@ -363,6 +365,7 @@ final class DownloadManager: ObservableObject {
 final class DownloadEngine {
     static let maxConcurrency = 6
 
+    /// 【player 模块隐性契约】player/PlayerPreferences 用它换算点赞/收藏的相对路径 key
     static var downloadsDir: URL {
         // 冒烟测试可用环境变量重定向输出目录，避免写入用户目录
         if let custom = ProcessInfo.processInfo.environment["SMARTDOWNLOADER_DIR"] {
@@ -373,6 +376,8 @@ final class DownloadEngine {
     }
 
     /// 剧目录：选集下载落盘与「已下载」检测共用同一命名规则（sanitize 后的剧名）
+    /// 【player 模块隐性契约】PlaybackQueueService.buildSlots 靠它定位剧目录扫描已下载集；
+    /// 改命名规则或签名前必须同步评估 player/PlaybackQueueService。
     static func seriesDirectory(for rawSeriesName: String) -> URL {
         downloadsDir.appendingPathComponent(sanitizeTitle(rawSeriesName) ?? rawSeriesName, isDirectory: true)
     }
