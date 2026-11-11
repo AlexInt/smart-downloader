@@ -157,10 +157,10 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 - **捕获模式**：收割器 webview 注入 `apiCaptureScript`（嗅探器同骨架 Hook XHR/fetch，扩展为连响应体回传；只捕 JSON/text 或 api/drama/playlet URL，单条 ≤200KB、总量 ≤40），落盘 `Documents/DramaMeta/api_<site>_<dramaID>.json`；主文档完整 HTML 同时落 `html_*.html`（meta keywords / class 选择器样本一次拿齐）。捕获只搬运不解析；加密信封原样落盘，原生有现成 decryptPayload 可离线解。
 - **强制采集开关**：`-captureDramaMeta` 启动参数让 harvestIfNeeded 绕过头部缓存判定（已缓存剧否则不触发收割）。真机：`xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader -captureDramaMeta`，进一次剧集页，Finder 拷出 api_*/html_*。
-- **过渡期止血**：锚点法 parseTags 回退保留 + 垃圾切片拒收（含超长 token / >8 短词 → nil，缓存保持可重收割，堵自锁）+ 失败分支日志。样本拿到后按 JSON 字段定向提取取代。
+- **定向提取（样本已确认）**：真机拷回 `api_https___yeguodj.com_3703.json`——detail 接口明文 JSON，`tags` 为结构化数组；用户构造 `DramaDetailData` Codable（swiftc 对样本实测解码 OK）。捕获回调里 `JSONDecoder` 解码 + 剧 ID 命中即 `savePageMeta`（`source=api`，不等轮询），轮次优先用 `apiDetail.tags`；锚点法 parseTags 已删除。失败分支：`apiNoTags` / `noDetailResponse`。
 - handler 收尾 removeScriptMessageHandler 防循环引用；`harvest finish apiCaptures=N` 看捕获条数。
 
-验证看点：强制采集出 `harvest trigger reason=forcedCapture` + `DramaMetaDump ok name=api_…/html_…`；拷出 api_*.json 看 tags 字段在哪个响应（加密信封先解密再读）。
+验证看点：进剧集页出 `harvest tags source=api tags=反差 人妻 都市 大女主`（样本剧），头部与播放卡 tags 行显示同一串；无 detail 响应时 finish 打 `tags FAIL reason=noDetailResponse`。待真机回归。
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -220,7 +220,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 4 | ~~未下载占位页拦截~~ | ✅ 已完成（`5abcc8f`）：停稳在未下载集时 toast「第N集尚未下载 · 回剧集页下载后可看」，占位卡内联提示保留 | 已完成 |
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
-| 7 | tags 定向提取（请求拦截） | 真机 `-captureDramaMeta` 拷出 api_*/html_* 样本后按 JSON 字段提取取代锚点止血；若 tags 系 SSR 直出则用 HTML 样本写 class 选择器 | 中（待样本） |
+| 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
 
 ## 6. 验证与调试
 

@@ -282,6 +282,8 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     private var finished = false
     /// 捕获到的 API 响应（JSON 串数组，逐条追加重写落盘）
     private var apiCaptures: [String] = []
+    /// 定向提取命中的 detail 响应（真机样本实证：明文 JSON 带 tags 数组）
+    private var apiDetail: DramaDetailData?
 
     private func begin(target: DramaTarget) {
         pendingTarget = target
@@ -307,6 +309,9 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         finished = true
         // userContentController 强持有 handler，不解除会 harvester↔webview 循环引用
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "apicap")
+        if apiDetail == nil {
+            print("PLAYER_DBG [Entry] tags FAIL reason=noDetailResponse apiCaptures=\(apiCaptures.count)")
+        }
         print("PLAYER_DBG [Entry] harvest finish apiCaptures=\(apiCaptures.count)")
         finishHandler?()
         finishHandler = nil
@@ -323,6 +328,20 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         apiCaptures.append(raw)
         DramaMetaDump.write("[" + apiCaptures.joined(separator: ",\n") + "]",
                             name: "api_\(target.site)_\(target.dramaID).json")
+        // 定向提取：detail 响应明文带 tags（真机样本实证，Model 见 DramaDetailData）。
+        // 解码成功且剧 ID 命中即落库，不等轮询；其它 API 响应解码失败自然忽略。
+        guard let cap = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let body = cap["body"] as? String,
+              let detail = try? JSONDecoder().decode(DramaDetailData.self, from: Data(body.utf8)),
+              String(detail.videoId) == target.dramaID else { return }
+        apiDetail = detail
+        if let tags = detail.tags, !tags.isEmpty {
+            DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID,
+                                    update: ["tags": tags.joined(separator: " ")])
+            print("PLAYER_DBG [Entry] harvest tags source=api tags=\(tags.joined(separator: " "))")
+        } else {
+            print("PLAYER_DBG [Entry] tags FAIL reason=apiNoTags videoId=\(detail.videoId)")
+        }
     }
 
     /// 响应捕获脚本：与嗅探器同骨架（Hook XHR/fetch），扩展为连响应体一起回传。
@@ -379,27 +398,6 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     })();
     """#
 
-    /// 从页面可见文本提取话题标签（锚点法，过渡期止血）：站点布局「剧名 催更 <tag…> 播放 …」。
-    /// 2026-11-11 定案改走请求拦截（apiCaptureScript 落盘 API 响应/HTML），拿到样本后
-    /// 按 JSON 字段定向提取取代本函数；窗口法（黑名单/长 token 定界）因脆已回退。
-    /// 垃圾切片拒收：含超长 token 或短词成堆 = 定界失效，返回 nil 保持缓存可重收割，
-    /// 防「非空垃圾 → harvestIfNeeded 判已缓存」自锁。失败分支必须打日志。
-    /// 站点布局相关，勿移入下载核心（AGENTS：站点特有逻辑不进 core）。
-    static func parseTags(fromPageText text: String) -> [String]? {
-        let tokens = text.split(separator: " ").map(String.init)
-        guard let start = tokens.firstIndex(of: "催更"),
-              let end = tokens[(start + 1)...].firstIndex(of: "播放"), end > start + 1 else {
-            print("PLAYER_DBG [Entry] tags FAIL reason=anchorsMissing head=\(Array(tokens.prefix(12)))")
-            return nil
-        }
-        let tags = tokens[(start + 1)..<end].filter { !$0.isEmpty }
-        guard !tags.isEmpty, tags.count <= 8, !tags.contains(where: { $0.count >= 20 }) else {
-            print("PLAYER_DBG [Entry] tags FAIL reason=garbageSlice tags=\(tags)")
-            return nil
-        }
-        return tags
-    }
-
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // SPA 渲染滞后：轮询提取直到拿到 og/desc 或超时收尾
         Task { [weak self] in
@@ -418,9 +416,8 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                 if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
                 if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
-                if let text = d["text"] as? String,
-                   let parsed = Self.parseTags(fromPageText: text) {
-                    update["tags"] = parsed.joined(separator: " ")
+                if let tags = self.apiDetail?.tags, !tags.isEmpty {
+                    update["tags"] = tags.joined(separator: " ")
                 }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
