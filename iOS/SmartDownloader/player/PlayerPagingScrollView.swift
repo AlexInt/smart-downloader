@@ -109,10 +109,13 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  pan === seekPan, let view = pan.view else { return true }
-            let y = pan.location(in: view).y
+                  pan === seekPan, let view = pan.view as? UIScrollView else { return true }
+            // location(in: scrollView) 是内容坐标（含 contentOffset），策略几何按屏幕坐标计算；
+            // 必须先换算，否则除第一页外永远进不了 seek 带
+            // （真机日志实证：第4集进度条处 contentY=3391 被拒，screenY=769 本应在带内）
+            let y = pan.location(in: view).y - view.contentOffset.y
             let inBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size)
-            print("PLAYER_DBG [CHECK] seekPan shouldBegin y=\(Int(y)) inBand=\(inBand) → \(inBand)")
+            print("PLAYER_DBG [CHECK] seekPan shouldBegin screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) inBand=\(inBand) → \(inBand)")
             return inBand
         }
 
@@ -125,10 +128,11 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
             guard pan.state == .changed || pan.state == .ended,
-                  let view = pan.view else { return }
+                  let view = pan.view as? UIScrollView else { return }
             let t = pan.translation(in: view)
             guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
-            let x = pan.location(in: view).x
+            // 同 shouldBegin：内容坐标 → 屏幕坐标（纵向分页 contentOffset.x 恒为 0，防御性换算）
+            let x = pan.location(in: view).x - view.contentOffset.x
             let fraction = PlayerGesturePolicy.seekFraction(screenX: x, screenSize: view.bounds.size)
             if abs(fraction - lastLoggedSeek) > 0.05 {
                 lastLoggedSeek = fraction

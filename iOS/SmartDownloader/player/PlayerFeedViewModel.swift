@@ -54,8 +54,10 @@ final class PlayerFeedViewModel: ObservableObject {
             return
         }
         queue?.select(sort: sort)
-        // 相邻集预热与当前集加载并行：在用户滑过去之前把 m3u8 管线提前跑完（秒开关键）
-        preloadNeighbors(of: sort)
+        // 相邻集预热与当前集加载并行：在用户滑过去之前把 m3u8 管线提前跑完（秒开关键）。
+        // wanted 必须带上当前集：上一轮为本集预热的资产不能被本轮邻居预热淘汰
+        //（此前只报邻居，真机日志实证每次 makeItem 都 MISS，池子形同虚设）
+        preloadNeighbors(of: sort, current: slot)
         // 先置 false 让卡片回到加载态，load 完成后再置 true 触发一次刷新显露视频层
         playbackReady = false
         await playback.load(episode: slot)
@@ -71,13 +73,12 @@ final class PlayerFeedViewModel: ObservableObject {
         }
     }
 
-    /// 预热调度顺序上相邻的集（走 PlaybackQueueService 的推荐接入点，算法换序自动跟随）
-    private func preloadNeighbors(of sort: Int) {
+    /// 预热「当前集 + 调度顺序上相邻的集」（走 PlaybackQueueService 的推荐接入点，算法换序自动跟随）
+    private func preloadNeighbors(of sort: Int, current: PlayableEpisode) {
         guard let queue else { return }
         let neighbors = queue.neighbors(of: sort)
-        guard !neighbors.isEmpty else { return }
-        playerService.preload(neighbors)
-        print("PLAYER_DBG [VM] preloadNeighbors of=\(sort) sorts=\(neighbors.map(\.sort))")
+        playerService.preload([current] + neighbors)
+        print("PLAYER_DBG [VM] preloadNeighbors of=\(sort) wanted=\(([current] + neighbors).map(\.sort))")
     }
 
     func hasNext(after sort: Int) -> Bool {

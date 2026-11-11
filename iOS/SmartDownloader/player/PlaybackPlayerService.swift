@@ -45,8 +45,12 @@ final class PlaybackPlayerService {
         return item
     }
 
-    /// 预热一组集（通常为相邻两集）。只预热已下载的集；重复调用时自动淘汰不再需要的。
-    /// 已经在池里 / 正在预热的集不会重复起任务。
+    /// 预热一组集（调用方必须传「当前集 + 相邻集」：wanted 里没有当前集，
+    /// 它尚未消费的预热资产就会被本轮淘汰掉 —— 曾因此池子全 MISS）。
+    /// 只预热已下载的集；已在池里 / 正在预热的集不重复起任务；不在名单里的自动淘汰。
+    /// 刚离开的集会作为新当前的邻居被重暖 —— 这是来回滑动（短剧常见）的回滑 HIT 保险，
+    /// 代价只是一次回环 m3u8 解析；勿加「跳过正在播的集」过滤（曾因 playingSort
+    /// 把刚离开的集剔除出 wanted，回滑必 MISS，已删）。
     func preload(_ episodes: [PlayableEpisode]) {
         let wanted = episodes.filter { $0.isAvailable }
         let wantedSorts = Set(wanted.map(\.sort))

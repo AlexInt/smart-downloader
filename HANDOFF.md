@@ -37,6 +37,11 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证方法（真机抓 log，见 §6）：预热生效应看到 `preload OK sort=N` → 滑动后 `makeItem HIT` → `load OK ... waitedMs=<几十>`（旧轮询是 `waited=1~3` 即 100–300ms），且滑动切集不再出现转圈。
 
+**真机首测暴露两个 bug，已修（2026-11-11）**：
+1. **seek 非第一页全失效**：`location(in: scrollView)` 是内容坐标（含 contentOffset），未换算成屏幕坐标就喂给 `isInSeekBand`；第一页 offset=0 掩盖了问题。已在 shouldBegin / didSeekPan 减 contentOffset（log 现在同时打 screenY 与 contentY）。
+2. **预热池被自己的淘汰逻辑打穿（全 MISS）**：pageSettled 只报邻居为 wanted，每次滑动先把上一轮为当前集预热的资产淘汰掉再 makeItem。修复：wanted = [当前集] + 邻居（调用方 `preloadNeighbors(of:current:)` 保证）。曾试过在 service 加 `playingSort` 过滤避免重复预热，但它把「刚离开的集」也剔出 wanted——该集资产已被消费又永不重暖，**回滑必 MISS**，已删；重暖刚离开的集本来就是来回滑动的 HIT 保险（它总是新当前的邻居），代价仅一次回环 m3u8 解析。
+3. 附带修正 `waitedMs` 日志换算（`components.seconds` 只有整秒，亚秒在 attoseconds，此前 <1s 全打成 0ms）。
+
 ### 交互细节修复批（同日第二批，待真机验证）
 
 用户报告的 8 个 bug 一次修完：

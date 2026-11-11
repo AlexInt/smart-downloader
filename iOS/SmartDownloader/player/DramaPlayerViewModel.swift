@@ -100,7 +100,10 @@ final class DramaPlayerViewModel: ObservableObject {
                 }
                 isReady = true
                 cancelSpinnerDelay()
-                let waitedMs = Int(startedAt.duration(to: .now).components.seconds * 1000)
+                // components.seconds 只有整秒，亚秒部分在 attoseconds 里（此前 <1s 全打成 0ms）
+                let waited = startedAt.duration(to: .now)
+                let waitedMs = Int(waited.components.seconds) * 1000
+                    + Int(waited.components.attoseconds / 1_000_000_000_000_000)
                 print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(player.rate) control=\(player.timeControlStatus.rawValue)")
                 return
             case .failed(let message):
