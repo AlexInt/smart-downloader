@@ -15,6 +15,10 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 长按不得中途插入起 2x —— 与 isFastForwarding 构成双向互斥（谁先起谁独占本次触摸）。
     /// 非渲染状态，故意不用 @Published（避免每次 seek 触发无意义的视图刷新）
     private(set) var isSeekGestureActive = false
+    /// 清屏下的瞬态进度 HUD：seek 实际生效时置 true（进度条+时间淡入），抬手后停留
+    /// 800ms 再淡出（新 seek 会取消旧的淡出任务）。与 isSeekGestureActive 分开——
+    /// 那是手势仲裁闸门（非渲染），这是纯 UI 显示状态，必须 @Published 驱动视图。
+    @Published private(set) var isScrubbing = false
     @Published private(set) var currentTimeText = "00:00"
     @Published private(set) var durationText = "00:00"
     @Published private(set) var progress: Double = 0
@@ -53,6 +57,7 @@ final class DramaPlayerViewModel: ObservableObject {
     private var lastLoggedSeek: Double = -1
     private var lastLoggedSecond = -1
     private var spinnerDelayTask: Task<Void, Never>?
+    private var scrubLingerTask: Task<Void, Never>?
 
     init(playerService: PlaybackPlayerService) {
         self.playerService = playerService
@@ -69,6 +74,7 @@ final class DramaPlayerViewModel: ObservableObject {
         print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable)")
         endFastForward()
         endSeekGesture()
+        hideScrubHudNow()
         loadError = nil
         isReady = false
         resetTimes()
@@ -169,6 +175,7 @@ final class DramaPlayerViewModel: ObservableObject {
             lastLoggedSeek = ratio
             print("PLAYER_DBG [CHECK] seek fraction=\(String(format: "%.2f", ratio)) total=\(Int(total))")
         }
+        showScrubHud()
         let target = CMTime(seconds: total * ratio, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         syncTime(target)
@@ -178,6 +185,7 @@ final class DramaPlayerViewModel: ObservableObject {
     func endSeekGesture() {
         guard isSeekGestureActive else { return }
         isSeekGestureActive = false
+        scheduleScrubLinger()
         print("PLAYER_DBG [Playback] seekGesture end")
     }
 
@@ -185,6 +193,7 @@ final class DramaPlayerViewModel: ObservableObject {
         print("PLAYER_DBG [Playback] stop")
         isFastForwarding = false
         endSeekGesture()
+        hideScrubHudNow()
         cancelSpinnerDelay()
         playerService.clear()
         if let timeObserver {
@@ -275,6 +284,36 @@ final class DramaPlayerViewModel: ObservableObject {
         spinnerDelayTask?.cancel()
         spinnerDelayTask = nil
         isLoadingSlow = false
+    }
+
+    // MARK: 清屏瞬态进度 HUD
+
+    /// seek 实际生效：HUD 淡入（拖动中每次 .changed 都会取消未完成的淡出，持续续命）
+    private func showScrubHud() {
+        scrubLingerTask?.cancel()
+        scrubLingerTask = nil
+        guard !isScrubbing else { return }
+        isScrubbing = true
+        print("PLAYER_DBG [Playback] scrub show clean=\(isCleanScreen)")
+    }
+
+    /// 抬手后 HUD 停留 800ms 再淡出（800ms 内的新 seek 会取消本任务）
+    private func scheduleScrubLinger() {
+        guard isScrubbing else { return }
+        scrubLingerTask?.cancel()
+        scrubLingerTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard let self, !Task.isCancelled, self.isScrubbing else { return }
+            self.isScrubbing = false
+            print("PLAYER_DBG [Playback] scrub hide reason=linger800ms")
+        }
+    }
+
+    /// 切集 / 退出：立即清除，不留 800ms 残影
+    private func hideScrubHudNow() {
+        scrubLingerTask?.cancel()
+        scrubLingerTask = nil
+        isScrubbing = false
     }
 
     private func ensureObserver() {

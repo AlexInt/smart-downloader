@@ -11,6 +11,7 @@ import AVFoundation
 ///   （判定逻辑在 PlayerGesturePolicy）。
 /// - 清屏模式（isCleanScreen，本地记住）：「界面信息组」整体淡出，
 ///   常驻控件（静音/清屏/返回）与瞬态反馈（倍速/加载/错误/toast）保留。
+///   进度条+时间是唯一例外：清屏下 seek 仍生效，拖动时瞬态淡入（松手 800ms 淡出）。
 struct DramaPlayerView: View {
     let episode: DramaEpisode
     @ObservedObject var playback: DramaPlayerViewModel
@@ -37,6 +38,10 @@ struct DramaPlayerView: View {
     }
     private var progressValue: CGFloat {
         CGFloat(playback.isReady ? playback.progress : episode.previewProgress)
+    }
+    /// 进度 HUD 可见性：非清屏常驻；清屏下仅 seek 进行中（含松手 800ms 停留）显示
+    private var isProgressVisible: Bool {
+        !playback.isCleanScreen || playback.isScrubbing
     }
 
     var body: some View {
@@ -217,33 +222,8 @@ struct DramaPlayerView: View {
                             .allowsHitTesting(false)
                     }
 
-                    if isEpisodeAvailable {
-                        // 播放进度：宽度 350，左右边距对称（各 20）
-                        RoundedRectangle(cornerRadius: DWRadius.progress)
-                            .fill(.white.opacity(0.30))
-                            .designFrame(20, 744, 350, 3)
-                            .allowsHitTesting(false)
-
-                        RoundedRectangle(cornerRadius: DWRadius.progress)
-                            .fill(DWColor.primary)
-                            .designFrame(20, 744, 350 * progressValue, 3)
-                            .allowsHitTesting(false)
-
-                        Text(timeText)
-                            .font(DWFont.en(11, .medium))
-                            .foregroundStyle(DWColor.textTime)
-                            .designFrame(20, 752, 60, 13, alignment: .leading)
-                            .allowsHitTesting(false)
-
-                        Text(durationText)
-                            .font(DWFont.en(11, .medium))
-                            .foregroundStyle(DWColor.textTime)
-                            .designFrame(314, 752, 56, 13, alignment: .trailing)
-                            .allowsHitTesting(false)
-                    }
-
-                    // 进度控制改由 PlayerPagingScrollView 的 UIKit seekPan 处理（与系统 pan 同时识别）。
-                    // 卡片内不放任何连续手势 —— 之前这个局部 DragGesture 吃掉了全部纵向滑动。
+                    // 进度条 + 时间已拆到独立的 progressHud（清屏下 seek 瞬态显示），
+                    // 进度控制仍由 PlayerPagingScrollView 的 UIKit seekPan 处理。
 
                     // 右侧互动栏
                     LinearGradient(colors: [DWColor.avatarTop, DWColor.avatarBottom],
@@ -306,6 +286,13 @@ struct DramaPlayerView: View {
                         .allowsHitTesting(false)
                 }
                 .transition(.opacity)
+            }
+
+            // ── 进度 HUD：非清屏常驻；清屏下 seek 瞬态显示（松手停留 800ms 淡出） ──
+            // seek 是对（清屏时看不见的）进度带操作，必须有可见反馈；只出进度条+时间，
+            // 不出整个界面信息组——与倍速提示同属瞬态反馈，不破坏清屏「只看画面」的克制。
+            if isEpisodeAvailable {
+                progressHud
             }
 
             // ── 常驻控件：清屏模式下保留 ──────────────────────────────
@@ -443,6 +430,38 @@ struct DramaPlayerView: View {
                 .zIndex(20)
         }
         .animation(.easeInOut(duration: 0.2), value: playback.isCleanScreen)
+    }
+
+    /// 进度条 + 时间：从「界面信息组」拆出的独立 HUD——清屏下其余界面信息全隐，
+    /// 唯它随 seek 瞬态出现（进度跟随手指），抬手 800ms 后淡出。
+    @ViewBuilder
+    private var progressHud: some View {
+        // 播放进度：宽度 350，左右边距对称（各 20）
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: DWRadius.progress)
+                .fill(.white.opacity(0.30))
+                .designFrame(20, 744, 350, 3)
+                .allowsHitTesting(false)
+
+            RoundedRectangle(cornerRadius: DWRadius.progress)
+                .fill(DWColor.primary)
+                .designFrame(20, 744, 350 * progressValue, 3)
+                .allowsHitTesting(false)
+
+            Text(timeText)
+                .font(DWFont.en(11, .medium))
+                .foregroundStyle(DWColor.textTime)
+                .designFrame(20, 752, 60, 13, alignment: .leading)
+                .allowsHitTesting(false)
+
+            Text(durationText)
+                .font(DWFont.en(11, .medium))
+                .foregroundStyle(DWColor.textTime)
+                .designFrame(314, 752, 56, 13, alignment: .trailing)
+                .allowsHitTesting(false)
+        }
+        .opacity(isProgressVisible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
     }
 }
 

@@ -94,7 +94,7 @@ View → ViewModel → Service → 系统能力 / Model
    - 几何判定全在 `PlayerGesturePolicy`（纯函数），**其中坐标值必须与 `DramaPlayerView` 的 designFrame 同步修改**（进度条移动/加宽时曾需同时改 seek 带与 fraction 宽度）。边界提示由 ViewModel 在停到末页时给出。
    - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
 3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `asset.load(.isPlayable)` 完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT；**wanted 名单必须含当前集+两侧邻居**——只报邻居会被自己的淘汰逻辑打穿，曾全 MISS；刚离开的集作为邻居重暖是回滑 HIT 保险，勿加「跳过正在播的集」过滤，曾因 playingSort 过滤致回滑必 MISS）+ `DramaPlayerViewModel` 的 **KVO 事件流就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 800ms 延迟显示**（`isLoadingSlow`；阈值依真机实测定——HIT 就绪 642–871ms，300ms 每滑必闪）。
-4. 进度只在进度条上下各 60pt 带内响应水平滑动；带外水平滑动无效果；垂直滑动只切集，不碰进度。
+4. 进度只在进度条上下各 60pt 带内响应水平滑动；带外水平滑动无效果；垂直滑动只切集，不碰进度。清屏下 seek 仍生效，进度条+时间瞬态淡入（`VM.isScrubbing`，松手停留 800ms 淡出）；**勿复用 `isSeekGestureActive` 驱动该 UI**——那是非渲染的手势仲裁闸门，两者语义不同（一个管仲裁、一个管显示）。
 5. 偏好持久化统一走 `PlayerPreferences`，不要在 ViewModel 里散落 `UserDefaults.standard`。
 6. 不为了分层而分层：不硬造协议、不搬 Coordinator/Router、不给三行代码加一层；等一个类型出现第二个变更理由再拆。`struct` 做 Service 可以。
 7. 已知低优先级待办：有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」占位页（见 `PlaybackQueueService` 的 resolve 注释）。

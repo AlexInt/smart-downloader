@@ -27,6 +27,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 播放页交互细节修复批（布局收紧/静音图标/点按分区/边缘返回/倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 清屏模式（隐藏界面信息只看画面，状态本地记住） | ✅ 编译通过，**待用户真机体验确认** |
 | 滑动误触 2x 修复（起 2x 移到 perform，落指不再闪倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
+| 清屏下 seek 瞬态进度 HUD（拖动时进度条+时间淡入，松手 800ms 淡出） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -83,9 +84,21 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 7. **松手立即回 1x**：根因是 `endFastForward` 只在 `.playing` 时置 `rate=1`，缓冲等待态（`.waitingToPlayAtSpecifiedRate`）被漏掉，缓冲恢复后仍是 2x；现在只要非暂停一律拨回 `rate=1`，`beginFastForward` 也接受等待态起 2x。
 8. **几何同步**：`PlayerGesturePolicy` 的 seek 带（y 684..804）与 fraction 宽度（350）已随新布局更新——**进度条再动必须同步改这两处**（AGENTS 已记）。
 
+### 清屏下 seek 瞬态进度 HUD（2026-11-11 第四批，待真机验证）
+
+讨论结论：清屏后进度条隐藏但 seek 带仍生效，等于**盲操作**（用户在看不见的进度带上凭记忆滑动，无任何反馈）。定案：**清屏下 seek 时进度条+时间瞬态显示**，与倍速提示同属「瞬态反馈」类，不破坏清屏「只看画面」的克制——只出进度条+时间，不出整个界面信息组；点按暂停不唤出 UI（维持抖音式纯净）。
+
+实现（`DramaPlayerViewModel` + `DramaPlayerView`）：
+
+- VM 新增 `@Published isScrubbing`：`seek()` 实际生效路径（过全部 guard 后）置 true 并取消旧淡出任务（拖动中每次 .changed 续命）；`endSeekGesture()` 抬手时起 800ms 停留任务后置 false；`load()`/`stop()` 立即清除（切集不留残影）。**与 `isSeekGestureActive` 严格分开**：那是手势仲裁闸门（非渲染、故意不 @Published），这是 UI 显示状态。
+- View：进度条+时间从「界面信息组」拆为独立 `progressHud`，opacity 由 `isProgressVisible = !isCleanScreen || isScrubbing` 驱动，0.2s easeInOut；其余界面信息（头像/点赞/标题/字幕）清屏下继续隐藏。`PlayerGesturePolicy` / seek 带判定不动。
+- 800ms 停留时长与 spinner 阈值同值（项目内「瞬态停留」统一量级），可按手感再调。
+
+验证日志看点：清屏下拖动进度带 → `scrub show clean=1` 且进度条+时间淡入；松手 → `seekGesture end`，800ms 后 `scrub hide reason=linger800ms`；带内纵向滑动（切集）不出 `scrub show`（.changed 的水平主导 guard 先拦）；2x 按住漂移不出 `scrub show`（fastForwarding guard 先拦）。
+
 ### 清屏模式
 
-- 静音旁（左侧，设计稿 277,41）新增「清屏」按钮：隐藏界面信息组（字幕/左下信息区/进度条/互动栏/上滑提示/上下压暗），保留常驻控件（返回/静音/清屏/集数胶囊）与瞬态反馈（倍速/加载/错误/toast）。切换 0.2s 交叉淡入淡出。
+- 静音旁（左侧，设计稿 277,41）新增「清屏」按钮：隐藏界面信息组（字幕/左下信息区/互动栏/上滑提示/上下压暗；进度条+时间已拆出为 seek 瞬态 HUD，见上节），保留常驻控件（返回/静音/清屏/集数胶囊）与瞬态反馈（倍速/加载/错误/toast）。切换 0.2s 交叉淡入淡出。
 - **集数胶囊改为紧凑「4/11」**（`DramaEpisode.compactEpisodeLabel`），56pt 宽居中（x=167），永远紧凑格式、清屏不隐藏——用户在「清屏时切换格式」与「永远紧凑」两案中选定后者（一致性更好、顶栏四元素不拥挤、无格式切换动画复杂度）。
 - 状态本地记住：`PlayerPreferences.isCleanScreen`（UserDefaults "DramaPlayer.cleanScreen"），VM init 恢复，同静音模式一套机制。
 - 图标为 SwiftUI 绘制（圆角矩形描边 + 激活时金色斜线），与静音图标同一视觉语言；素材库无需新增图片。
@@ -145,7 +158,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 
 - 排障一律**先加 log 再请用户提供 log**，靠日志判读，不靠猜测改代码（这是本项目的协作模式，用户会贴 log）。
 - 秒开链路关键 log 行：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK ... waitedMs=` / `spinner show`（出现即说明 800ms 未就绪）/ `status STALE`。
-- 交互链路关键 log 行：`TAP → togglePlayback` / `LONGPRESS began|ended → 2x|1x` / `edgePan dx=.. > 50 → back`。
+- 交互链路关键 log 行：`TAP → togglePlayback` / `LONGPRESS began|ended → 2x|1x` / `edgePan dx=.. > 50 → back` / `scrub show|hide`（清屏瞬态进度 HUD）。
 - 冒烟工具（macOS，不需手机）：`iOS/smoke/` 下 coretest / playtest 等，编译命令见 AGENTS.md。
 
 ## 7. 硬性禁止（全文见 AGENTS.md，此处摘要）
