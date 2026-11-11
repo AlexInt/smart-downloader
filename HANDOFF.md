@@ -180,6 +180,21 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 5. **推荐算法接入点**：只改 `PlaybackQueueService.resolveNext/resolvePrevious`（可读 slots/history/current，返回任意槽位即换序）。`neighbors(of:)` 也走它们，预热自动跟随新序。
 6. **诊断日志**：`PLAYER_DBG` 前缀 + `[CHECK]` 断言行（带输入与判定）；失败分支必须有 log；排障后保留不清理（约定全文见 AGENTS.md）。
 
+### 架构债务清偿（2026-11-11，评估报告执行）
+
+对照 AGENTS iOS 架构约定的全面评估报告，其全部问题按批准计划清偿：
+
+| 项 | 内容 | 提交 |
+|---|---|---|
+| P1-P3 | 删 VM 多余 SwiftUI import / endToastShown 复位 / player 契约 API 注释 | `bbfba18` |
+| P4 | 相邻卡片状态隔离：进度/时间/点赞/收藏/静音/清屏按 isActive；HUD 可见性与 2x 胶囊收尾 | `0ad7361` + `7337126` |
+| P5 | 停稳在未下载集时 toast 引导「第N集尚未下载 · 回剧集页下载后可看」（不改 resolve 语义） | `5abcc8f` |
+| P6 | harvest 结果落盘 Documents/DramaMeta/harvest_<site>_<dramaID>.json（Finder 可拷，tags/作者字段调查数据源）；DRAMAMETA-DOM 双份 NSLog 收敛为单行摘要 | `f322e0f` |
+| P8 | **DramaNativePage 拆 DramaPageViewModel**：业务状态（loading/info/downloadedSorts/selected/fromCache/coverURL/intro/playbackRequest）与编排（缓存优先加载/选集下载/播放入口/收割触发）全部入 VM；View 只渲染+转发意图；harvester/JS/Dump 工具随迁独立文件；BrowserView.swift 935→482 行 | 本提交 |
+| P9/P10 | 浏览页/下载页 MVVM 化 | 进行中 |
+| P7 | 真实 tags 接入（阻塞：等用户拷 harvest_*.json 确认字段） | 阻塞 |
+| P11 | 真机回归（用户） | 待办 |
+
 ## 5. 待办清单（按优先级）
 
 | # | 事项 | 说明 | 优先级 |
