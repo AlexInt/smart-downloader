@@ -371,15 +371,10 @@ struct WebViewContainer: UIViewRepresentable {
                       let result = try? await webView.evaluateJavaScript(js) as? String,
                       let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else { return }
                 self.parent.store.pageMetaJSON = result
-                NSLog("DRAMAMETA-DOM ===== BEGIN =====")
-                for key in d.keys.sorted() {
-                    if let arr = d[key] as? [Any] {
-                        NSLog("DRAMAMETA-DOM \(key) list len=\(arr.count): \(String(describing: arr.prefix(8)).prefix(500))")
-                    } else {
-                        NSLog("DRAMAMETA-DOM \(key) = \(String(describing: d[key]).prefix(400))")
-                    }
-                }
-                NSLog("DRAMAMETA-DOM ===== END =====")
+                // 调查收敛（2026-11-11）：DRAMAMETA-DOM 逐 key 的 NSLog 双份输出删除——
+                // 动态串被统一日志 <private> 脱敏看不到内容，纯噪音；字段内容看落盘文件
+                //（harvest_<site>_<dramaID>.json，见 DramaMetaHarvester）
+                print("BROWSER: extractMeta ok delay=\(delay) bytes=\(result.count)")
             }
         }
 
@@ -856,6 +851,19 @@ let dramaMetaJS = """
 })()
 """
 
+/// 调查数据落盘：Documents/DramaMeta/<name>（Finder 文件共享可拷出分析）。
+/// 只放页面公开内容（DOM 提取结果）；带账号凭据的接口原始 dump 仍由
+/// dumpDramaMeta 启动参数门控（见 DramaAPI），不从这里走。
+@MainActor
+enum DramaMetaDump {
+    static func write(_ string: String, name: String) {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("DramaMeta", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? string.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+}
+
 /// 一次性隐藏 webview：加载剧集页提取元数据（og:image/标题/简介），落库后释放。
 /// 仅在纯原生页缺封面/简介时使用；同一剧每次运行只收割一次。
 @MainActor
@@ -915,6 +923,9 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
                 if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
+                // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
+                // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
+                DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
                 if !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty { break }
             }
             self.finish()
