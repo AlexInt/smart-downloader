@@ -77,6 +77,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedSize = ""
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
+        /// 本次 seekPan 触摸的起点是否在进度带内（.began 时捕获；带外起点全程不 seek）
+        private var seekStartInBand = false
         private var edgeBackFired = false
 
         init(_ parent: PlayerPagingScrollView) {
@@ -107,18 +109,6 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             }
         }
 
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  pan === seekPan, let view = pan.view as? UIScrollView else { return true }
-            // location(in: scrollView) 是内容坐标（含 contentOffset），策略几何按屏幕坐标计算；
-            // 必须先换算，否则除第一页外永远进不了 seek 带
-            // （真机日志实证：第4集进度条处 contentY=3391 被拒，screenY=769 本应在带内）
-            let y = pan.location(in: view).y - view.contentOffset.y
-            let inBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size)
-            print("PLAYER_DBG [CHECK] seekPan shouldBegin screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) inBand=\(inBand) → \(inBand)")
-            return inBand
-        }
-
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             // seekPan / edgePan 都要能与系统滚动 pan 共存
@@ -129,7 +119,22 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
             guard let view = pan.view as? UIScrollView else { return }
             switch pan.state {
+            case .began:
+                // 起手（约 10pt 位移）即判「拖动先起」，立刻翻转仲裁闸门（VM.beginSeekGesture）。
+                // 不能等 .changed 攒够「水平主导 + dx>6」才置位：清屏下进度带不可见，
+                // 横滑起点常落在带外（旧代码 shouldBegin 按带内过滤，识别器直接 fail，
+                // 一个事件都收不到），斜起手快速转水平的带内快滑同理——长按 0.15s 的
+                // perform 都会插进这个空窗误起 2x（闪倍速提示）。慢漂移（走 10pt 超过
+                // 0.15s）仍长按先起，2x 不受影响。是否真 seek 由 .changed 按起点在带内判定。
+                // location(in: scrollView) 是内容坐标（含 contentOffset），喂 PlayerGesturePolicy
+                // 前必须减 contentOffset 换算成屏幕坐标（第一页 offset=0 会掩盖此问题）。
+                let y = pan.location(in: view).y - view.contentOffset.y
+                seekStartInBand = PlayerGesturePolicy.isInSeekBand(screenY: y, screenSize: view.bounds.size)
+                print("PLAYER_DBG [CHECK] seekPan began screenY=\(Int(y)) contentY=\(Int(pan.location(in: view).y)) startInBand=\(seekStartInBand)")
+                parent.playback.beginSeekGesture()
             case .changed:
+                // 起点在带外的触摸全程不 seek（带外水平滑动无效果），但仲裁闸门照常生效
+                guard seekStartInBand else { return }
                 let t = pan.translation(in: view)
                 guard abs(t.x) > abs(t.y), abs(t.x) > 6 else { return }
                 // 同 shouldBegin：内容坐标 → 屏幕坐标（纵向分页 contentOffset.x 恒为 0，防御性换算）

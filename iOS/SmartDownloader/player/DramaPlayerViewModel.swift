@@ -11,8 +11,9 @@ final class DramaPlayerViewModel: ObservableObject {
 
     @Published private(set) var isReady = false
     @Published private(set) var isFastForwarding = false
-    /// seek 手势进行中（seekPan 的 .changed 已在寻址）：「拖动先起」的触摸由 seek 独占，
+    /// seek 手势进行中（seekPan 已起手）：「拖动先起」的触摸由 seek 独占，
     /// 长按不得中途插入起 2x —— 与 isFastForwarding 构成双向互斥（谁先起谁独占本次触摸）。
+    /// 置位点 = seekPan .began（起手约 10pt 位移），不是首个有效 .changed（见 beginSeekGesture）。
     /// 非渲染状态，故意不用 @Published（避免每次 seek 触发无意义的视图刷新）
     private(set) var isSeekGestureActive = false
     /// 清屏下的瞬态进度 HUD：seek 实际生效时置 true（进度条+时间淡入），抬手后停留
@@ -179,6 +180,16 @@ final class DramaPlayerViewModel: ObservableObject {
         let target = CMTime(seconds: total * ratio, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         syncTime(target)
+    }
+
+    /// seekPan 起手（约 10pt 位移）即翻转仲裁闸门：「拖动先起」的判定点不能等
+    /// .changed 攒够「水平主导 + dx>6」——清屏下进度带不可见，横滑起点常落在带外
+    /// （识别器曾按带内过滤 begin，收不到任何事件），斜起手快速转水平同理；长按
+    /// 0.15s 的 perform 会插进这个空窗误起 2x（闪倍速提示）。慢漂移起手慢于 0.15s，
+    /// 长按仍先起，2x 不受影响。此时尚未真正 seek，不动 isScrubbing。
+    func beginSeekGesture() {
+        guard !isSeekGestureActive else { return }
+        isSeekGestureActive = true
     }
 
     /// seekPan 抬手 / 被系统滚动抢占：结束「拖动独占」标记，下一次长按可正常起 2x

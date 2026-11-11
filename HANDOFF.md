@@ -28,6 +28,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 清屏模式（隐藏界面信息只看画面，状态本地记住） | ✅ 编译通过，**待用户真机体验确认** |
 | 滑动误触 2x 修复（起 2x 移到 perform，落指不再闪倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 清屏下 seek 瞬态进度 HUD（拖动时进度条+时间淡入，松手 800ms 淡出） | ✅ 编译通过，**待用户真机体验确认**（见下） |
+| 清屏快滑仍闪 2x 修复（seekPan 全域起手 + .began 即翻转仲裁闸门） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -70,6 +71,23 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 - 残余已知边界（可接受）：带外慢速横向拖拽 >0.15s 仍可能起 2x；用户报告的误触均为快速轻扫，本修复覆盖。
 
 验证日志看点：快速滑动（翻页/清屏后轻扫）**不再出** `LONGPRESS began → 2x`；真长按按满 0.15s 出 `LONGPRESS began → 2x`、抬手出 `LONGPRESS ended → 1x`；带内拖动按满时仍出 `LONGPRESS SKIP reason=seeking`（seek 独占不变）。
+
+### 清屏快滑仍闪 2x（2026-11-11 第五批，待真机验证）
+
+用户复报：「清屏模式下左右滑动进度快的时候，有时突然冒出 2 倍提示」。第三批（起 2x 移进 perform）修掉了「落指即闪」，但 `isSeekGestureActive` 的置位点仍在**首个有效 `.changed`**（要求水平主导 + dx>6），留下两类空窗，0.15s 的 perform 恰好插进去起 2x：
+
+- **带外起点**：清屏下进度带不可见，横滑起点常落在带外 → 旧 `gestureRecognizerShouldBegin` 按带内过滤返回 false，识别器直接 **fail，一个事件都收不到**，闸门永不翻转（第三批「残余已知边界」即此，用户实测高频）。
+- **斜起手转水平**：带内快滑但起始位移 dy>dx（或 dx 尚未攒到 6），首个有效 .changed 晚于 0.15s → perform 先到。
+
+修复（`PlayerPagingScrollView` / `DramaPlayerViewModel`）：
+
+- **seekPan 全域起手**：删掉 `gestureRecognizerShouldBegin` 的带内过滤，任何触摸位移约 10pt 即 begin；`.began` 时捕获「起点是否在带内」（`seekStartInBand`，location 减 contentOffset 换算屏幕坐标），`.changed` 按它过滤——**真 seek 语义不变**（带外水平滑动仍无效果），只是仲裁事件不再丢。
+- **`.began` 即调 `VM.beginSeekGesture()` 翻转 `isSeekGestureActive`**：判定点从「首个有效 .changed」提前到 recognizer 起手。快滑（10pt 远快于 0.15s）→ 闸门先翻 → perform 里 `LONGPRESS SKIP reason=seeking`；慢漂移（10pt 超过 0.15s）→ perform 先到 → 2x 照常起，起手后漂移由 `VM.seek` 的 `isFastForwarding` guard 挡住，「先起者独占」不变。
+- `maximumDistance: 10_000`、250ms 吞误触窗、抬手不补 seek 等前几批修复全部不回归。
+
+验证日志看点：清屏下快速横滑（无论起点带内带外）→ 出 `seekPan began screenY=.. startInBand=..`，若按满 0.15s 只出 `LONGPRESS SKIP reason=seeking`，**不再出 `LONGPRESS began → 2x`**；带内起点照常 `seek fraction=..`；真长按（指头基本不动）仍 `LONGPRESS began → 2x`；按住 2x 慢漂移不 seek、不掉 1x。
+
+残余已知边界（可接受）：带外**慢速**横向拖拽 >0.15s 仍会起 2x——慢拖与「长按+慢漂移」不可区分，属「先起者独占」的固有歧义。
 
 ### 交互细节修复批（同日第二批，待真机验证）
 

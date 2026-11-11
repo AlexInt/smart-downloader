@@ -111,7 +111,11 @@ struct DramaPlayerView: View {
         // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
         // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）。
         // 长按 2x 与水平 seek 的冲突仲裁 = 「先起者独占本次触摸」（真机日志实证）：
-        //   ① 拖动先起 → seek 独占：拖动中长按被识别也不得起 2x（perform 起手前查 isSeekGestureActive）
+        //   ① 拖动先起 → seek 独占：seekPan 一旦起手（约 10pt 位移）VM 即置
+        //      isSeekGestureActive（PlayerPagingScrollView .began → beginSeekGesture），
+        //      perform 起手前查它——判定点勿放首个有效 .changed：清屏下进度带不可见，
+        //      横滑起点常落在带外（识别器曾按带内过滤 begin，收不到事件），斜起手
+        //      转水平的快滑同理，0.15s 的 perform 会插进空窗误起 2x（2026-11-11 又修）
         //   ② 长按先起 → 2x 独占：2x 期间 seek 全跳过（VM.seek guard isFastForwarding）；
         //      maximumDistance 放开到 10_000 —— 2x 不靠位移距离掐断（原 40pt：按住 2x
         //      手一漂就掉回 1x），漂移中的误 seek 由 ①② 闸门挡住
