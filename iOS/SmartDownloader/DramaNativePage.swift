@@ -222,8 +222,13 @@ enum DramaMetaDump {
     static func write(_ string: String, name: String) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("DramaMeta", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? string.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try string.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            print("PLAYER_DBG [Entry] DramaMetaDump ok name=\(name) bytes=\(string.count)")
+        } catch {
+            print("PLAYER_DBG [Entry] DramaMetaDump FAIL name=\(name) error=\(error.localizedDescription)")
+        }
     }
 }
 
@@ -235,14 +240,22 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
 
     static func harvest(target: DramaTarget) async {
         let key = target.id
-        guard !harvestedKeys.contains(key) else { return }
-        harvestedKeys.insert(key)
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let harvester = DramaMetaHarvester()
-            harvester.begin(target: target) {
-                continuation.resume()
-            }
+        guard !harvestedKeys.contains(key) else {
+            print("PLAYER_DBG [Entry] harvest SKIP reason=alreadyHarvested key=\(key)")
+            return
         }
+        harvestedKeys.insert(key)
+        print("PLAYER_DBG [Entry] harvest begin site=\(target.site) dramaID=\(target.dramaID)")
+        let harvester = DramaMetaHarvester()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // harvester 必须由 async 函数局部变量持有（挂起期间任务上下文保活）。
+            // 原实现把它建在 continuation 闭包体内：闭包一返回引用即消失，
+            // 隐藏 webview 被连带释放（delegate 是 weak），didFinish/25s 超时全部落空——
+            // continuation 泄漏、harvest_*.json 永不产生（真机日志：TASK CONTINUATION MISUSE）
+            harvester.finishHandler = { continuation.resume() }
+            harvester.begin(target: target)
+        }
+        print("PLAYER_DBG [Entry] harvest done site=\(target.site) dramaID=\(target.dramaID)")
     }
 
     private var webView: WKWebView?
@@ -250,9 +263,8 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
     private var finishHandler: (() -> Void)?
     private var finished = false
 
-    private func begin(target: DramaTarget, finish: @escaping () -> Void) {
+    private func begin(target: DramaTarget) {
         pendingTarget = target
-        finishHandler = finish
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()  // 与主浏览页共享登录态
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: config)
@@ -269,6 +281,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
     private func finish() {
         guard !finished else { return }
         finished = true
+        print("PLAYER_DBG [Entry] harvest finish")
         finishHandler?()
         finishHandler = nil
     }
@@ -286,6 +299,9 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate {
                 if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
+                let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
+                let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"
+                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc)")
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")

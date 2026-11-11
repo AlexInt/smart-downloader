@@ -176,7 +176,11 @@ final class DramaPageViewModel: ObservableObject {
 
     /// 头部缺封面/简介时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）
     private func harvestIfNeeded() {
-        guard coverURL == nil || intro == nil else { return }
+        guard coverURL == nil || intro == nil else {
+            print("PLAYER_DBG [Entry] harvest SKIP reason=headerCached cover=\(coverURL != nil) intro=\(intro != nil)")
+            return
+        }
+        print("PLAYER_DBG [Entry] harvest trigger reason=headerMissing cover=\(coverURL != nil) intro=\(intro != nil)")
         Task {
             await DramaMetaHarvester.harvest(target: target)
             if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
