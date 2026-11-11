@@ -157,20 +157,28 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     func beginFastForward() {
-        guard isReady, !isFastForwarding, player.timeControlStatus == .playing else {
-            print("PLAYER_DBG [Playback] beginFastForward SKIP ready=\(isReady) already=\(isFastForwarding)")
+        // 等待缓冲态也允许起 2x：AVPlayer 会把它记为目标倍速，缓冲好后按 2x 恢复
+        let status = player.timeControlStatus
+        guard isReady, !isFastForwarding,
+              status == .playing || status == .waitingToPlayAtSpecifiedRate else {
+            print("PLAYER_DBG [Playback] beginFastForward SKIP ready=\(isReady) already=\(isFastForwarding) control=\(status.rawValue)")
             return
         }
         isFastForwarding = true
         player.rate = 2.0
-        print("PLAYER_DBG [CHECK] fastForward → 2x")
+        print("PLAYER_DBG [CHECK] fastForward → 2x control=\(status.rawValue)")
     }
 
     func endFastForward() {
         guard isFastForwarding else { return }
         isFastForwarding = false
-        if player.timeControlStatus == .playing { player.rate = 1.0 }
-        print("PLAYER_DBG [CHECK] fastForward → 1x")
+        // 只要不是用户主动暂停（如片尾 actionAtItemEnd），一律把目标倍速拨回 1x。
+        // 此前只在 .playing 时才置回：缓冲等待态(.waitingToPlayAtSpecifiedRate)被漏掉，
+        // 手松开后缓冲恢复播放仍是 2x —— 即用户反馈的「松手没有立即变回 1 倍速」。
+        if player.timeControlStatus != .paused {
+            player.rate = 1.0
+        }
+        print("PLAYER_DBG [CHECK] fastForward → 1x control=\(player.timeControlStatus.rawValue)")
     }
 
     // MARK: 私有

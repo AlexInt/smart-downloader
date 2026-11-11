@@ -23,7 +23,8 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 全屏无黑边、可关闭、进度条带内水平 seek（±60pt） | ✅ `80d2f9d` |
 | 全剧集数同步（三种真实来源，绝不造槽位）、边界 toast「已经到底了」 | ✅ `c746815` |
 | UIKit 原生分页（轻滑 15% 翻页、起始定位正确、11 集双向滑动） | ✅ `78abf2d`，用户日志确认全链路 OK |
-| 秒开三件套（相邻集预热池 + KVO 事件流就绪 + spinner 延迟显示） | ✅ 本次会话，**编译通过，待用户真机体验确认** |
+| 秒开三件套（相邻集预热池 + KVO 事件流就绪 + spinner 延迟显示） | ✅ 编译通过，**待用户真机体验确认** |
+| 播放页交互细节修复批（布局收紧/静音图标/点按分区/边缘返回/倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -34,6 +35,19 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 3. **spinner 300ms 延迟显示**：`isLoadingSlow` 只在 300ms 未就绪时置 true，`DramaPlayerView` 的 ProgressView 挂在它下面；视频/渐变层加 150ms easeOut 交叉淡入。
 
 验证方法（真机抓 log，见 §6）：预热生效应看到 `preload OK sort=N` → 滑动后 `makeItem HIT` → `load OK ... waitedMs=<几十>`（旧轮询是 `waited=1~3` 即 100–300ms），且滑动切集不再出现转圈。
+
+### 交互细节修复批（同日第二批，待真机验证）
+
+用户报告的 8 个 bug 一次修完：
+
+1. **底部布局收紧**：左下信息簇（账号/标题/简介/标签/音频）整体下移 44pt，进度条 y 700→744、宽 290→350（左右边距对称各 20pt），时长文字右对齐到进度条右端；进度条与「上滑观看下一集」间距 97→53pt。
+2. **点赞/收藏文字居中**：文字框改为与按钮框同位同宽（中心 347），修掉右偏 10pt。
+3. **静音图标**：无独立静音素材，`ic_sound` 静音时变灰 + 叠加金色 45° 斜线。
+4. **点控件不再连带暂停**：`didTap` 先过 `PlayerGesturePolicy.isTapOnControl`（返回/静音/点赞/收藏控件区外扩 12pt），区域内点按交给 SwiftUI Button。
+5. **左缘右滑返回**：fullScreenCover 无系统边缘返回，`UIScreenEdgePanGestureRecognizer`（.left，与系统 pan 同时识别）拖过 50pt 即触发 `onClose`。
+6. **长按 2x 提速**：`minimumPressDuration` 0.25→0.15s，提示淡入 0.15→0.1s。
+7. **松手立即回 1x**：根因是 `endFastForward` 只在 `.playing` 时置 `rate=1`，缓冲等待态（`.waitingToPlayAtSpecifiedRate`）被漏掉，缓冲恢复后仍是 2x；现在只要非暂停一律拨回 `rate=1`，`beginFastForward` 也接受等待态起 2x。
+8. **几何同步**：`PlayerGesturePolicy` 的 seek 带（y 684..804）与 fraction 宽度（350）已随新布局更新——**进度条再动必须同步改这两处**（AGENTS 已记）。
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -88,6 +102,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 
 - 排障一律**先加 log 再请用户提供 log**，靠日志判读，不靠猜测改代码（这是本项目的协作模式，用户会贴 log）。
 - 秒开链路关键 log 行：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK ... waitedMs=` / `spinner show`（出现即说明 300ms 未就绪）/ `status STALE`。
+- 交互修复链路关键 log 行：`TAP on control (...) → ignore pause`（点控件不暂停）/ `TAP (...) → togglePlayback` / `edgePan dx=.. > 50 → back` / `LONGPRESS began|ended → 2x|1x`。
 - 冒烟工具（macOS，不需手机）：`iOS/smoke/` 下 coretest / playtest 等，编译命令见 AGENTS.md。
 
 ## 7. 硬性禁止（全文见 AGENTS.md，此处摘要）

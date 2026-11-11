@@ -14,6 +14,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     let vmCurrentSort: Int?
     /// 播放是否就绪：变化时需要刷新卡片 rootView
     let isReady: Bool
+    /// 左缘右滑返回（fullScreenCover 没有系统边缘返回，自己补）
+    var onEdgeBack: () -> Void = {}
     let makeCard: (PlayableEpisode) -> AnyView
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -31,13 +33,14 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         print("PLAYER_DBG [UIScroll] makeUIView paging=\(scroll.isPagingEnabled) interaction=\(scroll.isUserInteractionEnabled)")
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
-                                         action: #selector(Coordinator.didTap))
+                                         action: #selector(Coordinator.didTap(_:)))
         tap.cancelsTouchesInView = false
         scroll.addGestureRecognizer(tap)
 
+        // 长按倍速：0.25s 体感偏慢（用户反馈「长按一段时间才出 2x」），收紧到 0.15s
         let longPress = UILongPressGestureRecognizer(target: context.coordinator,
                                                     action: #selector(Coordinator.didLongPress(_:)))
-        longPress.minimumPressDuration = 0.25
+        longPress.minimumPressDuration = 0.15
         longPress.allowableMovement = 40
         longPress.cancelsTouchesInView = false
         scroll.addGestureRecognizer(longPress)
@@ -48,7 +51,16 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         seekPan.delegate = context.coordinator
         scroll.addGestureRecognizer(seekPan)
         context.coordinator.seekPan = seekPan
-        print("PLAYER_DBG [CHECK] seekPan installed gestures=\(scroll.gestureRecognizers?.count ?? 0)")
+
+        // 左缘右滑返回：fullScreenCover 不带系统边缘返回手势，自己补一个
+        let edgePan = UIScreenEdgePanGestureRecognizer(target: context.coordinator,
+                                                       action: #selector(Coordinator.didEdgePan(_:)))
+        edgePan.edges = .left
+        edgePan.cancelsTouchesInView = false
+        edgePan.delegate = context.coordinator
+        scroll.addGestureRecognizer(edgePan)
+        context.coordinator.edgePan = edgePan
+        print("PLAYER_DBG [CHECK] gestures installed count=\(scroll.gestureRecognizers?.count ?? 0)")
         return scroll
     }
 
@@ -65,6 +77,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         var parent: PlayerPagingScrollView
         var seekPan: UIPanGestureRecognizer?
+        var edgePan: UIScreenEdgePanGestureRecognizer?
         private var builtSorts: [Int] = []
         private var hosts: [Int: UIHostingController<AnyView>] = [:]
         private var startApplied = false
@@ -74,6 +87,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedSize = ""
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
+        private var edgeBackFired = false
 
         init(_ parent: PlayerPagingScrollView) {
             self.parent = parent
@@ -81,8 +95,18 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
         // MARK: 离散手势
 
-        @objc func didTap() {
-            print("PLAYER_DBG [CHECK] TAP → togglePlayback")
+        /// 点按 → 暂停。控件区（返回/静音/点赞/收藏）内的点按交给 SwiftUI Button，
+        /// 不再连带触发暂停（此前点静音会先暂停视频）。
+        @objc func didTap(_ tap: UITapGestureRecognizer) {
+            guard let view = tap.view else { return }
+            let loc = tap.location(in: view)
+            let onControl = PlayerGesturePolicy.isTapOnControl(
+                screenX: loc.x, screenY: loc.y, screenSize: view.bounds.size)
+            if onControl {
+                print("PLAYER_DBG [CHECK] TAP on control (\(Int(loc.x)),\(Int(loc.y))) → ignore pause")
+                return
+            }
+            print("PLAYER_DBG [CHECK] TAP (\(Int(loc.x)),\(Int(loc.y))) → togglePlayback")
             parent.playback.togglePlayback()
         }
 
@@ -92,8 +116,27 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                 print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
                 parent.playback.beginFastForward()
             case .ended, .cancelled, .failed:
-                print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
+                print("PLAYER_DBG [CHECK] LONGPRESS \(gesture.state == .ended ? "ended" : "cancelled") → 1x")
                 parent.playback.endFastForward()
+            default: break
+            }
+        }
+
+        /// 左缘右滑返回：拖过 50pt 即触发（不必等抬手），每次手势只触发一次
+        @objc func didEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
+            guard let view = pan.view else { return }
+            switch pan.state {
+            case .began:
+                edgeBackFired = false
+                print("PLAYER_DBG [CHECK] edgePan began")
+            case .changed:
+                guard !edgeBackFired else { return }
+                let dx = pan.translation(in: view).x
+                if dx > 50 {
+                    edgeBackFired = true
+                    print("PLAYER_DBG [CHECK] edgePan dx=\(Int(dx)) > 50 → back")
+                    parent.onEdgeBack()
+                }
             default: break
             }
         }
@@ -109,7 +152,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            // seekPan / edgePan 都要能与系统滚动 pan 共存
             gestureRecognizer === seekPan || other === seekPan
+                || gestureRecognizer === edgePan || other === edgePan
         }
 
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {

@@ -19,6 +19,7 @@ struct PlayerFeedView: View {
                     playback: vm.playback,
                     vmCurrentSort: vm.currentSort,
                     isReady: vm.playbackReady,
+                    onEdgeBack: onClose,
                     makeCard: { slot in AnyView(card(for: slot)) }
                 )
                 .ignoresSafeArea()

@@ -108,13 +108,22 @@ struct DramaPlayerView: View {
                 .allowsHitTesting(false)
 
             Button { playback.isMuted.toggle() } label: {
-                Image("ic_sound")
-                    .renderingMode(.template)
-                    .resizable().scaledToFit()
-                    .foregroundStyle(playback.isMuted ? DWColor.textHint : .white)
-                    .frame(width: 26, height: 26)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                ZStack {
+                    Image("ic_sound")
+                        .renderingMode(.template)
+                        .resizable().scaledToFit()
+                        .foregroundStyle(playback.isMuted ? DWColor.textHint : .white)
+                        .frame(width: 26, height: 26)
+                    // 素材库无独立静音图标：静音时叠加金色斜线表达（icon 同时变灰）
+                    if playback.isMuted {
+                        Capsule()
+                            .fill(DWColor.gold)
+                            .frame(width: 36, height: 2.5)
+                            .rotationEffect(.degrees(45))
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .designFrame(329, 41, 44, 44)
@@ -141,18 +150,18 @@ struct DramaPlayerView: View {
                     .allowsHitTesting(false)
             }
 
-            // 左下信息区
+            // 左下信息区（整体下移，贴近底部；进度条与「上滑」提示间距收紧）
             Text(episode.account)
                 .font(DWFont.cn(14, .bold))
                 .foregroundStyle(.white)
-                .designFrame(20, 576, 290, 20, alignment: .leading)
+                .designFrame(20, 620, 290, 20, alignment: .leading)
                 .allowsHitTesting(false)
 
             Text(episode.title)
                 .font(DWFont.cn(16, .heavy))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .designFrame(20, 598, 290, 23, alignment: .leading)
+                .designFrame(20, 642, 290, 23, alignment: .leading)
                 .allowsHitTesting(false)
 
             if let caption = episode.caption {
@@ -161,7 +170,7 @@ struct DramaPlayerView: View {
                     .foregroundStyle(DWColor.textBody)
                     .lineSpacing(5)
                     .lineLimit(1)
-                    .designFrame(20, 622, 288, 17, alignment: .leading)
+                    .designFrame(20, 666, 288, 17, alignment: .leading)
                     .allowsHitTesting(false)
             }
 
@@ -169,7 +178,7 @@ struct DramaPlayerView: View {
                 Text(tags)
                     .font(DWFont.cn(12, .regular))
                     .foregroundStyle(DWColor.textMuted)
-                    .designFrame(20, 644, 288, 17, alignment: .leading)
+                    .designFrame(20, 688, 288, 17, alignment: .leading)
                     .allowsHitTesting(false)
             }
 
@@ -177,32 +186,32 @@ struct DramaPlayerView: View {
                 Text(audio)
                     .font(DWFont.cn(12, .medium))
                     .foregroundStyle(DWColor.textMuted)
-                    .designFrame(20, 676, 290, 17, alignment: .leading)
+                    .designFrame(20, 720, 290, 17, alignment: .leading)
                     .allowsHitTesting(false)
             }
 
             if isEpisodeAvailable {
-                // 播放进度
+                // 播放进度：宽度 350，左右边距对称（各 20）
                 RoundedRectangle(cornerRadius: DWRadius.progress)
                     .fill(.white.opacity(0.30))
-                    .designFrame(20, 700, 290, 3)
+                    .designFrame(20, 744, 350, 3)
                     .allowsHitTesting(false)
 
                 RoundedRectangle(cornerRadius: DWRadius.progress)
                     .fill(DWColor.primary)
-                    .designFrame(20, 700, 290 * progressValue, 3)
+                    .designFrame(20, 744, 350 * progressValue, 3)
                     .allowsHitTesting(false)
 
                 Text(timeText)
                     .font(DWFont.en(11, .medium))
                     .foregroundStyle(DWColor.textTime)
-                    .designFrame(20, 708, 60, 13, alignment: .leading)
+                    .designFrame(20, 752, 60, 13, alignment: .leading)
                     .allowsHitTesting(false)
 
                 Text(durationText)
                     .font(DWFont.en(11, .medium))
                     .foregroundStyle(DWColor.textTime)
-                    .designFrame(254, 708, 56, 13, alignment: .trailing)
+                    .designFrame(314, 752, 56, 13, alignment: .trailing)
                     .allowsHitTesting(false)
             }
 
@@ -228,11 +237,12 @@ struct DramaPlayerView: View {
             .buttonStyle(.plain)
             .designFrame(325, 538, 44, 44)
 
+            // 文字框与按钮框同宽同位：中心对齐 icon 垂直中轴（此前右偏 10pt）
             Text("点赞")
                 .font(DWFont.cn(11, .medium))
                 .foregroundStyle(playback.liked ? DWColor.primary : .white)
                 .multilineTextAlignment(.center)
-                .designFrame(336, 579, 42, 14)
+                .designFrame(325, 579, 44, 14)
                 .allowsHitTesting(false)
 
             Button { playback.saved.toggle() } label: {
@@ -251,7 +261,7 @@ struct DramaPlayerView: View {
                 .font(DWFont.cn(11, .medium))
                 .foregroundStyle(playback.saved ? DWColor.gold : .white)
                 .multilineTextAlignment(.center)
-                .designFrame(336, 666, 42, 14)
+                .designFrame(325, 666, 44, 14)
                 .allowsHitTesting(false)
 
             // 上滑切集提示
@@ -280,7 +290,7 @@ struct DramaPlayerView: View {
             .padding(.vertical, 8)
             .background(.black.opacity(0.55), in: Capsule())
             .opacity(playback.isFastForwarding ? 1 : 0)
-            .animation(.easeInOut(duration: 0.15), value: playback.isFastForwarding)
+            .animation(.easeIn(duration: 0.1), value: playback.isFastForwarding)
             .designFrame(95, 300, 200, 34)
             .allowsHitTesting(false)
 
