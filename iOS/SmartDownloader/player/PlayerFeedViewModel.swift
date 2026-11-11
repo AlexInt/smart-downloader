@@ -37,6 +37,12 @@ final class PlayerFeedViewModel: ObservableObject {
         queue = q
         slots = q.slots
         currentSort = q.current?.sort
+        // 进入即预热首集 + 相邻集：与 150ms 停稳防抖并行，首次起播也走 HIT 路径
+        if let current = q.current {
+            let neighbors = q.neighbors(of: current.sort)
+            playerService.preload([current] + neighbors)
+            print("PLAYER_DBG [VM] preload entry sort=\(current.sort) neighbors=\(neighbors.map(\.sort))")
+        }
         print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil")")
     }
 
@@ -48,15 +54,30 @@ final class PlayerFeedViewModel: ObservableObject {
             return
         }
         queue?.select(sort: sort)
+        // 相邻集预热与当前集加载并行：在用户滑过去之前把 m3u8 管线提前跑完（秒开关键）
+        preloadNeighbors(of: sort)
         // 先置 false 让卡片回到加载态，load 完成后再置 true 触发一次刷新显露视频层
         playbackReady = false
         await playback.load(episode: slot)
+        guard !Task.isCancelled else {
+            print("PLAYER_DBG [VM] pageSettled CANCELLED sort=\(sort)（新滑动接管）")
+            return
+        }
         playbackReady = playback.isReady
         print("PLAYER_DBG [CHECK] pageSettled done sort=\(sort) isLast=\(isLast(sort)) slots=\(slots.count) current=\(currentSort.map(String.init) ?? "nil") ready=\(playbackReady)")
         if isLast(sort), !endToastShown {
             endToastShown = true
             showToast("已经到底了")
         }
+    }
+
+    /// 预热调度顺序上相邻的集（走 PlaybackQueueService 的推荐接入点，算法换序自动跟随）
+    private func preloadNeighbors(of sort: Int) {
+        guard let queue else { return }
+        let neighbors = queue.neighbors(of: sort)
+        guard !neighbors.isEmpty else { return }
+        playerService.preload(neighbors)
+        print("PLAYER_DBG [VM] preloadNeighbors of=\(sort) sorts=\(neighbors.map(\.sort))")
     }
 
     func hasNext(after sort: Int) -> Bool {
@@ -90,6 +111,6 @@ final class PlayerFeedViewModel: ObservableObject {
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
         playback.stop()
-        playerService.clear()
+        playerService.teardown()
     }
 }

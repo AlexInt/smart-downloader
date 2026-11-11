@@ -89,7 +89,7 @@ View → ViewModel → Service → 系统能力 / Model
 1. 上下滑资源调度唯一入口是 `PlaybackQueueService`；**后续本地推荐算法只改 `resolveNext(from:in:)` / `resolvePrevious(from:in:)`**，不动 View / 容器 / ViewModel。
 2. 播放页用 **UIKit 原生分页**：`PlayerPagingScrollView`（`UIViewRepresentable` 包 `UIScrollView.isPagingEnabled = true` + `UIHostingController` 承载 SwiftUI 卡片）。纵向 pan 由 UIKit 独占，**卡片内禁止任何连续手势（包括局部 DragGesture）** —— 曾因进度带 390×120 的局部 DragGesture 吃掉全部纵向滑动，导致分页完全滑不动。点按 / 长按 / 水平 seek 一律用 UIKit recognizer 挂在同一 UIScrollView 上，`cancelsTouchesInView = false`；seekPan 通过 delegate 与系统 pan 同时识别，且只在「起点落在进度带 + 水平主导」时生效，几何判定放 `PlayerGesturePolicy`（纯函数）。边界提示由 ViewModel 在停到末页时给出。
    - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
-3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；本地回环 HLS 加载快，暂不引入多 player pool。
+3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `asset.load(.isPlayable)` 完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT）+ `DramaPlayerViewModel` 的 **KVO 事件流就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 300ms 延迟显示**（`isLoadingSlow`）。
 4. 进度只在进度条上下各 60pt 带内响应水平滑动；带外水平滑动无效果；垂直滑动只切集，不碰进度。
 5. 偏好持久化统一走 `PlayerPreferences`，不要在 ViewModel 里散落 `UserDefaults.standard`。
 6. 不为了分层而分层：不硬造协议、不搬 Coordinator/Router、不给三行代码加一层；等一个类型出现第二个变更理由再拆。`struct` 做 Service 可以。
@@ -129,5 +129,6 @@ View → ViewModel → Service → 系统能力 / Model
 
 ## 文档与提交
 
+- 交接状态（已完成 / 待办 / 进度）见根目录 `HANDOFF.md`；本文档只维护规则与约定。每完成一个任务同步更新 HANDOFF.md。
 - 文档中的 Mermaid 图：节点标签用双引号、边标签用 `-->|"label"|` 语法，并在 directive 中配置 `textColor`/`primaryTextColor`/`edgeLabelTextColor`（深色文字）与 `edgeLabelBackground`（白底），否则渲染出错或文字不可见。
 - 提交惯例：每个任务完成即 commit，中文 message，`feat`/`fix`/`refactor`/`docs` 前缀；不 push 除非用户要求。

@@ -75,6 +75,17 @@ struct PlaybackQueueService {
         current = target
     }
 
+    /// 调度顺序上与某集相邻的槽位（上一位 + 下一位），供相邻集预热使用。
+    /// 刻意走 resolveNext / resolvePrevious：推荐算法换序后预热目标自动跟随，无需另改。
+    /// 是否已下载由调用方过滤（预热 Service 只预热 isAvailable 的集）。
+    func neighbors(of sort: Int) -> [PlayableEpisode] {
+        guard let current = slots.first(where: { $0.sort == sort }) else { return [] }
+        var result: [PlayableEpisode] = []
+        if let prev = resolvePrevious(from: current, in: slots) { result.append(prev) }
+        if let next = resolveNext(from: current, in: slots) { result.append(next) }
+        return result
+    }
+
     // MARK: - 本地推荐算法接入点 -------------------------------------
     // 当前策略 = 按集号顺序。后续接本地推荐算法只需替换这两个方法：
     // 可读取 slots（全剧候选池）、history（观看历史）、current，

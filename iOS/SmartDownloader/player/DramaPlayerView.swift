@@ -39,6 +39,7 @@ struct DramaPlayerView: View {
                 // ── ① 视频：只有当前页绑定播放器 ───────────────
                 PlayerSurfaceView(player: isActive ? player : nil)
                     .opacity(isActive && playback.isReady ? 1 : 0)
+                    .animation(.easeOut(duration: 0.15), value: playback.isReady)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .allowsHitTesting(false)
 
@@ -57,6 +58,7 @@ struct DramaPlayerView: View {
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .opacity(isActive && playback.isReady ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: playback.isReady)
                 .allowsHitTesting(false)
 
                 // ── ③ 上下压暗：按屏幕比例铺满，边缘不留亮框 ──
@@ -297,10 +299,13 @@ struct DramaPlayerView: View {
                 .allowsHitTesting(false)
             } else if isActive, !playback.isReady {
                 if isEpisodeAvailable {
-                    ProgressView()
-                        .tint(.white)
-                        .designFrame(180, 405, 30, 30)
-                        .allowsHitTesting(false)
+                    // 300ms 内就绪的加载不显示转圈：预热命中的秒开路径应当无感
+                    if playback.isLoadingSlow {
+                        ProgressView()
+                            .tint(.white)
+                            .designFrame(180, 405, 30, 30)
+                            .allowsHitTesting(false)
+                    }
                 } else {
                     // 真实存在但未下载的集：不转圈、不假装能播
                     VStack(spacing: 10) {
