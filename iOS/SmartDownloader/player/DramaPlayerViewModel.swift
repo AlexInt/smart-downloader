@@ -48,6 +48,7 @@ final class DramaPlayerViewModel: ObservableObject {
             // 有意的：每次进清屏播放页都提示一次位置。
             if isCleanScreen {
                 showScrubHud(reason: "cleanScreenOn")
+                isCleanScreenFlashActive = true
                 scheduleScrubLinger(ms: 1500)
             }
         }
@@ -66,6 +67,9 @@ final class DramaPlayerViewModel: ObservableObject {
     private var lastLoggedSecond = -1
     private var spinnerDelayTask: Task<Void, Never>?
     private var scrubLingerTask: Task<Void, Never>?
+    /// 清屏位置参照闪现进行中：闪现与 seek 残影是两种瞬态——切集的 load() 清残影时
+    /// 不得把开屏闪现一并吞掉（真机日志实证：cleanScreenOn 闪现被 load 截短，无 linger1500ms 收尾）
+    private var isCleanScreenFlashActive = false
 
     init(playerService: PlaybackPlayerService) {
         self.playerService = playerService
@@ -211,6 +215,7 @@ final class DramaPlayerViewModel: ObservableObject {
         print("PLAYER_DBG [Playback] stop")
         isFastForwarding = false
         endSeekGesture()
+        isCleanScreenFlashActive = false
         hideScrubHudNow()
         cancelSpinnerDelay()
         playerService.clear()
@@ -323,12 +328,18 @@ final class DramaPlayerViewModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(ms))
             guard let self, !Task.isCancelled, self.isScrubbing else { return }
             self.isScrubbing = false
+            self.isCleanScreenFlashActive = false
             print("PLAYER_DBG [Playback] scrub hide reason=linger\(ms)ms")
         }
     }
 
-    /// 切集 / 退出：立即清除，不留 800ms 残影
+    /// 切集 / 退出：立即清除 seek 残影，不留 800ms 残影。
+    /// 开屏清屏闪现（isCleanScreenFlashActive）不是残影，不在此清——否则被 load 截短（日志实证）
     private func hideScrubHudNow() {
+        guard !isCleanScreenFlashActive else {
+            print("PLAYER_DBG [Playback] scrub hide SKIP reason=cleanScreenFlash")
+            return
+        }
         scrubLingerTask?.cancel()
         scrubLingerTask = nil
         isScrubbing = false
