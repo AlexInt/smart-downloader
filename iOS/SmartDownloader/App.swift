@@ -9,6 +9,26 @@ struct SmartDownloaderApp: App {
     @State private var showSplash = true
     /// 防止 onAppear 重复触发自动冒烟
     @MainActor private static var autoTestStarted = false
+    @MainActor private static var stallProbeStarted = false
+
+    private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
+
+    /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >250ms 打一条。
+    /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
+    @MainActor
+    private static func startStallProbeIfNeeded() {
+        guard ProcessInfo.processInfo.arguments.contains("perfLog"), !stallProbeStarted else { return }
+        stallProbeStarted = true
+        var last = ProcessInfo.processInfo.systemUptime
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            let now = ProcessInfo.processInfo.systemUptime
+            let gap = now - last
+            if gap > 0.25 {
+                print("PERF_DBG mainStall ms=\(Int(gap * 1000)) t=\(Int(now * 1000))")
+            }
+            last = now
+        }
+    }
 
     init() {
         // 提前启动本地媒体服务（播放 HLS 文件夹时用）
@@ -31,9 +51,18 @@ struct SmartDownloaderApp: App {
                     LaunchSplashView()
                         .transition(.opacity)
                         .zIndex(1)
+                        // 纯装饰不拦截触摸：splash 期间 tab 点击照常响应
+                        //（曾盖住 tab bar 1.2s+淡出，慢机首帧晚 → 点击死区被报「切换卡」）
+                        .allowsHitTesting(false)
                 }
             }
-            .onAppear { Self.runDeviceAutoTest(manager: manager) }
+            .onChange(of: selectedTab) { old, new in
+                print("PERF_DBG tabSwitch \(old)->\(new) t=\(Self.uptimeMs())")
+            }
+            .onAppear {
+                Self.runDeviceAutoTest(manager: manager)
+                Self.startStallProbeIfNeeded()
+            }
             .task {
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
                 withAnimation(.easeOut(duration: 0.45)) { showSplash = false }

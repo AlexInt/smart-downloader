@@ -32,6 +32,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 横向 seek 全屏化：相对映射 + 左缘排除（第六批，用户拍板） | ✅ 编译通过，**待用户真机验证**（见下） |
 | 清屏快滑仍闪 2x 修复（seekPan 全域起手 + .began 即翻转仲裁闸门） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 启动页（系统渐变 launch screen + SwiftUI splash logo 呼吸 1.2s 淡出） | ✅ 编译通过，**待用户真机体验确认** |
+| splash 不拦截触摸 + PERF_DBG 卡顿探针（-perfLog：tabSwitch 时间戳 + 主线程 >250ms 停顿） | ✅ 编译通过，**待真机复测 tab 切换卡** |
 
 ### 秒开优化（本次刚做，未验证细节）
 
