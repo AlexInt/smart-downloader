@@ -25,6 +25,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | UIKit 原生分页（轻滑 15% 翻页、起始定位正确、11 集双向滑动） | ✅ `78abf2d`，用户日志确认全链路 OK |
 | 秒开三件套（相邻集预热池 + KVO 事件流就绪 + spinner 延迟显示） | ✅ 编译通过，**待用户真机体验确认** |
 | 播放页交互细节修复批（布局收紧/静音图标/点按分区/边缘返回/倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
+| 清屏模式（隐藏界面信息只看画面，状态本地记住） | ✅ 编译通过，**待用户真机体验确认** |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -48,6 +49,13 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 6. **长按 2x 提速**：`minimumPressDuration` 0.25→0.15s，提示淡入 0.15→0.1s。
 7. **松手立即回 1x**：根因是 `endFastForward` 只在 `.playing` 时置 `rate=1`，缓冲等待态（`.waitingToPlayAtSpecifiedRate`）被漏掉，缓冲恢复后仍是 2x；现在只要非暂停一律拨回 `rate=1`，`beginFastForward` 也接受等待态起 2x。
 8. **几何同步**：`PlayerGesturePolicy` 的 seek 带（y 684..804）与 fraction 宽度（350）已随新布局更新——**进度条再动必须同步改这两处**（AGENTS 已记）。
+
+### 清屏模式
+
+- 静音旁（左侧，设计稿 277,41）新增「清屏」按钮：隐藏界面信息组（集数胶囊/字幕/左下信息区/进度条/互动栏/上滑提示/上下压暗），保留常驻控件（返回/静音/清屏）与瞬态反馈（倍速/加载/错误/toast）。切换 0.2s 交叉淡入淡出。
+- 状态本地记住：`PlayerPreferences.isCleanScreen`（UserDefaults "DramaPlayer.cleanScreen"），VM init 恢复，同静音模式一套机制。
+- 图标为 SwiftUI 绘制（圆角矩形描边 + 激活时金色斜线），与静音图标同一视觉语言；素材库无需新增图片。
+- 新按钮**零手势代码**：Button 天然优先于卡片点按（手势架构简化的直接收益）。
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 

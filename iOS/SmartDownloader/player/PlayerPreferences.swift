@@ -13,6 +13,12 @@ struct PlayerPreferences {
         nonmutating set { defaults.set(newValue, forKey: Self.mutedKey) }
     }
 
+    /// 清屏模式：隐藏界面信息只看画面
+    var isCleanScreen: Bool {
+        get { defaults.bool(forKey: Self.cleanScreenKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.cleanScreenKey) }
+    }
+
     func liked(for key: String) -> Bool { defaults.bool(forKey: likedKey(key)) }
     func saved(for key: String) -> Bool { defaults.bool(forKey: savedKey(key)) }
     func setLiked(_ value: Bool, for key: String) { defaults.set(value, forKey: likedKey(key)) }
@@ -26,6 +32,7 @@ struct PlayerPreferences {
     }
 
     private static let mutedKey = "DramaPlayer.muted"
+    private static let cleanScreenKey = "DramaPlayer.cleanScreen"
     private func likedKey(_ key: String) -> String { "DramaPlayer.liked.\(key)" }
     private func savedKey(_ key: String) -> String { "DramaPlayer.saved.\(key)" }
 }

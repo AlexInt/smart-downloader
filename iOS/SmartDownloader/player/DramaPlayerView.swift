@@ -6,8 +6,11 @@ import AVFoundation
 /// 由设计稿「播放页 · 中文版」逐节点映射，坐标基准 390×840。
 /// - 视频 / 加载渐变 / 压暗遮罩 / 手势层：铺满整屏，不参与设计稿缩放。
 /// - 文字 / 按钮 / 图标：留在 390×840 内等比 contain 缩放，控件不会被裁。
-/// - 纵向翻页交给系统 ScrollView；本视图的手势只处理单击、长按倍速、
-///   进度带内水平 seek、边界意图（判定逻辑在 PlayerGesturePolicy）。
+/// - 纵向翻页交给系统 ScrollView；本视图的离散手势（点按暂停 / 长按倍速）
+///   放卡片自身，Button 天然优先；水平 seek 与左缘返回在 UIKit 层
+///   （判定逻辑在 PlayerGesturePolicy）。
+/// - 清屏模式（isCleanScreen，本地记住）：「界面信息组」整体淡出，
+///   常驻控件（静音/清屏/返回）与瞬态反馈（倍速/加载/错误/toast）保留。
 struct DramaPlayerView: View {
     let episode: DramaEpisode
     @ObservedObject var playback: DramaPlayerViewModel
@@ -61,7 +64,8 @@ struct DramaPlayerView: View {
                 .animation(.easeOut(duration: 0.15), value: playback.isReady)
                 .allowsHitTesting(false)
 
-                // ── ③ 上下压暗：按屏幕比例铺满，边缘不留亮框 ──
+                // ── ③ 上下压暗：按屏幕比例铺满，边缘不留亮框；
+                //    清屏时一并淡出，只留纯画面 ──
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.black.opacity(0.8), .clear],
                                    startPoint: .top, endPoint: .bottom)
@@ -72,13 +76,15 @@ struct DramaPlayerView: View {
                         .frame(height: geo.size.height * 0.36)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
+                .opacity(playback.isCleanScreen ? 0 : 1)
+                .animation(.easeInOut(duration: 0.2), value: playback.isCleanScreen)
                 .allowsHitTesting(false)
 
                 // ── ④ 手势（离散）：点按暂停 / 长按倍速放卡片自身（body 末尾的
                 //    onTapGesture / onLongPressGesture）。SwiftUI 手势深度优先解析：
-                //    Button（返回/静音/点赞/收藏）天然优先于卡片手势，点控件不连带
-                //    暂停，无需控件区几何判定。连续手势（水平 seek / 左缘返回）仍在
-                //    UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
+                //    Button（返回/静音/清屏/点赞/收藏）天然优先于卡片手势，点控件
+                //    不连带暂停，无需控件区几何判定。连续手势（水平 seek / 左缘返回）
+                //    仍在 UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
 
                 // ── ⑤ 设计稿 UI 层（390×840，只含文字/按钮/图标） ─
                 designOverlay
@@ -91,7 +97,7 @@ struct DramaPlayerView: View {
         .ignoresSafeArea()
         .background(DWColor.background.ignoresSafeArea())
         // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
-        // 点静音/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）
+        // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）
         .contentShape(Rectangle())
         .onTapGesture {
             print("PLAYER_DBG [CHECK] TAP → togglePlayback")
@@ -109,23 +115,183 @@ struct DramaPlayerView: View {
     }
 
     /// 设计稿节点，坐标一律来自设计文件，勿凭目测调整。
-    /// 返回按钮放在最后并抬到最高层级，保证关闭入口一定点得到。
+    /// 分两组：清屏模式下「界面信息组」整体淡出；常驻控件（静音/清屏/返回）与
+    /// 瞬态反馈（倍速/加载/错误/toast）保留。返回按钮放在最后并抬到最高层级。
     @ViewBuilder
     private var designOverlay: some View {
         ZStack(alignment: .topLeading) {
-            // 顶部集数胶囊
-            RoundedRectangle(cornerRadius: DWRadius.chip)
-                .fill(.black.opacity(0.45))
-                .designFrame(125, 50, 140, 26)
-                .allowsHitTesting(false)
+            // ── 界面信息组：清屏模式下整体淡出，只留纯画面 ────────────
+            if !playback.isCleanScreen {
+                Group {
+                    // 顶部集数胶囊
+                    RoundedRectangle(cornerRadius: DWRadius.chip)
+                        .fill(.black.opacity(0.45))
+                        .designFrame(125, 50, 140, 26)
+                        .allowsHitTesting(false)
 
-            Text(episode.episodeLabel)
-                .font(DWFont.cn(12, .medium))
-                .foregroundStyle(DWColor.textPrimary)
-                .multilineTextAlignment(.center)
-                .designFrame(125, 55, 140, 16)
-                .allowsHitTesting(false)
+                    Text(episode.episodeLabel)
+                        .font(DWFont.cn(12, .medium))
+                        .foregroundStyle(DWColor.textPrimary)
+                        .multilineTextAlignment(.center)
+                        .designFrame(125, 55, 140, 16)
+                        .allowsHitTesting(false)
 
+                    // 剧集字幕（本地 HLS 无字幕轨时整块隐藏）
+                    if let lines = episode.subtitleLines {
+                        RoundedRectangle(cornerRadius: DWRadius.subtitle)
+                            .fill(.black.opacity(0.32))
+                            .designFrame(45, 396, 270, 52)
+                            .allowsHitTesting(false)
+
+                        Text(lines.0)
+                            .font(DWFont.cn(15, .semibold))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .designFrame(127, 404, 130, 22)
+                            .allowsHitTesting(false)
+
+                        Text(lines.1)
+                            .font(DWFont.cn(15, .semibold))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .designFrame(112, 426, 155, 22)
+                            .allowsHitTesting(false)
+                    }
+
+                    // 左下信息区（整体下移，贴近底部；进度条与「上滑」提示间距收紧）
+                    Text(episode.account)
+                        .font(DWFont.cn(14, .bold))
+                        .foregroundStyle(.white)
+                        .designFrame(20, 620, 290, 20, alignment: .leading)
+                        .allowsHitTesting(false)
+
+                    Text(episode.title)
+                        .font(DWFont.cn(16, .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .designFrame(20, 642, 290, 23, alignment: .leading)
+                        .allowsHitTesting(false)
+
+                    if let caption = episode.caption {
+                        Text(caption)
+                            .font(DWFont.cn(12, .regular))
+                            .foregroundStyle(DWColor.textBody)
+                            .lineSpacing(5)
+                            .lineLimit(1)
+                            .designFrame(20, 666, 288, 17, alignment: .leading)
+                            .allowsHitTesting(false)
+                    }
+
+                    if let tags = episode.tags {
+                        Text(tags)
+                            .font(DWFont.cn(12, .regular))
+                            .foregroundStyle(DWColor.textMuted)
+                            .designFrame(20, 688, 288, 17, alignment: .leading)
+                            .allowsHitTesting(false)
+                    }
+
+                    if let audio = episode.audio {
+                        Text(audio)
+                            .font(DWFont.cn(12, .medium))
+                            .foregroundStyle(DWColor.textMuted)
+                            .designFrame(20, 720, 290, 17, alignment: .leading)
+                            .allowsHitTesting(false)
+                    }
+
+                    if isEpisodeAvailable {
+                        // 播放进度：宽度 350，左右边距对称（各 20）
+                        RoundedRectangle(cornerRadius: DWRadius.progress)
+                            .fill(.white.opacity(0.30))
+                            .designFrame(20, 744, 350, 3)
+                            .allowsHitTesting(false)
+
+                        RoundedRectangle(cornerRadius: DWRadius.progress)
+                            .fill(DWColor.primary)
+                            .designFrame(20, 744, 350 * progressValue, 3)
+                            .allowsHitTesting(false)
+
+                        Text(timeText)
+                            .font(DWFont.en(11, .medium))
+                            .foregroundStyle(DWColor.textTime)
+                            .designFrame(20, 752, 60, 13, alignment: .leading)
+                            .allowsHitTesting(false)
+
+                        Text(durationText)
+                            .font(DWFont.en(11, .medium))
+                            .foregroundStyle(DWColor.textTime)
+                            .designFrame(314, 752, 56, 13, alignment: .trailing)
+                            .allowsHitTesting(false)
+                    }
+
+                    // 进度控制改由 PlayerPagingScrollView 的 UIKit seekPan 处理（与系统 pan 同时识别）。
+                    // 卡片内不放任何连续手势 —— 之前这个局部 DragGesture 吃掉了全部纵向滑动。
+
+                    // 右侧互动栏
+                    LinearGradient(colors: [DWColor.avatarTop, DWColor.avatarBottom],
+                                   startPoint: .top, endPoint: .bottom)
+                        .clipShape(Circle())
+                        .designFrame(326, 458, 48, 48)
+                        .allowsHitTesting(false)
+
+                    Button { playback.liked.toggle() } label: {
+                        Image("ic_like")
+                            .renderingMode(.template)
+                            .resizable().scaledToFit()
+                            .foregroundStyle(playback.liked ? DWColor.primary : .white)
+                            .frame(width: 30, height: 30)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .designFrame(325, 538, 44, 44)
+
+                    // 文字框与按钮框同宽同位：中心对齐 icon 垂直中轴（此前右偏 10pt）
+                    Text("点赞")
+                        .font(DWFont.cn(11, .medium))
+                        .foregroundStyle(playback.liked ? DWColor.primary : .white)
+                        .multilineTextAlignment(.center)
+                        .designFrame(325, 579, 44, 14)
+                        .allowsHitTesting(false)
+
+                    Button { playback.saved.toggle() } label: {
+                        Image("ic_save")
+                            .renderingMode(.template)
+                            .resizable().scaledToFit()
+                            .foregroundStyle(playback.saved ? DWColor.gold : .white)
+                            .frame(width: 30, height: 30)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .designFrame(325, 625, 44, 44)
+
+                    Text("收藏")
+                        .font(DWFont.cn(11, .medium))
+                        .foregroundStyle(playback.saved ? DWColor.gold : .white)
+                        .multilineTextAlignment(.center)
+                        .designFrame(325, 666, 44, 14)
+                        .allowsHitTesting(false)
+
+                    // 上滑切集提示
+                    Image("ic_swipe_up")
+                        .resizable().scaledToFit()
+                        .designFrame(145, 800, 18, 18)
+                        .allowsHitTesting(false)
+
+                    Text(hasNextEpisode
+                         ? (nextEpisodeAvailable ? "上滑观看下一集" : "下一集尚未下载")
+                         : "已是最后一集")
+                        .font(DWFont.cn(11, .medium))
+                        .foregroundStyle(DWColor.textSwipe)
+                        .designFrame(169, 801, 120, 16, alignment: .leading)
+                        .allowsHitTesting(false)
+                }
+                .transition(.opacity)
+            }
+
+            // ── 常驻控件：清屏模式下保留 ──────────────────────────────
+
+            // 静音（状态本地记住）
             Button { playback.isMuted.toggle() } label: {
                 ZStack {
                     Image("ic_sound")
@@ -147,157 +313,28 @@ struct DramaPlayerView: View {
             .buttonStyle(.plain)
             .designFrame(329, 41, 44, 44)
 
-            // 剧集字幕（本地 HLS 无字幕轨时整块隐藏）
-            if let lines = episode.subtitleLines {
-                RoundedRectangle(cornerRadius: DWRadius.subtitle)
-                    .fill(.black.opacity(0.32))
-                    .designFrame(45, 396, 270, 52)
-                    .allowsHitTesting(false)
-
-                Text(lines.0)
-                    .font(DWFont.cn(15, .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .designFrame(127, 404, 130, 22)
-                    .allowsHitTesting(false)
-
-                Text(lines.1)
-                    .font(DWFont.cn(15, .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .designFrame(112, 426, 155, 22)
-                    .allowsHitTesting(false)
-            }
-
-            // 左下信息区（整体下移，贴近底部；进度条与「上滑」提示间距收紧）
-            Text(episode.account)
-                .font(DWFont.cn(14, .bold))
-                .foregroundStyle(.white)
-                .designFrame(20, 620, 290, 20, alignment: .leading)
-                .allowsHitTesting(false)
-
-            Text(episode.title)
-                .font(DWFont.cn(16, .heavy))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .designFrame(20, 642, 290, 23, alignment: .leading)
-                .allowsHitTesting(false)
-
-            if let caption = episode.caption {
-                Text(caption)
-                    .font(DWFont.cn(12, .regular))
-                    .foregroundStyle(DWColor.textBody)
-                    .lineSpacing(5)
-                    .lineLimit(1)
-                    .designFrame(20, 666, 288, 17, alignment: .leading)
-                    .allowsHitTesting(false)
-            }
-
-            if let tags = episode.tags {
-                Text(tags)
-                    .font(DWFont.cn(12, .regular))
-                    .foregroundStyle(DWColor.textMuted)
-                    .designFrame(20, 688, 288, 17, alignment: .leading)
-                    .allowsHitTesting(false)
-            }
-
-            if let audio = episode.audio {
-                Text(audio)
-                    .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.textMuted)
-                    .designFrame(20, 720, 290, 17, alignment: .leading)
-                    .allowsHitTesting(false)
-            }
-
-            if isEpisodeAvailable {
-                // 播放进度：宽度 350，左右边距对称（各 20）
-                RoundedRectangle(cornerRadius: DWRadius.progress)
-                    .fill(.white.opacity(0.30))
-                    .designFrame(20, 744, 350, 3)
-                    .allowsHitTesting(false)
-
-                RoundedRectangle(cornerRadius: DWRadius.progress)
-                    .fill(DWColor.primary)
-                    .designFrame(20, 744, 350 * progressValue, 3)
-                    .allowsHitTesting(false)
-
-                Text(timeText)
-                    .font(DWFont.en(11, .medium))
-                    .foregroundStyle(DWColor.textTime)
-                    .designFrame(20, 752, 60, 13, alignment: .leading)
-                    .allowsHitTesting(false)
-
-                Text(durationText)
-                    .font(DWFont.en(11, .medium))
-                    .foregroundStyle(DWColor.textTime)
-                    .designFrame(314, 752, 56, 13, alignment: .trailing)
-                    .allowsHitTesting(false)
-            }
-
-            // 进度控制改由 PlayerPagingScrollView 的 UIKit seekPan 处理（与系统 pan 同时识别）。
-            // 卡片内不放任何连续手势 —— 之前这个局部 DragGesture 吃掉了全部纵向滑动。
-
-            // 右侧互动栏
-            LinearGradient(colors: [DWColor.avatarTop, DWColor.avatarBottom],
-                           startPoint: .top, endPoint: .bottom)
-                .clipShape(Circle())
-                .designFrame(326, 458, 48, 48)
-                .allowsHitTesting(false)
-
-            Button { playback.liked.toggle() } label: {
-                Image("ic_like")
-                    .renderingMode(.template)
-                    .resizable().scaledToFit()
-                    .foregroundStyle(playback.liked ? DWColor.primary : .white)
-                    .frame(width: 30, height: 30)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            // 清屏（状态本地记住）：隐藏界面信息只看画面。
+            // 矩形+斜线与静音图标同一视觉语言：激活时描边变灰 + 金色斜线
+            Button { playback.isCleanScreen.toggle() } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(playback.isCleanScreen ? DWColor.textHint : .white,
+                                      lineWidth: 1.8)
+                        .frame(width: 21, height: 16)
+                    if playback.isCleanScreen {
+                        Capsule()
+                            .fill(DWColor.gold)
+                            .frame(width: 27, height: 2.2)
+                            .rotationEffect(.degrees(45))
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .designFrame(325, 538, 44, 44)
+            .designFrame(277, 41, 44, 44)
 
-            // 文字框与按钮框同宽同位：中心对齐 icon 垂直中轴（此前右偏 10pt）
-            Text("点赞")
-                .font(DWFont.cn(11, .medium))
-                .foregroundStyle(playback.liked ? DWColor.primary : .white)
-                .multilineTextAlignment(.center)
-                .designFrame(325, 579, 44, 14)
-                .allowsHitTesting(false)
-
-            Button { playback.saved.toggle() } label: {
-                Image("ic_save")
-                    .renderingMode(.template)
-                    .resizable().scaledToFit()
-                    .foregroundStyle(playback.saved ? DWColor.gold : .white)
-                    .frame(width: 30, height: 30)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .designFrame(325, 625, 44, 44)
-
-            Text("收藏")
-                .font(DWFont.cn(11, .medium))
-                .foregroundStyle(playback.saved ? DWColor.gold : .white)
-                .multilineTextAlignment(.center)
-                .designFrame(325, 666, 44, 14)
-                .allowsHitTesting(false)
-
-            // 上滑切集提示
-            Image("ic_swipe_up")
-                .resizable().scaledToFit()
-                .designFrame(145, 800, 18, 18)
-                .allowsHitTesting(false)
-
-            Text(hasNextEpisode
-                 ? (nextEpisodeAvailable ? "上滑观看下一集" : "下一集尚未下载")
-                 : "已是最后一集")
-                .font(DWFont.cn(11, .medium))
-                .foregroundStyle(DWColor.textSwipe)
-                .designFrame(169, 801, 120, 16, alignment: .leading)
-                .allowsHitTesting(false)
-
-            // 长按倍速状态提示
+            // 长按倍速状态提示（瞬态反馈，清屏时保留）
             HStack(spacing: 6) {
                 Image(systemName: "forward.fill")
                     .font(.system(size: 13, weight: .bold))
@@ -313,7 +350,7 @@ struct DramaPlayerView: View {
             .designFrame(95, 300, 200, 34)
             .allowsHitTesting(false)
 
-            // 加载 / 错误态覆盖（仅当前页需要）
+            // 加载 / 错误态覆盖（仅当前页需要；瞬态功能反馈，清屏时保留）
             if isActive, let error = playback.loadError {
                 VStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle")
@@ -372,6 +409,7 @@ struct DramaPlayerView: View {
                 .designFrame(95, 350, 200, 36)
                 .zIndex(20)
         }
+        .animation(.easeInOut(duration: 0.2), value: playback.isCleanScreen)
     }
 }
 

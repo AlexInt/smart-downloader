@@ -27,6 +27,14 @@ final class DramaPlayerViewModel: ObservableObject {
             print("PLAYER_DBG [Playback] muted=\(isMuted) → persist + applyPlayer")
         }
     }
+
+    /// 清屏模式：隐藏界面信息（信息区/进度/互动栏/字幕/上滑提示/压暗），只留视频与常驻控件
+    @Published var isCleanScreen = false {
+        didSet {
+            preferences.isCleanScreen = isCleanScreen
+            print("PLAYER_DBG [Playback] cleanScreen=\(isCleanScreen) → persist")
+        }
+    }
     @Published var liked = false {
         didSet { preferences.setLiked(liked, for: currentKey) }
     }
@@ -44,8 +52,9 @@ final class DramaPlayerViewModel: ObservableObject {
     init(playerService: PlaybackPlayerService) {
         self.playerService = playerService
         isMuted = preferences.isMuted
+        isCleanScreen = preferences.isCleanScreen
         ensureObserver()
-        print("PLAYER_DBG [Playback] VM init muted=\(isMuted)")
+        print("PLAYER_DBG [Playback] VM init muted=\(isMuted) cleanScreen=\(isCleanScreen)")
     }
 
     /// 滚动停稳后才调用：单播放器常驻，切集只换 item。
