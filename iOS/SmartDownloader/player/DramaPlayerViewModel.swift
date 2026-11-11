@@ -22,6 +22,9 @@ final class DramaPlayerViewModel: ObservableObject {
         didSet {
             preferences.isMuted = isMuted
             player.isMuted = isMuted
+            // 持久化写路径日志：与 init 的读路径日志（VM init muted=）成对，
+            // 真机上可完整核对「切换静音 → 落盘 → 重开恢复」链路
+            print("PLAYER_DBG [Playback] muted=\(isMuted) → persist + applyPlayer")
         }
     }
     @Published var liked = false {
