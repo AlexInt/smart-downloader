@@ -161,6 +161,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 - **定向提取（样本已确认）**：真机拷回 `api_https___yeguodj.com_3703.json`——detail 接口明文 JSON，`tags` 为结构化数组；用户构造 `DramaDetailData` Codable（swiftc 对样本实测解码 OK）。捕获回调里 `JSONDecoder` 解码 + 剧 ID 命中即 `savePageMeta`（`source=api`，不等轮询），轮次优先用 `apiDetail.tags`；锚点法 parseTags 已删除。失败分支：`apiNoTags` / `noDetailResponse`。
 - handler 收尾 removeScriptMessageHandler 防循环引用；`harvest finish apiCaptures=N` 看捕获条数。
 - **旧缓存自动迁移**：`page_meta.tags_source` 记来源（不加列、无迁移）；旧缓存无来源 → harvestIfNeeded 视为不全，进页自动补采一次，采成功写 `api` 后恢复缓存优先零网络。`-captureDramaMeta` 保留为调查期手动强制重采。
+- **信封兜底（3445 真机实证）**：web 端 detail 与 App 接口同走 api.php 加密信封，3703 明文样本系离线解过密。解码链：明文 → `DramaSession.decryptCapturedBody`（复用随包常量 + decryptPayload）；成功日志带 `via=plain|envelope`，失败首条 `reason=decode` 带 bodyHead 判读、`videoIdMismatch` 单列。v2 迁移每进程只 ALTER 一次。
 
 验证看点：进剧集页出 `harvest tags source=api tags=反差 人妻 都市 大女主`（样本剧），头部与播放卡 tags 行显示同一串；无 detail 响应时 finish 打 `tags FAIL reason=noDetailResponse`。待真机回归。
 

@@ -258,6 +258,19 @@ final class DramaSession {
         return json
     }
 
+    /// 捕获模式解密：web 端 detail 响应可能与 App 接口同协议——加密信封
+    /// （errcode=0 + data base64）。复用随包常量与 decryptPayload；非信封返回 nil。
+    static func decryptCapturedBody(_ body: String) -> [String: Any]? {
+        guard let envelope = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
+              (envelope["errcode"] as? Int) == 0,
+              let payload = envelope["data"] as? String,
+              let url = Bundle.main.url(forResource: "video_auto", withExtension: "py"),
+              let source = try? String(contentsOf: url, encoding: .utf8),
+              let keyString = sourceConstant("AES_KEY", in: source),
+              let ivString = sourceConstant("AES_IV", in: source) else { return nil }
+        return try? decryptPayload(payload, keyString: keyString, ivString: ivString)
+    }
+
     static func isTrue(_ value: Any?) -> Bool {
         if let bool = value as? Bool { return bool }
         if let int = value as? Int { return int != 0 }

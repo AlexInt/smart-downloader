@@ -284,6 +284,8 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     private var apiCaptures: [String] = []
     /// 定向提取命中的 detail 响应（真机样本实证：明文 JSON 带 tags 数组）
     private var apiDetail: DramaDetailData?
+    /// 解码失败日志只打首条（带 bodyHead 判读明文/信封），避免其它 API 响应刷屏
+    private var decodeFailLogged = false
 
     private func begin(target: DramaTarget) {
         pendingTarget = target
@@ -328,17 +330,34 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         apiCaptures.append(raw)
         DramaMetaDump.write("[" + apiCaptures.joined(separator: ",\n") + "]",
                             name: "api_\(target.site)_\(target.dramaID).json")
-        // 定向提取：detail 响应明文带 tags（真机样本实证，Model 见 DramaDetailData）。
+        // 定向提取：detail 响应两种形态——明文 JSON 或 api.php 加密信封
+        // （errcode=0 + data base64，与 App 接口同协议，随包常量解密）。
         // 解码成功且剧 ID 命中即落库，不等轮询；其它 API 响应解码失败自然忽略。
         guard let cap = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
-              let body = cap["body"] as? String,
-              let detail = try? JSONDecoder().decode(DramaDetailData.self, from: Data(body.utf8)),
-              String(detail.videoId) == target.dramaID else { return }
+              let body = cap["body"] as? String else { return }
+        var via = "plain"
+        var detail = try? JSONDecoder().decode(DramaDetailData.self, from: Data(body.utf8))
+        if detail == nil, let json = DramaSession.decryptCapturedBody(body),
+           let data = try? JSONSerialization.data(withJSONObject: json) {
+            detail = try? JSONDecoder().decode(DramaDetailData.self, from: data)
+            via = "envelope"
+        }
+        guard let detail else {
+            if !decodeFailLogged {
+                decodeFailLogged = true
+                print("PLAYER_DBG [Entry] tags FAIL reason=decode url=\(cap["url"] ?? "?") bodyHead=\(body.prefix(120))")
+            }
+            return
+        }
+        guard String(detail.videoId) == target.dramaID else {
+            print("PLAYER_DBG [Entry] tags FAIL reason=videoIdMismatch detail=\(detail.videoId) target=\(target.dramaID)")
+            return
+        }
         apiDetail = detail
         if let tags = detail.tags, !tags.isEmpty {
             DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID,
                                     update: ["tags": tags.joined(separator: " "), "tags_source": "api"])
-            print("PLAYER_DBG [Entry] harvest tags source=api tags=\(tags.joined(separator: " "))")
+            print("PLAYER_DBG [Entry] harvest tags source=api via=\(via) tags=\(tags.joined(separator: " "))")
         } else {
             print("PLAYER_DBG [Entry] tags FAIL reason=apiNoTags videoId=\(detail.videoId)")
         }
