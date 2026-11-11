@@ -284,8 +284,6 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     private var apiCaptures: [String] = []
     /// 定向提取命中的 detail 响应（真机样本实证：明文 JSON 带 tags 数组）
     private var apiDetail: DramaDetailData?
-    /// 解码失败日志只打首条（带 bodyHead 判读明文/信封），避免其它 API 响应刷屏
-    private var decodeFailLogged = false
 
     private func begin(target: DramaTarget) {
         pendingTarget = target
@@ -343,9 +341,10 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
             via = "envelope"
         }
         guard let detail else {
-            if !decodeFailLogged {
-                decodeFailLogged = true
-                print("PLAYER_DBG [Entry] tags FAIL reason=decode url=\(cap["url"] ?? "?") bodyHead=\(body.prefix(120))")
+            // 候选体量（>200B）的解码失败都打：空 beacon/短响应是噪音不记；
+            // bodyHead 一眼判读 明文/信封/JS chunk/HTML（曾「只打首条」被空 beacon 占用，真失败被静默）
+            if body.count > 200 {
+                print("PLAYER_DBG [Entry] tags FAIL reason=decode url=\(cap["url"] ?? "?") bytes=\(body.count) bodyHead=\(body.prefix(120))")
             }
             return
         }
