@@ -70,7 +70,11 @@ final class PlayerFeedViewModel: ObservableObject {
         }
         playbackReady = playback.isReady
         print("PLAYER_DBG [CHECK] pageSettled done sort=\(sort) isLast=\(isLast(sort)) slots=\(slots.count) current=\(currentSort.map(String.init) ?? "nil") ready=\(playbackReady)")
-        if isLast(sort), !endToastShown {
+        if !slot.isAvailable {
+            // 待办 #4：滑到未下载集给引导提示（不改 resolve 语义：全剧集数可滑、胶囊 4/11 不变）。
+            // 占位卡已有内联提示，toast 补「去哪下载」的行动指引；优先于到底提示（更有信息量）
+            showToast("第\(sort)集尚未下载 · 回剧集页下载后可看")
+        } else if isLast(sort), !endToastShown {
             endToastShown = true
             showToast("已经到底了")
         }
