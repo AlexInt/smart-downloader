@@ -21,7 +21,10 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIImageName</key>
+		<string>LaunchScreen</string>
+	</dict>
 	<!-- 个人使用优先可用：允许任意 HTTP/HTTPS 加载 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

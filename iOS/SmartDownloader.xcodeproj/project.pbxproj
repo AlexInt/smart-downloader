@@ -6,8 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BE5C5DB630A466560058F183 /* LaunchSplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C5DB530A466560058F183 /* LaunchSplashView.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		7A0000000000000000000022 /* SmartDownloader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SmartDownloader.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE5C5DB530A466560058F183 /* LaunchSplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSplashView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -45,6 +50,7 @@
 		7A0000000000000000000020 = {
 			isa = PBXGroup;
 			children = (
+				BE5C5DB530A466560058F183 /* LaunchSplashView.swift */,
 				7A0000000000000000000010 /* SmartDownloader */,
 				7A0000000000000000000021 /* Products */,
 			);
@@ -131,6 +137,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BE5C5DB630A466560058F183 /* LaunchSplashView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

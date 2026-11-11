@@ -5,6 +5,8 @@ struct SmartDownloaderApp: App {
     @StateObject private var manager = DownloadManager()
     /// 启动默认落在「下载」tab（tag=1）；浏览页为 tag=0
     @State private var selectedTab = 1
+    /// 启动 splash：盖住冷启动（库扫描/本地服务预启），停留 1.2s 后淡出
+    @State private var showSplash = true
     /// 防止 onAppear 重复触发自动冒烟
     @MainActor private static var autoTestStarted = false
 
@@ -15,15 +17,27 @@ struct SmartDownloaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $selectedTab) {
-                BrowserView(manager: manager, selectedTab: $selectedTab)
-                    .tabItem { Label("浏览", systemImage: "safari.fill") }
-                    .tag(0)
-                DownloadsView(manager: manager)
-                    .tabItem { Label("下载", systemImage: "arrow.down.circle") }
-                    .tag(1)
+            ZStack {
+                TabView(selection: $selectedTab) {
+                    BrowserView(manager: manager, selectedTab: $selectedTab)
+                        .tabItem { Label("浏览", systemImage: "safari.fill") }
+                        .tag(0)
+                    DownloadsView(manager: manager)
+                        .tabItem { Label("下载", systemImage: "arrow.down.circle") }
+                        .tag(1)
+                }
+                // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App
+                if showSplash {
+                    LaunchSplashView()
+                        .transition(.opacity)
+                        .zIndex(1)
+                }
             }
             .onAppear { Self.runDeviceAutoTest(manager: manager) }
+            .task {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                withAnimation(.easeOut(duration: 0.45)) { showSplash = false }
+            }
         }
     }
 
