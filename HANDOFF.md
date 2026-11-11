@@ -26,6 +26,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 秒开三件套（相邻集预热池 + KVO 事件流就绪 + spinner 延迟显示） | ✅ 编译通过，**待用户真机体验确认** |
 | 播放页交互细节修复批（布局收紧/静音图标/点按分区/边缘返回/倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 清屏模式（隐藏界面信息只看画面，状态本地记住） | ✅ 编译通过，**待用户真机体验确认** |
+| 滑动误触 2x 修复（起 2x 移到 perform，落指不再闪倍速） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -57,6 +58,17 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 验证日志看点：拖动中只出 `LONGPRESS SKIP reason=seeking`（不再有拖动中的 `LONGPRESS began`）；按住 2x 漂移只出 `seek SKIP reason=fastForwarding`、无位置跳变、2x 不中断；2x 松手后若出 `TAP SKIP reason=justEndedLongPress` 即误触被吞；正常单击仍出 `TAP → togglePlayback`。
 
 已知观察（用户已拍板，2026-11-11 已改）：预热 HIT 后就绪仍需 642–1177ms（m3u8 已解析，剩首段拉取+解码），300ms spinner 延迟被普遍超过 → 每次滑动都闪转圈。已把延迟提至 **800ms**：HIT 路径（642–871ms）基本无感，真正慢的入口 MISS（~1.2s）仍会短暂显示。
+
+### 滑动误触 2x（2026-11-11 第三批，待真机验证）
+
+用户报告「清屏后滑动、翻页轻扫会闪一下 2x 倍速」。真机日志实证：**每次触摸落下都出 `LONGPRESS began → 2x`**（含所有纵向/横向快速滑动），`playbackTime` 跳变证明 2x 真实生效。
+
+- **根因**：`onLongPressGesture(pressing:)` 的 `pressing(true)` 在**触摸落下瞬间即回调**（先于任何位移判定），旧代码把「起 2x」放在这里，等于「落指即 2x」；`minimumDuration: 0.15` 只约束空的 `perform`，从未生效。快速滑动抬手虽早，但 2x 已起过、`pressing(false)` 又拨回 1x，形成一闪。
+- **修复**（`DramaPlayerView.swift`）：起 2x 移到 `perform`（按满 0.15s 才回调）——仍 guard `isSeekGestureActive`（拖动先起 → seek 独占不变）、置 `longPressOwnedTouch`、`beginFastForward()`。`pressing` 只做收尾：`!pressing` 时 `defer` 清 `longPressOwnedTouch`，仅真正起过 2x 的触摸才 `endFastForward()` + 设 250ms 吞误触窗；未起 2x 的触摸抬手不动作、不打日志。
+- **为什么快速滑动不再误触**：快速轻扫抬手早于 0.15s，`perform` 不触发；纵向滑动被分页 pan 提前取消（touchesCancelled），`perform` 也不触发。`maximumDistance: 10_000` 保留（2x 不靠位移掐断，第二批的漂移修复不回归）。
+- 残余已知边界（可接受）：带外慢速横向拖拽 >0.15s 仍可能起 2x；用户报告的误触均为快速轻扫，本修复覆盖。
+
+验证日志看点：快速滑动（翻页/清屏后轻扫）**不再出** `LONGPRESS began → 2x`；真长按按满 0.15s 出 `LONGPRESS began → 2x`、抬手出 `LONGPRESS ended → 1x`；带内拖动按满时仍出 `LONGPRESS SKIP reason=seeking`（seek 独占不变）。
 
 ### 交互细节修复批（同日第二批，待真机验证）
 

@@ -26,8 +26,8 @@ struct DramaPlayerView: View {
     /// 真机日志实证：短按 2x 快速松手会被同时认成长按结束和单击
     /// （LONGPRESS ended → TAP → togglePlayback → 误暂停）
     @State private var suppressTapUntil = Date.distantPast
-    /// 本次触摸是否由长按独占（未被 seek 抢占）：只有它才需要吞松手误触；
-    /// 被 seek 抢占的长按（拖动 >10pt）抬手本来就不可能再出单击
+    /// 本次触摸是否按满 0.15s 真正起过 2x（perform 里置位）：只有它才需要在
+    /// 抬手时吞松手误触；未起 2x 的触摸（快速滑动/普通点按）抬手不动作
     @State private var longPressOwnedTouch = false
     private var timeText: String {
         playback.isReady ? playback.currentTimeText : (episode.previewCurrentTime ?? "00:00")
@@ -105,12 +105,14 @@ struct DramaPlayerView: View {
         .background(DWColor.background.ignoresSafeArea())
         // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
         // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）。
-        // 长按 2x 与水平 seek 的冲突仲裁 = 「先起者独占本次触摸」（真机日志实证三类冲突）：
-        //   ① 拖动先起 → seek 独占：拖动中长按被识别也不得起 2x（pressing 查 isSeekGestureActive）
+        // 长按 2x 与水平 seek 的冲突仲裁 = 「先起者独占本次触摸」（真机日志实证）：
+        //   ① 拖动先起 → seek 独占：拖动中长按被识别也不得起 2x（perform 起手前查 isSeekGestureActive）
         //   ② 长按先起 → 2x 独占：2x 期间 seek 全跳过（VM.seek guard isFastForwarding）；
         //      maximumDistance 放开到 10_000 —— 2x 不靠位移距离掐断（原 40pt：按住 2x
         //      手一漂就掉回 1x），漂移中的误 seek 由 ①② 闸门挡住
         //   ③ 短按 2x 快速松手 → 同一次抬手还会被认成单击，误暂停（250ms 抑制窗吞掉）
+        //   ④ 2x 只能在 perform（按满 0.15s）里起，勿放 pressing(true)：pressing 在触摸
+        //      落下瞬间即回调（先于任何位移判定），放那里每次快速滑动都误触 2x（2026-11-11 修）
         .contentShape(Rectangle())
         .onTapGesture {
             if Date() < suppressTapUntil {
@@ -121,23 +123,27 @@ struct DramaPlayerView: View {
             playback.togglePlayback()
         }
         .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 10_000, pressing: { pressing in
-            if pressing {
-                guard !playback.isSeekGestureActive else {
-                    print("PLAYER_DBG [CHECK] LONGPRESS SKIP reason=seeking")
-                    return
-                }
-                longPressOwnedTouch = true
-                print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
-                playback.beginFastForward()
-            } else {
-                print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
-                playback.endFastForward()
-                if longPressOwnedTouch {
-                    suppressTapUntil = Date().addingTimeInterval(0.25)
-                }
-                longPressOwnedTouch = false
+            // pressing 只做收尾；起 2x 在 perform（按满 0.15s 才回调）。
+            // pressing(true) 在触摸落下瞬间即回调，曾把起 2x 放在这里，
+            // 导致所有快速滑动（含纵向翻页）都被误判成长按 → 闪 2x。
+            guard !pressing else { return }
+            defer { longPressOwnedTouch = false }
+            // 未起过 2x 的触摸（快速滑动/点按被取消）抬手不动作、不打日志
+            guard longPressOwnedTouch else { return }
+            print("PLAYER_DBG [CHECK] LONGPRESS ended → 1x")
+            playback.endFastForward()
+            suppressTapUntil = Date().addingTimeInterval(0.25)
+        }, perform: {
+            // 起手：按满 0.15s 才走到这里 —— 快速滑动（抬手早于 0.15s、或被
+            // 纵向分页 pan 提前取消 touchesCancelled）根本进不来
+            guard !playback.isSeekGestureActive else {
+                print("PLAYER_DBG [CHECK] LONGPRESS SKIP reason=seeking")
+                return
             }
-        }, perform: {})
+            longPressOwnedTouch = true
+            print("PLAYER_DBG [CHECK] LONGPRESS began → 2x")
+            playback.beginFastForward()
+        })
     }
 
     /// 设计稿节点，坐标一律来自设计文件，勿凭目测调整。
