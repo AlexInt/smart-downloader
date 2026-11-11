@@ -123,19 +123,6 @@ struct DramaPlayerView: View {
             // ── 界面信息组：清屏模式下整体淡出，只留纯画面 ────────────
             if !playback.isCleanScreen {
                 Group {
-                    // 顶部集数胶囊
-                    RoundedRectangle(cornerRadius: DWRadius.chip)
-                        .fill(.black.opacity(0.45))
-                        .designFrame(125, 50, 140, 26)
-                        .allowsHitTesting(false)
-
-                    Text(episode.episodeLabel)
-                        .font(DWFont.cn(12, .medium))
-                        .foregroundStyle(DWColor.textPrimary)
-                        .multilineTextAlignment(.center)
-                        .designFrame(125, 55, 140, 16)
-                        .allowsHitTesting(false)
-
                     // 剧集字幕（本地 HLS 无字幕轨时整块隐藏）
                     if let lines = episode.subtitleLines {
                         RoundedRectangle(cornerRadius: DWRadius.subtitle)
@@ -290,6 +277,20 @@ struct DramaPlayerView: View {
             }
 
             // ── 常驻控件：清屏模式下保留 ──────────────────────────────
+
+            // 集数胶囊：紧凑「4/11」常驻，清屏不隐藏（始终知道看到哪一集）。
+            // 56 宽水平居中（(390-56)/2=167），顶栏四元素（返回/胶囊/清屏/静音）不拥挤
+            RoundedRectangle(cornerRadius: DWRadius.chip)
+                .fill(.black.opacity(0.45))
+                .designFrame(167, 50, 56, 26)
+                .allowsHitTesting(false)
+
+            Text(episode.compactEpisodeLabel)
+                .font(DWFont.en(12, .medium))
+                .foregroundStyle(DWColor.textPrimary)
+                .multilineTextAlignment(.center)
+                .designFrame(167, 55, 56, 16)
+                .allowsHitTesting(false)
 
             // 静音（状态本地记住）
             Button { playback.isMuted.toggle() } label: {

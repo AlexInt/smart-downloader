@@ -16,8 +16,10 @@ struct DramaEpisode {
     let episodeIndex: Int
     let episodeTotal: Int
 
-    var episodeLabel: String {
-        "第 \(episodeIndex) 集 / 共 \(episodeTotal) 集"
+    /// 集数胶囊文案：紧凑数字格式（如 "4/11"）。正常/清屏模式统一使用，
+    /// 清屏不隐藏胶囊（始终知道看到哪一集）。
+    var compactEpisodeLabel: String {
+        "\(episodeIndex)/\(episodeTotal)"
     }
 
     // 静态稿面值：仅供 #Preview，真实播放一律以 ViewModel 为准
