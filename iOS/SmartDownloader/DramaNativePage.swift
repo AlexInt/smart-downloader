@@ -1,10 +1,10 @@
 import SwiftUI
 import WebKit
 
-/// 原生剧集页（纯原生，无网页）：点击剧集路由过来，
-/// 头部 = 封面/剧名/简介（缓存 + 后台收割），下方全集 grid：未下载点选下载、已下载 ▶ 播放；
-/// 元数据缺失时后台用一次性隐藏 webview 拉网页提取（落库后头部即时更新），右上角 ↻ 强制更新集数。
-/// MVVM（架构评估 P8）：业务状态与编排全部在 DramaPageViewModel，本文件只渲染 + 转发意图。
+/// 原生剧集页入口（纯原生，无网页）：点击剧集路由过来后交给 DramaDetailView 渲染。
+/// 本文件只做依赖组装与生命周期编排；屏内视觉在 DramaDetailView.swift，
+/// 业务状态与编排在 DramaPageViewModel.swift，元数据收割器保留在本文件下半部分。
+/// MVVM（架构评估 P8）：View → ViewModel → Service，单向依赖。
 struct DramaNativePage: View {
     @ObservedObject var manager: DownloadManager
     @StateObject private var vm: DramaPageViewModel
@@ -15,185 +15,15 @@ struct DramaNativePage: View {
     }
 
     var body: some View {
-        Group {
-            if vm.loading {
-                ProgressView("正在获取剧集列表…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let loadError = vm.loadError {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text(loadError)
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                    Button("重试") { vm.reload() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let info = vm.info {
-                pageContent(info)
+        DramaDetailView(vm: vm)
+            .fullScreenCover(item: $vm.playbackRequest) { request in
+                DramaPlayerContainer(request: request, onClose: { vm.playbackRequest = nil })
             }
-        }
-        .navigationTitle(vm.info?.name ?? "剧集页")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .fullScreenCover(item: $vm.playbackRequest) { request in
-            DramaPlayerContainer(request: request, onClose: { vm.playbackRequest = nil })
-        }
-        .task(id: vm.reloadID) { await vm.load() }
-        .onAppear { vm.preloadHeaderFromCache() }
-        .onReceive(manager.objectWillChange) { _ in vm.refreshDownloadedSorts() }
+            .task(id: vm.reloadID) { await vm.load() }
+            .onAppear { vm.preloadHeaderFromCache() }
+            .onReceive(manager.objectWillChange) { _ in vm.refreshDownloadedSorts() }
     }
 
-    private func pageContent(_ info: DramaInfo) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 10) {
-                    if let coverURL = vm.coverURL {
-                        AsyncImage(url: coverURL) { img in
-                            img.resizable().scaledToFill()
-                        } placeholder: {
-                            Color(uiColor: .systemGray5)
-                        }
-                        .frame(width: 90, height: 120)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(info.name).font(.headline).lineLimit(2)
-                        Text(vm.headerSubtitle)
-                            .font(.caption).foregroundColor(.secondary)
-                        if let tags = vm.tags, !tags.isEmpty {
-                            Text(tags).font(.caption).foregroundColor(.secondary)
-                        }
-                        if let intro = vm.intro {
-                            Text(intro).font(.caption).foregroundColor(.secondary).lineLimit(4)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal)
-
-                HStack {
-                    Spacer()
-                    Button("全选") { vm.selectAll() }
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .disabled(vm.selectableEpisodes.isEmpty)
-                    Button("清空") { vm.clearSelection() }
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .disabled(vm.selected.isEmpty)
-                    Button {
-                        Task { await vm.refresh() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-                }
-                .padding(.horizontal)
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
-                    ForEach(info.episodes) { ep in
-                        episodeCell(ep)
-                    }
-                }
-                .padding(.horizontal)
-            }
-            .padding(.vertical, 8)
-        }
-        .safeAreaInset(edge: .bottom) {
-            Button { vm.startDownload() } label: {
-                if vm.selected.isEmpty && vm.selectableEpisodes.isEmpty {
-                    Label(vm.queuedSorts.isEmpty ? "全部已下载" : "已全部加入队列",
-                          systemImage: "checkmark.circle")
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Label("下载所选 (\(vm.selected.count))", systemImage: "arrow.down.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(vm.selected.isEmpty)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(.bar)
-        }
-    }
-
-    /// 单元格状态：已下载 = 绿勾 ▶（点击播放）；排队中 = 灰显 ↓（禁点）；付费锁定 = 灰锁（禁点）；
-    /// 选中 = 高亮；其余可点选。排队态优先于选中态，避免残留选择显示成可再次提交
-    private func episodeCell(_ ep: ApiDramaEpisode) -> some View {
-        let isSelected = vm.selected.contains(ep.id)
-        let isDownloaded = vm.downloadedSorts.contains(ep.sort)
-        let isQueued = vm.queuedSorts.contains(ep.sort)
-        return Button {
-            vm.tapEpisode(ep)
-        } label: {
-            Group {
-                if isDownloaded {
-                    HStack(spacing: 3) {
-                        Image(systemName: "play.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                        Text(String(format: "第%02d集", ep.sort))
-                            .font(.system(.caption, design: .monospaced).weight(.semibold))
-                    }
-                } else if isQueued {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "第%02d集", ep.sort))
-                            .font(.system(.caption, design: .monospaced).weight(.semibold))
-                    }
-                } else {
-                    Text(String(format: "第%02d集", ep.sort))
-                        .font(.system(.caption, design: .monospaced).weight(.semibold))
-                }
-            }
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background(isQueued
-                ? Color(uiColor: .systemGray6)
-                : cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-            .foregroundStyle(isQueued
-                ? Color(uiColor: .tertiaryLabel)
-                : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-            .overlay(alignment: .topTrailing) {
-                if isDownloaded {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                        .offset(x: 5, y: -5)
-                } else if isQueued {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .offset(x: 5, y: -5)
-                } else if !ep.playable {
-                    Image(systemName: "lock.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .offset(x: 5, y: -5)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .disabled(!ep.playable || isQueued)
-    }
-
-    private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
-        if isSelected { return .accentColor }
-        if isDownloaded { return .green.opacity(0.12) }
-        return playable ? Color(uiColor: .systemGray5) : Color(uiColor: .systemGray6)
-    }
-
-    private func cellForeground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
-        if isSelected { return .white }
-        if isDownloaded { return .primary }
-        return playable ? .primary : Color(uiColor: .tertiaryLabel)
-    }
 }
 
 // MARK: - 元数据收割器 + 提取 JS

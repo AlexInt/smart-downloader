@@ -33,6 +33,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 清屏快滑仍闪 2x 修复（seekPan 全域起手 + .began 即翻转仲裁闸门） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 | 启动页（系统渐变 launch screen + SwiftUI splash logo 呼吸 1.2s 淡出） | ✅ 编译通过，**待用户真机体验确认** |
 | splash 不拦截触摸 + PERF_DBG 卡顿探针（-perfLog：tabSwitch 时间戳 + 主线程 >250ms 停顿） | ✅ 编译通过，**待真机复测 tab 切换卡** |
+| 剧集详情页设计稿落地（390×840 三态 / 简介展开 / 封面失败重试 / 单选 CTA / 查看全部下载面板） | ✅ 编译通过，**待用户真机体验确认**（见下） |
 
 ### 秒开优化（本次刚做，未验证细节）
 
@@ -165,6 +166,23 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证看点：进剧集页出 `harvest tags source=api tags=反差 人妻 都市 大女主`（样本剧），头部与播放卡 tags 行显示同一串；无 detail 响应时 finish 打 `tags FAIL reason=noDetailResponse`。待真机回归。
 
+### 剧集详情页设计稿落地（feat/drama-detail-page，待真机回归）
+
+设计源：`drama-detail.html`「DramaWave · 剧集详情页三态对照原型」，屏内 390×840 固定坐标。与播放页同为一套 Design System，颜色/字体/画幅/`designFrame` 直接复用 `player/DesignTokens.swift`，只在该文件补了详情页专用色（海报三色渐变、CTA 末端 #FF8A5B、占位色、tag/divider 透明度）。
+
+| 文件 | 变更 |
+|---|---|
+| `DramaDetailView.swift` | 新增：屏内全部视觉 + 三态 + 交互转发；旧版 ScrollView 头部/全量 grid 删除 |
+| `DramaNativePage.swift` | 瘦身为入口薄壳（依赖组装 / fullScreenCover / task / onAppear / onReceive），下半部分收割器、JS、Dump 原样保留 |
+| `DramaPageViewModel.swift` | 新增 `selectedSort`（单选）、`isDescriptionExpanded`、`isFavorite`、`showAllEpisodes`、`toastText`、`coverReloadToken` 及派生串 `tagChips` / `hintText` / `ctaTitle`；`ensureSelection` 在库状态对账后落位默认集 |
+| `player/DesignTokens.swift` | `DWColor` 补详情页 8 个色值 |
+
+视觉还原：海报层（渐变 + 真实封面）/ 光晕 / 上下 scrim → 返回·收藏（视觉盒 32×32、命中区 44×44）→ 标题 24px + 3 个标签胶囊 → 简介（折叠两行 + 右端渐隐 + 「… 展开」/「收起」）→ 选集区（6×2 共 12 格，选中态 #FF5A5F）→ 固定分隔线 y758 与 CTA y772。展开只由 `--desc-shift` 54pt 驱动「简介容器高度」与「内容组 offset」，0.32s cubic-bezier(.2,.8,.2,1)，reduced-motion 归零。封面三态由 `AsyncImage` phase 驱动：loading（spinner + 文案）/ failed（图标 + 点击重试）/ ok（占位组隐藏）；重试有 URL 时换 `coverReloadToken` 让 AsyncImage 换 id 重建，无 URL 时清 `harvestedKeys` 重新收割元数据。
+
+产品化取舍（设计稿是视觉原型，功能规范由本项目补齐）：格子改为 **radio 单选**（点格子只选中，不直接下载/播放），底部 CTA 按真实状态显示「播放第 N 集 / 下载第 N 集 / 第 N 集下载中 / 第 N 集暂不可看」并分别触发播放或单集入队；全选 / 清空 / 下载所选 / ↻ 刷新收进「查看全部 ›」sheet，下载能力不丢。收藏按 `site#dramaID` 存本地（与播放页 `PlayerPreferences` 分开）。hint 与 CTA 文案一律用真实数据（不编「每集约 2 分钟」），无 tags 时不渲染胶囊、绝不造假标签；已下载集在格子右上角加 5pt 绿点、锁定集降透明度。
+
+验证：`swiftc -typecheck -disable-sandbox -D DEBUG -target x86_64-apple-ios26.5-simulator`（全部 29 个 Swift 文件，含 `iOS/LaunchSplashView.swift`）0 错误；`xcodebuild` 两次均被沙箱拦（`sandbox_apply` / 宏插件 `PreviewsMacros` 加载失败），属环境限制非代码错误。**待真机回归**：三态切换、封面失败重试、展开动画手感、CTA 四种状态、查看全部下载面板、返回/收藏。
+
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
 依赖方向：**View → ViewModel → Service → 系统/Model**，单向不可反向；组装根只做 DI。
@@ -224,6 +242,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
+| 8 | **剧集详情页设计稿真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏，清单见 §2 末节 | 高（验证） |
 
 ## 6. 验证与调试
 

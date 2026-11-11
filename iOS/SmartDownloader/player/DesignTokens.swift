@@ -45,6 +45,16 @@ enum DWColor {
     // 头像渐变
     static let avatarTop    = Color(hex: "#7C3AED")
     static let avatarBottom = Color(hex: "#DB2777")
+
+    // 剧集详情页（drama-detail.html，390×840）专用色，屏内取值与播放页同一套设计系统
+    static let posterTop       = Color(hex: "#2A1240")
+    static let posterMid       = Color(hex: "#6B2154")
+    static let posterBottom    = Color(hex: "#100A1A")
+    static let ctaEnd          = Color(hex: "#FF8A5B")
+    static let coverPlaceholder = Color(hex: "#1A1A22")
+    static let placeholderIcon = Color(hex: "#5A5A68")
+    static let tagFill         = Color.white.opacity(0.16)
+    static let divider         = Color.white.opacity(0.08)
 }
 
 enum DWFont {

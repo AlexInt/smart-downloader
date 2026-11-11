@@ -31,9 +31,24 @@ final class DramaPageViewModel: ObservableObject {
     /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
     @Published var playbackRequest: ImmersivePlaybackRequest?
 
+    // MARK: 剧集详情页（390×840 设计稿）交互状态
+
+    /// 单选集（设计稿 radiogroup 语义）：点格子只改选中态，播放/下载统一由底部 CTA 触发
+    @Published private(set) var selectedSort: Int?
+    @Published var isDescriptionExpanded = false
+    @Published private(set) var isFavorite = false
+    /// 「查看全部 ›」展开的全量选集面板（保留多选下载 / 刷新能力）
+    @Published var showAllEpisodes = false
+    @Published private(set) var toastText: String?
+    private var toastTask: Task<Void, Never>?
+    /// 封面重试令牌：换值让 AsyncImage 换 id 重建，重新发起一次图片请求
+    @Published private(set) var coverReloadToken = 0
+
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
         self.manager = manager
+        // 剧集收藏与播放页偏好分开存，避免污染 PlayerPreferences（它是播放页单向偏好服务）
+        isFavorite = UserDefaults.standard.bool(forKey: Self.favoriteKey(for: target))
     }
 
     // MARK: - 派生状态
@@ -65,7 +80,93 @@ final class DramaPageViewModel: ObservableObject {
         return text
     }
 
-    // MARK: - 用户意图
+    /// 设计稿 3 个标签胶囊。tags 是 API/DOM 提取的空格分隔串；无数据返回空数组（不造假标签）
+    var tagChips: [String] {
+        guard let tags, !tags.isEmpty else { return [] }
+        return Array(tags.split(separator: " ").map(String.init).prefix(3))
+    }
+
+    var episodeCountText: String { "共 \(info?.episodes.count ?? 0) 集" }
+
+    /// 设计稿 hint 位：保留排版，文案改用真实数据（不编「每集约 2 分钟」这类无来源文案）
+    var hintText: String {
+        var parts = ["共 \(info?.episodes.count ?? 0) 集"]
+        if let status = info?.updateStatus, !status.isEmpty { parts.append(status) }
+        if !downloadedSorts.isEmpty { parts.append("已下载 \(downloadedSorts.count) 集") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// CTA 文案随选中集的真实状态变化：已下载可播、未下载可下、排队中/锁定如实告知
+    var ctaTitle: String {
+        guard let sort = selectedSort else { return "请选择剧集" }
+        if downloadedSorts.contains(sort) { return "播放第 \(sort) 集" }
+        if queuedSorts.contains(sort) { return "第 \(sort) 集下载中" }
+        if let ep = info?.episodes.first(where: { $0.sort == sort }), !ep.playable {
+            return "第 \(sort) 集暂不可看"
+        }
+        return "下载第 \(sort) 集"
+    }
+
+    // MARK: - 用户意图（剧集详情页）
+
+    /// 格子单选：只改选中态，不触发下载/播放（设计稿 radiogroup 语义）
+    func select(sort: Int) { selectedSort = sort }
+
+    func toggleDescription() { isDescriptionExpanded.toggle() }
+
+    func toggleFavorite() {
+        isFavorite.toggle()
+        UserDefaults.standard.set(isFavorite, forKey: Self.favoriteKey(for: target))
+        showToast(isFavorite ? "已加入收藏" : "已取消收藏")
+    }
+
+    /// 底部 CTA：已下载则播放，未下载且可播则把该集加入下载队列，其余状态如实提示
+    func playSelected() {
+        guard let info, let sort = selectedSort,
+              let ep = info.episodes.first(where: { $0.sort == sort }) else {
+            showToast("请先选择剧集")
+            return
+        }
+        if downloadedSorts.contains(sort) {
+            makePlaybackRequest(for: ep)
+        } else if queuedSorts.contains(sort) {
+            showToast("第 \(sort) 集已在下载队列")
+        } else if !ep.playable {
+            showToast("第 \(sort) 集暂不可看")
+        } else {
+            selected = [ep.id]
+            startDownload()
+            showToast("已加入下载队列：第 \(sort) 集")
+        }
+    }
+
+    /// 封面占位「点击重试」：有 URL 时换 token 让 AsyncImage 重建；
+    /// 连 URL 都没有时清掉进程内去重，重新收割元数据再回填头部
+    func retryCover() {
+        guard coverURL != nil else {
+            DramaMetaHarvester.harvestedKeys.remove(target.id)
+            Task {
+                await DramaMetaHarvester.harvest(target: target)
+                preloadHeaderFromCache()
+            }
+            return
+        }
+        coverReloadToken += 1
+    }
+
+    func showToast(_ text: String) {
+        toastTask?.cancel()
+        toastText = text
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled else { return }
+            self?.toastText = nil
+        }
+    }
+
+    private static func favoriteKey(for target: DramaTarget) -> String {
+        "DramaDetail.favorite.\(target.id)"
+    }
 
     /// 重试按钮：换 reload 版本号触发 .task(id:) 重新加载
     func reload() { reloadID = UUID() }
@@ -179,6 +280,15 @@ final class DramaPageViewModel: ObservableObject {
         let folders = manager.downloadedEpisodeFolders(forSeries: info.name)
         downloadedSorts = Set(folders.keys)
         DramaCache.reconcileDownloaded(site: target.site, dramaID: target.dramaID, folders: folders)
+        ensureSelection(for: info)
+    }
+
+    /// 详情页默认选中集：优先第一个已下载（可直接播），否则第一集。刷新换集后若旧选中集
+    /// 已不在列表里也重新落位。无「上次观看」数据源，不编造续播集号。
+    private func ensureSelection(for info: DramaInfo) {
+        if let sort = selectedSort, info.episodes.contains(where: { $0.sort == sort }) { return }
+        selectedSort = info.episodes.first { downloadedSorts.contains($0.sort) }?.sort
+            ?? info.episodes.first?.sort
     }
 
     /// 头部缺封面/简介/标签时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）。
