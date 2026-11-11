@@ -22,6 +22,9 @@ enum DramaCache {
         var intro: String?
         /// 话题标签（DOM 收割，空格分隔；P7）
         var tags: String?
+        /// tags 来源（page_meta.tags_source）：api = 请求拦截定向提取；
+        /// nil = 旧缓存（锚点法时代），harvestIfNeeded 视为缺失自动补采一次
+        var tagsSource: String? = nil
         var episodes: [ApiDramaEpisode]  // 按 sort 升序，含 downloaded/folder
         var fetchedAt: String?
     }
@@ -130,12 +133,13 @@ enum DramaCache {
     static func load(site: String, dramaID: String) -> Entry? {
         guard let db = openDB() else { return nil }
         defer { sqlite3_close(db) }
-        let infoSQL = "SELECT name, update_status, cover, intro, tags, fetched_at FROM drama_cache WHERE site=? AND drama_id=?;"
+        let infoSQL = "SELECT name, update_status, cover, intro, tags, fetched_at, page_meta FROM drama_cache WHERE site=? AND drama_id=?;"
         let epSQL = """
         SELECT episode_id, sort, playable, downloaded, folder
         FROM drama_episodes WHERE site=? AND drama_id=? ORDER BY sort;
         """
         var name: String?, status: String?, cover: String?, intro: String?, tags: String?, fetchedAt: String?
+        var tagsSource: String?
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, infoSQL, -1, &stmt, nil) == SQLITE_OK else {
@@ -146,6 +150,10 @@ enum DramaCache {
         if sqlite3_step(stmt) == SQLITE_ROW {
             name = text(stmt, 0); status = text(stmt, 1); cover = text(stmt, 2)
             intro = text(stmt, 3); tags = text(stmt, 4); fetchedAt = text(stmt, 5)
+            if let raw = text(stmt, 6),
+               let meta = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] {
+                tagsSource = meta["tags_source"] as? String
+            }
         } else {
             sqlite3_finalize(stmt)
             return nil  // 剧不存在 → 视为无缓存
@@ -169,7 +177,7 @@ enum DramaCache {
         }
         sqlite3_finalize(stmt)
         return Entry(name: name, updateStatus: status, cover: cover, intro: intro, tags: tags,
-                     episodes: episodes, fetchedAt: fetchedAt)
+                     tagsSource: tagsSource, episodes: episodes, fetchedAt: fetchedAt)
     }
 
     // MARK: 写 —— 剧集信息 + 集数列表（合并式 upsert，保留下载状态）

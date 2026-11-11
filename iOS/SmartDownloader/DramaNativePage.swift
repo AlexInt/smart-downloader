@@ -337,7 +337,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         apiDetail = detail
         if let tags = detail.tags, !tags.isEmpty {
             DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID,
-                                    update: ["tags": tags.joined(separator: " ")])
+                                    update: ["tags": tags.joined(separator: " "), "tags_source": "api"])
             print("PLAYER_DBG [Entry] harvest tags source=api tags=\(tags.joined(separator: " "))")
         } else {
             print("PLAYER_DBG [Entry] tags FAIL reason=apiNoTags videoId=\(detail.videoId)")
@@ -418,6 +418,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
                 if let tags = self.apiDetail?.tags, !tags.isEmpty {
                     update["tags"] = tags.joined(separator: " ")
+                    update["tags_source"] = "api"
                 }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
