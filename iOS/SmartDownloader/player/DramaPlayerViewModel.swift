@@ -138,6 +138,10 @@ final class DramaPlayerViewModel: ObservableObject {
     func togglePlayback() {
         let wasPlaying = player.timeControlStatus == .playing
         print("PLAYER_DBG [Playback] togglePlayback wasPlaying=\(wasPlaying) → \(wasPlaying ? "pause" : "play")")
+        // 点按（暂停/播放）也展示进度 HUD，3s 无其他操作后淡出（用户指定，清屏下尤其需要）。
+        // 放 early return 之前，暂停/播放两条路径都触发；其他操作（seek/再点按/切集）会重置或清掉它
+        showScrubHud(reason: "tap")
+        scheduleScrubLinger(ms: 3000)
         if wasPlaying {
             player.pause()
             return

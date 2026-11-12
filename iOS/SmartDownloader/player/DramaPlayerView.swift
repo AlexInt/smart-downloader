@@ -41,7 +41,7 @@ struct DramaPlayerView: View {
     private var progressValue: CGFloat {
         CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
     }
-    /// 进度 HUD 可见性：非清屏常驻；清屏下仅 seek 进行中（含松手 800ms 停留）显示。
+    /// 进度 HUD 可见性：非清屏常驻；清屏下 seek 进行中（含松手 800ms 停留）或点按后 3s 内显示。
     /// isActive 参与判定：isScrubbing 是当前集的共享状态，邻卡不跟着闪 HUD
     private var isProgressVisible: Bool {
         isActive && (!playback.isCleanScreen || playback.isScrubbing)
@@ -456,7 +456,7 @@ struct DramaPlayerView: View {
     }
 
     /// 进度条 + 时间：从「界面信息组」拆出的独立 HUD——清屏下其余界面信息全隐，
-    /// 唯它随 seek 瞬态出现（进度跟随手指），抬手 800ms 后淡出。
+    /// 唯它瞬态出现：seek 拖动时进度跟随手指（抬手 800ms 淡出），点按暂停/播放也展示（3s 无操作淡出）。
     @ViewBuilder
     private var progressHud: some View {
         // 播放进度：宽度 350，左右边距对称（各 20）
