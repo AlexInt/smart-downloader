@@ -7,7 +7,7 @@ import Foundation
 
 @main
 struct VideoCLI {
-    static func main() async {
+    static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count > 1,
               let target = parseDramaURL(arguments[1]) else {
@@ -28,7 +28,7 @@ struct VideoCLI {
         // 登录（失败降级游客）
         var token = ""
         do {
-            let response = try await apiPost(site: target.site, path: "api/account/login", token: "",
+            let response = try apiPost(site: target.site, path: "api/account/login", token: "",
                                             extra: ["username": username, "password": password],
                                             keyString: keyString, ivString: ivString)
             if let data = response["data"] as? [String: Any], let t = data["token"] as? String {
@@ -43,7 +43,7 @@ struct VideoCLI {
 
         // 剧集数据
         do {
-            let decrypted = try await apiPost(site: target.site, path: "api/playlet/play", token: token,
+            let decrypted = try apiPost(site: target.site, path: "api/playlet/play", token: token,
                                               extra: ["playlet_id": target.dramaID, "video_id": target.dramaID, "episode_id": "0"],
                                               keyString: keyString, ivString: ivString)
             guard let data = decrypted["data"] as? [String: Any],
@@ -105,8 +105,31 @@ struct VideoCLI {
         }
     }
 
+    /// URLSession 同步桥（CLI 冒烟用）：completion 在 URLSession 自有队列回调，
+    /// 主线程信号量等待不会死锁；35s 超时兜底
+    static func httpData(for request: URLRequest, session: URLSession) throws -> (Data, URLResponse) {
+        let semaphore = DispatchSemaphore(value: 0)
+        var outcome: Result<(Data, URLResponse), Error>?
+        let task = session.dataTask(with: request) { data, response, error in
+            if let error {
+                outcome = .failure(error)
+            } else if let data, let response {
+                outcome = .success((data, response))
+            } else {
+                outcome = .failure(URLError(.unknown))
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 35) == .success, let result = outcome else {
+            task.cancel()
+            throw URLError(.timedOut)
+        }
+        return try result.get()
+    }
+
     static func apiPost(site: String, path: String, token: String, extra: [String: String],
-                        keyString: String, ivString: String) async throws -> [String: Any] {
+                        keyString: String, ivString: String) throws -> [String: Any] {
         var form = URLComponents()
         var items: [URLQueryItem] = [
             .init(name: "bundleId", value: "com.pwa.mater"),
@@ -135,7 +158,7 @@ struct VideoCLI {
             request.setValue(value, forHTTPHeaderField: field)
         }
         let session = URLSession(configuration: .ephemeral, delegate: TrustAll(), delegateQueue: nil)
-        let (data, _) = try await session.data(for: request)
+        let (data, _) = try httpData(for: request, session: session)
 
         guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               (envelope["errcode"] as? Int) == 0 else {

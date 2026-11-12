@@ -6,7 +6,7 @@ import Foundation
 
 @main
 struct DumpDrama {
-    static func main() async {
+    static func main() {
         let arguments = CommandLine.arguments
         guard arguments.count > 1,
               let target = parseDramaURL(arguments[1]) else {
@@ -25,7 +25,7 @@ struct DumpDrama {
         }
 
         var token = ""
-        if let response = try? await apiPost(site: target.site, path: "api/account/login", token: "",
+        if let response = try? apiPost(site: target.site, path: "api/account/login", token: "",
                                              extra: ["username": username, "password": password],
                                              keyString: keyString, ivString: ivString),
            let data = response["data"] as? [String: Any], let t = data["token"] as? String {
@@ -36,7 +36,7 @@ struct DumpDrama {
         }
 
         do {
-            let decrypted = try await apiPost(site: target.site, path: "api/playlet/play", token: token,
+            let decrypted = try apiPost(site: target.site, path: "api/playlet/play", token: token,
                                               extra: ["playlet_id": target.dramaID, "video_id": target.dramaID, "episode_id": "0"],
                                               keyString: keyString, ivString: ivString)
             let json = try JSONSerialization.data(withJSONObject: decrypted, options: [.prettyPrinted, .sortedKeys])
@@ -51,8 +51,8 @@ struct DumpDrama {
             print("API FAIL: \(error.localizedDescription)")
         }
 
-        await dumpHTML(url: "\(target.site)/drama/detail/\(target.dramaID)/", label: "剧集页")
-        await dumpHTML(url: "\(target.site)/", label: "首页")
+        dumpHTML(url: "\(target.site)/drama/detail/\(target.dramaID)/", label: "剧集页")
+        dumpHTML(url: "\(target.site)/", label: "首页")
     }
 
     // MARK: - HTML 检查
@@ -65,7 +65,7 @@ struct DumpDrama {
             .compactMap { m in m.range(at: 1).location != NSNotFound ? ns.substring(with: m.range(at: 1)) : nil }
     }
 
-    static func dumpHTML(url: String, label: String) async {
+    static func dumpHTML(url: String, label: String) {
         guard let u = URL(string: url) else { return }
         var request = URLRequest(url: u)
         for (field, value) in DownloadEngine.browserHeaders {
@@ -75,7 +75,7 @@ struct DumpDrama {
                                  delegate: DownloadEngine.TrustAllSessionDelegate(),
                                  delegateQueue: nil)
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try httpData(for: request, session: session)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let html = String(data: data, encoding: .utf8) ?? ""
             print("\n===== HTML[\(label)] status=\(status) len=\(html.count) =====")
@@ -110,8 +110,31 @@ struct DumpDrama {
 
     // MARK: - HTTP / AES（与 videocli 同逻辑）
 
+    /// URLSession 同步桥（CLI 冒烟用）：completion 在 URLSession 自有队列回调，
+    /// 主线程信号量等待不会死锁；35s 超时兜底
+    static func httpData(for request: URLRequest, session: URLSession) throws -> (Data, URLResponse) {
+        let semaphore = DispatchSemaphore(value: 0)
+        var outcome: Result<(Data, URLResponse), Error>?
+        let task = session.dataTask(with: request) { data, response, error in
+            if let error {
+                outcome = .failure(error)
+            } else if let data, let response {
+                outcome = .success((data, response))
+            } else {
+                outcome = .failure(URLError(.unknown))
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 35) == .success, let result = outcome else {
+            task.cancel()
+            throw URLError(.timedOut)
+        }
+        return try result.get()
+    }
+
     static func apiPost(site: String, path: String, token: String, extra: [String: String],
-                        keyString: String, ivString: String) async throws -> [String: Any] {
+                        keyString: String, ivString: String) throws -> [String: Any] {
         var form = URLComponents()
         var items: [URLQueryItem] = [
             .init(name: "bundleId", value: "com.pwa.mater"),
@@ -141,7 +164,7 @@ struct DumpDrama {
         let session = URLSession(configuration: .ephemeral,
                                  delegate: DownloadEngine.TrustAllSessionDelegate(),
                                  delegateQueue: nil)
-        let (data, _) = try await session.data(for: request)
+        let (data, _) = try httpData(for: request, session: session)
 
         guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               (envelope["errcode"] as? Int) == 0 else {

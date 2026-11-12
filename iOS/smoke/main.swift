@@ -1,8 +1,8 @@
 // 下载核心冒烟测试（仅 macOS 运行，不属于 App 产物）
 // 用法: SMARTDOWNLOADER_DIR=<输出目录> ./coretest [m3u8地址]
 //       SMARTDOWNLOADER_DIR=<空目录> ./coretest --library   # 两级库扫描检查（剧目录/散装/已下载集检测）
-// 注意: 顶层代码运行在主线程，任务也是 @MainActor —— 不能用信号量阻塞主线程等待（会死锁），
-//       必须让出 RunLoop 轮询。
+// 注意: 顶层代码运行在主线程，引擎状态回写走 DispatchQueue.main.async ——
+//       不能用信号量阻塞主线程等待（会死锁），必须让出 RunLoop 轮询。
 import Foundation
 
 let arguments = CommandLine.arguments
@@ -13,7 +13,6 @@ let testURL = arguments.count > 1 && !libraryOnly
 
 var finished = false
 
-@MainActor
 func runLibraryCheck() {
     let fm = FileManager.default
     let dir = DownloadEngine.downloadsDir
@@ -85,26 +84,28 @@ func runLibraryCheck() {
     finished = true
 }
 
-Task { @MainActor in
-    if libraryOnly {
-        runLibraryCheck()
-        return
-    }
+if libraryOnly {
+    runLibraryCheck()
+} else {
     let title = arguments.count > 2 ? arguments[2] : "smoke_test"
     let task = DownloadTask(url: testURL, title: title)
-    await DownloadEngine().run(task: task)
-    switch task.state {
-    case .done:
-        print("\nRESULT: DONE -> \(task.outputURL?.path ?? "?")")
-    case .failed(let message):
-        print("\nRESULT: FAILED: \(message)")
-    default:
-        print("\nRESULT: \(task.state)")
+    DownloadEngine().run(task: task) {
+        // completion 在管线线程；结果打印回主线程（main.async 与引擎状态回写同队列，顺序有保证）
+        DispatchQueue.main.async {
+            switch task.state {
+            case .done:
+                print("\nRESULT: DONE -> \(task.outputURL?.path ?? "?")")
+            case .failed(let message):
+                print("\nRESULT: FAILED: \(message)")
+            default:
+                print("\nRESULT: \(task.state)")
+            }
+            finished = true
+        }
     }
-    finished = true
 }
 
-// 主线程让出 RunLoop，驱动 MainActor 任务；最长等 8 分钟
+// 主线程让出 RunLoop，驱动主队列回调；最长等 8 分钟
 let deadline = Date().addingTimeInterval(480)
 var lastPrint = ""
 while !finished && Date() < deadline {

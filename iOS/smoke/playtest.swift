@@ -1,27 +1,47 @@
 // 端到端播放验证（仅 macOS 运行）：
 // 启动内置本地 HTTP 服务，用 AVFoundation 加载本地 HLS 文件夹的播放列表。
 // 用法: SMARTDOWNLOADER_DIR=<Downloads根目录> ./playtest <HLS文件夹路径>
+// 注意: playbackURL 的 completion 在主线程 —— 不能信号量阻塞主线程（会死锁），让出 RunLoop 等。
 import AVFoundation
 
 @main
 struct PlayTest {
-    static func main() async throws {
+    static func main() {
         let folder = CommandLine.arguments.count > 1
             ? URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
             : URL(fileURLWithPath: "out/smoke_test", isDirectory: true)
 
-        let url = await LocalMediaServer.shared.playbackURL(forFolder: folder)
+        var playlistURL: URL?
+        var urlDone = false
+        LocalMediaServer.shared.playbackURL(forFolder: folder) { url in
+            playlistURL = url
+            urlDone = true
+        }
+        let urlDeadline = Date().addingTimeInterval(15)
+        while !urlDone && Date() < urlDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        guard let url = playlistURL else {
+            print("RESULT: SERVER-FAILED")
+            return
+        }
         print("PLAYLIST URL: \(url)")
         guard url.scheme == "http" else {
             print("RESULT: SERVER-FAILED")
             return
         }
         let asset = AVURLAsset(url: url)
-        do {
-            let duration = try await asset.load(.duration)
+        // loadValues completion 在任意队列：标志位主线程 RunLoop 轮询（冒烟工具的良性竞争）
+        var loadDone = false
+        asset.loadValuesAsynchronously(forKeys: ["duration"]) { loadDone = true }
+        let loadDeadline = Date().addingTimeInterval(15)
+        while !loadDone && Date() < loadDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        switch asset.status(of: .duration) {
+        case .loaded(let duration):
             print("ASSET: duration=\(CMTimeGetSeconds(duration))s")
-        } catch {
+        case .failed(let error):
             print("RESULT: LOAD-FAILED \(error.localizedDescription)")
+            return
+        default:
+            print("RESULT: LOAD-FAILED notLoaded/timeout")
             return
         }
 
@@ -30,10 +50,10 @@ struct PlayTest {
         let player = AVPlayer(playerItem: item)
         player.play()
         for _ in 0..<75 {
-            try await Task.sleep(nanoseconds: 200_000_000)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
             if player.timeControlStatus == .playing { break }
         }
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
         let time = CMTimeGetSeconds(player.currentTime())
         if player.timeControlStatus == .playing && time > 0.5 {
             print("RESULT: PLAYING currentTime=\(String(format: "%.2f", time))s")

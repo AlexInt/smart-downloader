@@ -18,26 +18,26 @@ final class TrustAll: NSObject, URLSessionDelegate {
 }
 
 var finished = false
-Task {
-    var request = URLRequest(url: URL(string: urlStr)!)
-    request.timeoutInterval = 15
-    if useBrowserHeaders {
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
-                         forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                         forHTTPHeaderField: "Accept")
-        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
-    }
-    let session = URLSession(configuration: .ephemeral, delegate: TrustAll(), delegateQueue: nil)
-    do {
-        let (data, response) = try await session.data(for: request)
-        let http = response as? HTTPURLResponse
-        print("RESULT: OK status=\(http?.statusCode ?? -1) bytes=\(data.count) ua=\(useBrowserHeaders ? "browser" : "default")")
-    } catch {
+var request = URLRequest(url: URL(string: urlStr)!)
+request.timeoutInterval = 15
+if useBrowserHeaders {
+    request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
+                     forHTTPHeaderField: "User-Agent")
+    request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                     forHTTPHeaderField: "Accept")
+    request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+}
+let session = URLSession(configuration: .ephemeral, delegate: TrustAll(), delegateQueue: nil)
+// completion 在 URLSession 自有队列；finished 标志位主线程 RunLoop 轮询（冒烟工具的良性竞争）
+session.dataTask(with: request) { data, response, error in
+    if let error {
         print("RESULT: FAIL ua=\(useBrowserHeaders ? "browser" : "default") \(error)")
+    } else {
+        let http = response as? HTTPURLResponse
+        print("RESULT: OK status=\(http?.statusCode ?? -1) bytes=\(data?.count ?? 0) ua=\(useBrowserHeaders ? "browser" : "default")")
     }
     finished = true
-}
+}.resume()
 
 let deadline = Date().addingTimeInterval(40)
 while !finished && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.2)) }
