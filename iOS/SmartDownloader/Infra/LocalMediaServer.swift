@@ -12,21 +12,26 @@ final class LocalMediaServer {
     private let stateQueue = DispatchQueue(label: "LocalMediaServer.state")
     private var listener: NWListener?
     private var port: UInt16 = 0
-    private var startCompletion: ((UInt16) -> Void)?
+    /// 启动中的等待者（可能多个）：ready 时统一回调真实端口
+    private var startCompletions: [(UInt16) -> Void] = []
     private var started = false
     private var handlers: [ObjectIdentifier: HTTPConnectionHandler] = [:]
 
     static var rootDirectory: URL { DownloadEngine.downloadsDir }
 
-    /// 启动监听（幂等），completion 返回端口（0 = 启动失败）；在 stateQueue 上回调
+    /// 启动监听（幂等），completion 返回端口（0 = 启动失败）；在 stateQueue 上回调。
+    /// 已就绪（port != 0）直接回真实端口；启动中登记等待，ready 时统一回调。
+    /// 修复旧实现「启动中第二次调用立即回 port=0」的竞态——播放器偶现「无法连接服务器」
+    /// （App 启动预启服务与首次 playbackURL 并发，listener 尚未 ready 就拿到了 0 端口）。
     func start(completion: @escaping (UInt16) -> Void) {
         stateQueue.async {
-            if self.started {
+            if self.port != 0 {
                 completion(self.port)
                 return
             }
+            self.startCompletions.append(completion)
+            if self.started { return }   // 正在启动，等 finishStart 统一回调
             self.started = true
-            self.startCompletion = completion
             do {
                 let parameters = NWParameters.tcp
                 parameters.allowLocalEndpointReuse = true
@@ -61,20 +66,17 @@ final class LocalMediaServer {
                 }
                 listener.start(queue: DispatchQueue(label: "LocalMediaServer.connections"))
             } catch {
-                if let completion = self.startCompletion {
-                    self.startCompletion = nil
-                    completion(0)
-                }
+                self.finishStart(port: 0)
             }
         }
     }
 
     private func finishStart(port value: UInt16) {
         port = value
-        if let completion = startCompletion {
-            startCompletion = nil
-            completion(value)
-        }
+        if value == 0 { started = false }   // 失败复位，允许下次 start 重试
+        let completions = startCompletions
+        startCompletions = []
+        for completion in completions { completion(value) }
     }
 
     /// 生成本地 HLS 文件夹的播放地址；completion 在主线程回调。
@@ -82,6 +84,13 @@ final class LocalMediaServer {
     /// 不能只取 lastPathComponent（在 root 下不存在会 404，且“第01集”跨剧重名）。
     func playbackURL(forFolder folder: URL, completion: @escaping (URL) -> Void) {
         start { port in
+            let fallback = folder.absoluteURL.appendingPathComponent("playlist.m3u8")
+            // 端口 0 = 服务启动失败：回文件 URL（scheme != http），makeItem 据此报「本地播放服务启动失败」，
+            // 避免拼出 http://127.0.0.1:0 让 AVPlayer 报「无法连接服务器」
+            guard port != 0 else {
+                DispatchQueue.main.async { completion(fallback) }
+                return
+            }
             let root = Self.rootDirectory.standardizedFileURL
             // absoluteURL：容错相对路径入参（App 内部恒为绝对，冒烟工具可能传相对）
             var cursor = folder.absoluteURL.standardizedFileURL
@@ -93,7 +102,7 @@ final class LocalMediaServer {
                 components.insert(cursor.lastPathComponent, at: 0)
                 cursor = cursor.deletingLastPathComponent()
             }
-            var result = folder.absoluteURL.appendingPathComponent("playlist.m3u8")
+            var result = fallback
             if underRoot, !components.isEmpty {
                 let encoded = components
                     .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0 }
