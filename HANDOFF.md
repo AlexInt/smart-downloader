@@ -198,6 +198,10 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 **追加修正（同日 09:36 用户反馈）**：主屏 12 格原本「已可播」与「待下载」都是 `DWColor.surface` 深色底，只有进度环/打勾不同，一眼分不出。改为与「查看全部」面板共用 `cellBackground` / `cellForeground`：**底色表达能不能播** —— 已下载淡绿 (`Color.green.opacity(0.18)`)、待下载中性深色、锁定灰底、选中红底优先；边缘环只负责下载进度。选中是红底时绿环/红环撞色，done/failed 两态改白色环，进度金色环两种底色都清楚。设计约定：底色 = 可播性，边缘 = 下载进度，勿再混用。若希望选中态也保留绿底（改成红色描边表达选中），是下一轮可选方案。
 
+**追加修正（同日 09:46 用户反馈）**：① CTA 分色——可播保持红橙渐变 + 白字 + `play.fill`；需要下载改**白底红字** + `arrow.down.circle`（VM 新增 `ctaIsPlay` 派生，View 不写业务判断）。② 下载进度边缘统一**绿色**——排队淡绿轨道 → 下载中绿色 `trim` 逐渐闭环 → 完成绿色闭环 + 绿勾，失败仍红环；绿色贯穿三态不再换色，选中红底也不改白环（红绿互补对比足够）。`progressRing` 去掉 `onSelected` 参数，主屏与 sheet 两处调用同步。
+
+**浏览页路由诊断（本轮只查未改，等用户拍板）**：卡片「有时进原生、有时停在 web」不是随机。`decidePolicyFor` 只在 `navigationType == .linkActivated`（真实 `<a>` 点击）且 `DramaTarget.parse` 命中时取消网页并推原生；卡片若用 JS `location.href` / `pushState` / `window.open` 跳，`navigationType == .other` 拦不住，网页自己加载剧集页。URL KVO / 地址栏变化虽会兜底推原生，但 `detectDrama` 有 `lastAutoDramaKey` 去重（同剧只自动推一次、离开剧集 URL 才清空），而 `pushDramaPage` 不写该标记 → 两条路径状态不一致，同剧二次点击可能被挡；`undoSPA` 回退还依赖 `canGoBack`，SPA 首跳 / 地址栏直达时退不回去。加上 `DramaTarget.parse` 只认 `/drama/(video|detail)/<数字>`，其它形式 URL 一律不路由。建议方向：主帧剧集 URL 一律 `.cancel` 并推原生、两条路径共用一个去重标记，但改动触及浏览页导航，先等确认。
+
 验证：`swiftc -typecheck` 全 32 文件 0 错误。**待真机确认**：iOS 26 悬浮 tab bar 是否被 `.toolbar(.hidden, for: .tabBar)` 真正隐藏（若不生效需改 UIKit 桥接）、边缘手势跟手手感与阈值、进度环刷新是否跟得上切片速度、海报缩短后标题/简介与渐变层的视觉衔接。
 
 ### 目录与分层第一批整理（架构讨论后落地）

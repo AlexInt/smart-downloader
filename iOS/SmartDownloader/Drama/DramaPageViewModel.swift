@@ -125,6 +125,13 @@ final class DramaPageViewModel: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
+    /// CTA 视觉语义：true = 已可播（红橙渐变 + 白字），false = 需要下载（白底 + 红字）。
+    /// 用户要求「需要下载时底部按钮不要是红色」，播放与下载两种动作要一眼可分。
+    var ctaIsPlay: Bool {
+        guard let sort = selectedSort else { return false }
+        return downloadedSorts.contains(sort)
+    }
+
     /// CTA 文案随选中集的真实状态变化：已下载可播、未下载可下、排队中/锁定如实告知
     var ctaTitle: String {
         guard let sort = selectedSort else { return "请选择剧集" }

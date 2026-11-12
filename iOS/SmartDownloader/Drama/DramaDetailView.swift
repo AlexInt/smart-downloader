@@ -384,7 +384,7 @@ struct DramaDetailView: View {
                     if case .done = phase {
                         Image(systemName: "checkmark")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(isSelected ? Color.white : Color.green)
+                            .foregroundStyle(Color.green)
                     }
                 }
                 .font(DWFont.en(13, .medium))
@@ -396,7 +396,7 @@ struct DramaDetailView: View {
                                            isDownloaded: isDownloaded,
                                            playable: ep.playable))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay { progressRing(phase, onSelected: isSelected) }
+                .overlay { progressRing(phase) }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -406,31 +406,31 @@ struct DramaDetailView: View {
         }
     }
 
-    /// 剧集按钮边缘进度环：下载中按进度 trim 逐渐闭环，完成后完整闭环 + 内部打勾，
-    /// 排队是淡色轨道、失败是红环、未下载无边。
+    /// 剧集按钮边缘进度环：绿色从 0 逐渐闭环到 100%（用户指定），完成后保持绿色闭环 +
+    /// 内部打勾；排队是淡绿轨道、失败红环、未下载无边。
     /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪），trim 起点在右上角顺时针闭合。
-    /// 选中态是红底，绿环/红环撞色看不清，这两态改白色环，进度金色环两种底色都清楚。
+    /// 绿色贯穿「排队 → 下载中 → 完成」三态，别再按状态换色，闭环程度本身就是进度语义。
     @ViewBuilder
-    private func progressRing(_ phase: EpisodeDownloadPhase, onSelected: Bool) -> some View {
+    private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
         switch phase {
         case .idle:
             EmptyView()
         case .queued:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.gold.opacity(0.35), lineWidth: 2)
+                .stroke(Color.green.opacity(0.30), lineWidth: 2)
                 .padding(1)
         case .active(let progress):
             RoundedRectangle(cornerRadius: 10)
                 .trim(from: 0, to: progress)
-                .stroke(DWColor.gold, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(Color.green, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .padding(1)
         case .done:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(onSelected ? Color.white : Color.green, lineWidth: 2)
+                .stroke(Color.green, lineWidth: 2)
                 .padding(1)
         case .failed:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(onSelected ? Color.white : DWColor.primary, lineWidth: 2)
+                .stroke(DWColor.primary, lineWidth: 2)
                 .padding(1)
         }
     }
@@ -446,15 +446,20 @@ struct DramaDetailView: View {
 
             Button { vm.playSelected() } label: {
                 ZStack {
-                    LinearGradient(colors: [DWColor.primary, DWColor.ctaEnd],
-                                   startPoint: .leading, endPoint: .trailing)
+                    // 可播 = 红橙渐变白字；需要下载 = 白底红字（用户指定），两种动作一眼可分
+                    if vm.ctaIsPlay {
+                        LinearGradient(colors: [DWColor.primary, DWColor.ctaEnd],
+                                       startPoint: .leading, endPoint: .trailing)
+                    } else {
+                        Color.white
+                    }
                     HStack(spacing: 6) {
-                        Image(systemName: "play.fill")
+                        Image(systemName: vm.ctaIsPlay ? "play.fill" : "arrow.down.circle")
                             .font(.system(size: 15, weight: .bold))
                         Text(vm.ctaTitle)
                             .font(DWFont.cn(16, .bold))
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(vm.ctaIsPlay ? Color.white : DWColor.primary)
                 }
                 .frame(width: 350, height: 52)
                 .clipShape(Capsule())
@@ -575,7 +580,7 @@ struct DramaDetailView: View {
                 ? Color(uiColor: .tertiaryLabel)
                 : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay { progressRing(phase, onSelected: isSelected) }
+            .overlay { progressRing(phase) }
         }
         .buttonStyle(.plain)
         .disabled(!ep.playable || isQueued)
