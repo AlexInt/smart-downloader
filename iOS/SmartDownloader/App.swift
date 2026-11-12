@@ -13,16 +13,21 @@ struct SmartDownloaderApp: App {
 
     private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
 
-    /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >100ms 打一条。
+    /// 主线程卡顿探针：100ms 心跳，单次 runloop 间隔 >100ms 打一条。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
     /// 阈值从 250ms 调细到 100ms：可感知的切换卡顿常在 100–200ms，250ms 会漏报。
+    /// Debug 默认开启（真机排障无需记参数）；Release 仍需 -perfLog 显式启用。
     private static func startStallProbeIfNeeded() {
-        // 兼容 -perfLog / perfLog 两种写法：曾只匹配无横杠的 "perfLog"，
-        // 按文档传 "-perfLog" 时探针静默不启动，tab 切换排查拿不到 mainStall
+        // 曾靠 -perfLog 门控，但多次复测都没传参/没启用，拿不到 mainStall——改为 Debug 常开。
+        // 兼容 -perfLog / perfLog 两种写法（旧版只匹配无横杠 perfLog，传 -perfLog 静默不启动）
+        #if DEBUG
+        let enabled = true
+        #else
         let enabled = ProcessInfo.processInfo.arguments.contains { $0 == "-perfLog" || $0 == "perfLog" }
+        #endif
         guard enabled, !stallProbeStarted else { return }
         stallProbeStarted = true
-        // 自检日志：下一份日志有没有这行即可判定探针是否真启用（-perfLog 是否传进来）
+        // 自检日志：日志开头有这行即证明探针已启用
         print("PERF_DBG stallProbe enabled threshold=100ms")
         // Timer 挂在主线程 RunLoop，回调与 last 读写同线程，无需锁
         final class LastBox { var value = ProcessInfo.processInfo.systemUptime }
