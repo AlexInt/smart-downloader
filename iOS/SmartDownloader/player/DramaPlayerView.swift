@@ -36,7 +36,8 @@ struct DramaPlayerView: View {
         (isActive && playback.isReady) ? playback.currentTimeText : (episode.previewCurrentTime ?? "00:00")
     }
     private var durationText: String {
-        (isActive && playback.isReady) ? playback.durationText : (episode.previewDuration ?? "00:00")
+        guard isActive && playback.isReady else { return episode.previewDuration ?? "00:00" }
+        return playback.showRemainingTime ? playback.remainingTimeText : playback.durationText
     }
     private var progressValue: CGFloat {
         CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
@@ -477,11 +478,21 @@ struct DramaPlayerView: View {
                 .designFrame(20, 752, 60, 13, alignment: .leading)
                 .allowsHitTesting(false)
 
-            Text(durationText)
-                .font(DWFont.en(11, .medium))
-                .foregroundStyle(DWColor.textTime)
-                .designFrame(314, 752, 56, 13, alignment: .trailing)
-                .allowsHitTesting(false)
+            // 右侧时长 label：点按切换 总时长 ↔ 剩余时间（负值），状态本地持久化。
+            // Button 深度优先于卡片点按手势——点它只切时间显示，不连带暂停；
+            //  hit 区括到 24pt 高便于点按，仅 HUD 可见时可点（避免清屏隐藏态误触）
+            Button {
+                playback.toggleTimeDisplay()
+            } label: {
+                Text(durationText)
+                    .font(DWFont.en(11, .medium))
+                    .foregroundStyle(DWColor.textTime)
+                    .frame(width: 56, height: 24, alignment: .trailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .designFrame(314, 746, 56, 24, alignment: .trailing)
+            .allowsHitTesting(isProgressVisible)
         }
         .opacity(isProgressVisible ? 1 : 0)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)

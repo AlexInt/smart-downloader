@@ -21,6 +21,9 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var isScrubbing = false
     @Published private(set) var currentTimeText = "00:00"
     @Published private(set) var durationText = "00:00"
+    /// 右侧时长 label 显示剩余时间（负值，如 -01:39）还是总时长；本地持久化（PlayerPreferences）
+    @Published private(set) var showRemainingTime = false
+    @Published private(set) var remainingTimeText = "-00:00"
     @Published private(set) var progress: Double = 0
     @Published private(set) var loadError: String?
     /// spinner 延迟显示：加载超过 800ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
@@ -79,8 +82,9 @@ final class DramaPlayerViewModel: ObservableObject {
         self.playerService = playerService
         isMuted = preferences.isMuted
         isCleanScreen = preferences.isCleanScreen
+        showRemainingTime = preferences.showRemainingTime
         ensureObserver()
-        print("PLAYER_DBG [Playback] VM init muted=\(isMuted) cleanScreen=\(isCleanScreen)")
+        print("PLAYER_DBG [Playback] VM init muted=\(isMuted) cleanScreen=\(isCleanScreen) remaining=\(showRemainingTime)")
     }
 
     /// 滚动停稳后才调用：单播放器常驻，切集只换 item。
@@ -152,6 +156,13 @@ final class DramaPlayerViewModel: ObservableObject {
             player.seek(to: .zero)
         }
         player.play()
+    }
+
+    /// 点按右侧时长 label：总时长 ↔ 剩余时间（负值）切换，本地持久化（PlayerPreferences）
+    func toggleTimeDisplay() {
+        showRemainingTime.toggle()
+        preferences.showRemainingTime = showRemainingTime
+        print("PLAYER_DBG [Playback] timeDisplay → \(showRemainingTime ? "remaining" : "duration")")
     }
 
     func seek(fraction: Double) {
@@ -394,6 +405,7 @@ final class DramaPlayerViewModel: ObservableObject {
         let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
         guard total.isFinite, total > 0 else { return }
         durationText = Self.format(total)
+        remainingTimeText = "-" + Self.format(max(0, total - seconds))
         progress = min(max(seconds / total, 0), 1)
         // 每 2 秒确认一次播放器确实在推进，区分「没播」和「画面没刷新」
         let second = Int(seconds)
@@ -406,6 +418,7 @@ final class DramaPlayerViewModel: ObservableObject {
     private func resetTimes() {
         currentTimeText = "00:00"
         durationText = "00:00"
+        remainingTimeText = "-00:00"
         progress = 0
     }
 

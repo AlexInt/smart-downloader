@@ -19,6 +19,12 @@ struct PlayerPreferences {
         nonmutating set { defaults.set(newValue, forKey: Self.cleanScreenKey) }
     }
 
+    /// 进度条右侧时长 label：显示剩余时间（负值）还是总时长
+    var showRemainingTime: Bool {
+        get { defaults.bool(forKey: Self.showRemainingTimeKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.showRemainingTimeKey) }
+    }
+
     func liked(for key: String) -> Bool { defaults.bool(forKey: likedKey(key)) }
     func saved(for key: String) -> Bool { defaults.bool(forKey: savedKey(key)) }
     func setLiked(_ value: Bool, for key: String) { defaults.set(value, forKey: likedKey(key)) }
@@ -33,6 +39,7 @@ struct PlayerPreferences {
 
     private static let mutedKey = "DramaPlayer.muted"
     private static let cleanScreenKey = "DramaPlayer.cleanScreen"
+    private static let showRemainingTimeKey = "DramaPlayer.showRemainingTime"
     private func likedKey(_ key: String) -> String { "DramaPlayer.liked.\(key)" }
     private func savedKey(_ key: String) -> String { "DramaPlayer.saved.\(key)" }
 }
