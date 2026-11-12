@@ -30,6 +30,8 @@ final class DramaPageViewModel: ObservableObject {
     @Published private(set) var tags: String?
     /// tags 来源（api = 定向提取；nil = 旧缓存）：旧来源自动补采一次的判定依据
     private var tagsSource: String?
+    /// 本次访问是否已触发过详情采集（缓存分支与网络分支都会调 harvestIfNeeded）
+    private var hasHarvestedThisVisit = false
     /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
     @Published var playbackRequest: ImmersivePlaybackRequest?
 
@@ -54,6 +56,9 @@ final class DramaPageViewModel: ObservableObject {
         self.target = target
         self.manager = manager
         isFavorite = favorites.isFavorite(target.id)
+        // 每次进剧集页都重抓一次详情（整包落库）：清掉进程内去重标记，
+        // 同一次访问内的重复触发仍由 hasHarvestedThisVisit 挡住
+        DramaMetaHarvester.harvestedKeys.remove(target.id)
     }
 
     // MARK: - 派生状态
@@ -350,22 +355,16 @@ final class DramaPageViewModel: ObservableObject {
             ?? info.episodes.first?.sort
     }
 
-    /// 头部缺封面/简介/标签时：后台隐藏 webview 拉一次剧集页提取元数据（落库后头部即时更新）。
-    /// tags 纳入触发条件是 P7 采集需要；空串视为缺失 —— 采集失败后可重试
-    ///（DramaMetaHarvester.harvestedKeys 只在进程内去重，重进 App 会清空）
+    /// 每次进剧集页都后台抓一次详情接口并整包落库（不再只在缺封面/简介时抓）：
+    /// 播放量/点赞数/推荐剧/服务端观看进度这些字段只有重抓才会更新。
+    /// 同一次访问内只抓一次（缓存分支与网络分支都会调到这里）。
     private func harvestIfNeeded() {
-        // 空串也算「没有 tags」：旧实现把 "" 写进缓存列，这里误判已缓存 → 永久跳过收割
-        let hasTags = !(tags?.isEmpty ?? true)
-        // 来源比对：旧缓存（锚点法时代）无 tags_source → 视为不全，进页自动补采一次；
-        // 采成功写 api 后恢复缓存优先（零网络）。不用手动开关迁移。
-        let hasApiTags = hasTags && tagsSource == "api"
-        // -captureDramaMeta：调查期手动强制重采（连 api 来源也重跑）
-        let force = ProcessInfo.processInfo.arguments.contains("captureDramaMeta")
-        guard force || coverURL == nil || intro == nil || !hasApiTags else {
-            print("PLAYER_DBG [Entry] harvest SKIP reason=headerCached cover=\(coverURL != nil) intro=\(intro != nil) tags=\(hasApiTags) source=\(tagsSource ?? "nil")")
+        guard !hasHarvestedThisVisit else {
+            print("PLAYER_DBG [Entry] harvest SKIP reason=alreadyThisVisit")
             return
         }
-        print("PLAYER_DBG [Entry] harvest trigger reason=\(force ? "forcedCapture" : "headerMissing") cover=\(coverURL != nil) intro=\(intro != nil) tags=\(hasApiTags) source=\(tagsSource ?? "nil")")
+        hasHarvestedThisVisit = true
+        print("PLAYER_DBG [Entry] harvest trigger reason=pageEntry cover=\(coverURL != nil) intro=\(intro != nil) tags=\(tags != nil)")
         DramaMetaHarvester.harvest(target: target) { [weak self] in
             guard let self else { return }
             if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID) {

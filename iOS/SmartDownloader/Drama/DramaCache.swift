@@ -11,8 +11,6 @@ import SQLite3
 // 每集播放直链带时效 auth_key，不缓存（下载前现取）。
 // 不引入第三方依赖，直接用系统 libsqlite3。SQL 失败打印 errmsg，不静默。
 
-private let SQLITE_TRANSIENT = unsafeBitCast(OpaquePointer(bitPattern: -1), to: sqlite3_destructor_type.self)
-
 enum DramaCache {
 
     struct Entry {
@@ -39,71 +37,8 @@ enum DramaCache {
         return docs.appendingPathComponent("drama_cache.sqlite3")
     }
 
-    private static func fail(_ db: OpaquePointer?, _ what: String) {
-        print("CACHE FAIL[\(what)]: \(String(cString: sqlite3_errmsg(db)))")
-    }
-
-    private static func openDB() -> OpaquePointer? {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK else {
-            fail(db, "open")
-            return nil
-        }
-        let schema = """
-        CREATE TABLE IF NOT EXISTS drama_cache (
-            site TEXT NOT NULL,
-            drama_id TEXT NOT NULL,
-            name TEXT, update_status TEXT, cover TEXT, intro TEXT,
-            page_meta TEXT, fetched_at TEXT,
-            PRIMARY KEY (site, drama_id)
-        );
-        CREATE TABLE IF NOT EXISTS drama_episodes (
-            site TEXT NOT NULL,
-            drama_id TEXT NOT NULL,
-            episode_id INTEGER NOT NULL,
-            sort INTEGER, playable INTEGER,
-            downloaded INTEGER DEFAULT 0,
-            folder TEXT, updated_at TEXT,
-            PRIMARY KEY (site, drama_id, episode_id)
-        );
-        """
-        if sqlite3_exec(db, schema, nil, nil, nil) != SQLITE_OK {
-            fail(db, "schema")
-        }
-        // v2 迁移：tags 列（话题标签，来自 DOM 收割 P7）。列已存在时 ALTER 报错，静默忽略；
-        // 每进程只试一次（DramaCache 主线程约定，GCD 版无需锁）。
-        if !tagsMigrated {
-            tagsMigrated = true
-            sqlite3_exec(db, "ALTER TABLE drama_cache ADD COLUMN tags TEXT;", nil, nil, nil)
-        }
-        return db
-    }
-
-    private static var tagsMigrated = false
-
-    private static func bind(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
-        sqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, SQLITE_TRANSIENT)
-    }
-
-    private static func text(_ stmt: OpaquePointer?, _ index: Int32) -> String? {
-        guard let c = sqlite3_column_text(stmt, index) else { return nil }
-        return String(cString: c)
-    }
-
-    /// 执行一次性写语句（绑定后 step，错误打印）
-    private static func execWrite(_ db: OpaquePointer?, _ sql: String, what: String,
-                                  bindValues: (OpaquePointer?) -> Void) {
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "\(what) prepare")
-            return
-        }
-        defer { sqlite3_finalize(stmt) }
-        bindValues(stmt)
-        if sqlite3_step(stmt) != SQLITE_DONE {
-            fail(db, "\(what) step")
-        }
-    }
+    /// 建表与版本迁移统一由 DramaDatabase 负责（整库一个 user_version）
+    private static func openDB() -> OpaquePointer? { DramaDatabase.open() }
 
     // MARK: 读
 
@@ -122,11 +57,11 @@ enum DramaCache {
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "allSorts prepare")
+            DramaDatabase.fail(db, "allSorts prepare")
             print("PLAYER_DBG [Service] DramaCache.allSorts FAIL reason=prepare name=\(name)")
             return []
         }
-        bind(stmt, 1, name)
+        DramaDatabase.bind(stmt, 1, name)
         var sorts: [Int] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             sorts.append(Int(sqlite3_column_int(stmt, 0)))
@@ -157,14 +92,14 @@ enum DramaCache {
         let dramaSQL = "SELECT site, drama_id FROM drama_cache WHERE name=? ORDER BY fetched_at DESC;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, dramaSQL, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "seriesIdentity prepare"); return nil
+            DramaDatabase.fail(db, "seriesIdentity prepare"); return nil
         }
-        bind(stmt, 1, name)
+        DramaDatabase.bind(stmt, 1, name)
         while sqlite3_step(stmt) == SQLITE_ROW {
             candidates += 1
             if site == nil {
-                site = text(stmt, 0)
-                dramaID = text(stmt, 1)
+                site = DramaDatabase.text(stmt, 0)
+                dramaID = DramaDatabase.text(stmt, 1)
             }
         }
         sqlite3_finalize(stmt)
@@ -189,11 +124,11 @@ enum DramaCache {
         var stmt: OpaquePointer?
         let epSQL = "SELECT episode_id, sort FROM drama_episodes WHERE site=? AND drama_id=?;"
         guard sqlite3_prepare_v2(db, epSQL, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "seriesIdentity episodes prepare")
+            DramaDatabase.fail(db, "seriesIdentity episodes prepare")
             return nil
         }
-        bind(stmt, 1, site)
-        bind(stmt, 2, dramaID)
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
         while sqlite3_step(stmt) == SQLITE_ROW {
             ids[Int(sqlite3_column_int(stmt, 1))] = Int(sqlite3_column_int64(stmt, 0))
         }
@@ -219,14 +154,14 @@ enum DramaCache {
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, infoSQL, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "load info prepare"); return nil
+            DramaDatabase.fail(db, "load info prepare"); return nil
         }
-        bind(stmt, 1, site)
-        bind(stmt, 2, dramaID)
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
         if sqlite3_step(stmt) == SQLITE_ROW {
-            name = text(stmt, 0); status = text(stmt, 1); cover = text(stmt, 2)
-            intro = text(stmt, 3); tags = text(stmt, 4); fetchedAt = text(stmt, 5)
-            if let raw = text(stmt, 6),
+            name = DramaDatabase.text(stmt, 0); status = DramaDatabase.text(stmt, 1); cover = DramaDatabase.text(stmt, 2)
+            intro = DramaDatabase.text(stmt, 3); tags = DramaDatabase.text(stmt, 4); fetchedAt = DramaDatabase.text(stmt, 5)
+            if let raw = DramaDatabase.text(stmt, 6),
                let meta = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] {
                 tagsSource = meta["tags_source"] as? String
             }
@@ -238,16 +173,16 @@ enum DramaCache {
 
         var episodes: [ApiDramaEpisode] = []
         guard sqlite3_prepare_v2(db, epSQL, -1, &stmt, nil) == SQLITE_OK else {
-            fail(db, "load episodes prepare"); return nil
+            DramaDatabase.fail(db, "load episodes prepare"); return nil
         }
-        bind(stmt, 1, site)
-        bind(stmt, 2, dramaID)
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = Int(sqlite3_column_int64(stmt, 0))
             let sort = Int(sqlite3_column_int(stmt, 1))
             let playable = sqlite3_column_int(stmt, 2) != 0
             let downloaded = sqlite3_column_int(stmt, 3) != 0
-            let folder = text(stmt, 4)
+            let folder = DramaDatabase.text(stmt, 4)
             episodes.append(ApiDramaEpisode(id: id, sort: sort, playable: playable,
                                          downloaded: downloaded, folder: folder))
         }
@@ -265,38 +200,38 @@ enum DramaCache {
         defer { sqlite3_close(db) }
         let now = ISO8601DateFormatter().string(from: Date())
 
-        execWrite(db, """
+        DramaDatabase.execWrite(db, """
         INSERT INTO drama_cache (site, drama_id, name, update_status, fetched_at)
         VALUES (?,?,?,?,?)
         ON CONFLICT(site, drama_id) DO UPDATE SET
           name=excluded.name, update_status=excluded.update_status, fetched_at=excluded.fetched_at
         """, what: "info upsert") { stmt in
-            bind(stmt, 1, site)
-            bind(stmt, 2, dramaID)
-            bind(stmt, 3, info.name)
-            bind(stmt, 4, info.updateStatus ?? "")
-            bind(stmt, 5, now)
+            DramaDatabase.bind(stmt, 1, site)
+            DramaDatabase.bind(stmt, 2, dramaID)
+            DramaDatabase.bind(stmt, 3, info.name)
+            DramaDatabase.bind(stmt, 4, info.updateStatus ?? "")
+            DramaDatabase.bind(stmt, 5, now)
         }
 
         // 以最新列表为准清掉接口已不存在的集
-        execWrite(db, "DELETE FROM drama_episodes WHERE site=? AND drama_id=?", what: "episodes clear") { stmt in
-            bind(stmt, 1, site)
-            bind(stmt, 2, dramaID)
+        DramaDatabase.execWrite(db, "DELETE FROM drama_episodes WHERE site=? AND drama_id=?", what: "episodes clear") { stmt in
+            DramaDatabase.bind(stmt, 1, site)
+            DramaDatabase.bind(stmt, 2, dramaID)
         }
 
         for ep in info.episodes {
-            execWrite(db, """
+            DramaDatabase.execWrite(db, """
             INSERT INTO drama_episodes (site, drama_id, episode_id, sort, playable, downloaded, folder, updated_at)
             VALUES (?,?,?,?,?,0,NULL,?)
             ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
               sort=excluded.sort, playable=excluded.playable, updated_at=excluded.updated_at
             """, what: "episode upsert \(ep.id)") { stmt in
-                bind(stmt, 1, site)
-                bind(stmt, 2, dramaID)
+                DramaDatabase.bind(stmt, 1, site)
+                DramaDatabase.bind(stmt, 2, dramaID)
                 sqlite3_bind_int64(stmt, 3, Int64(ep.id))
                 sqlite3_bind_int(stmt, 4, Int32(ep.sort))
                 sqlite3_bind_int(stmt, 5, ep.playable ? 1 : 0)
-                bind(stmt, 6, now)
+                DramaDatabase.bind(stmt, 6, now)
             }
         }
     }
@@ -305,18 +240,18 @@ enum DramaCache {
     static func markDownloaded(site: String, dramaID: String, episodeID: Int, folder: String) {
         guard let db = openDB() else { return }
         defer { sqlite3_close(db) }
-        execWrite(db, """
+        DramaDatabase.execWrite(db, """
         INSERT INTO drama_episodes (site, drama_id, episode_id, downloaded, folder, updated_at)
         VALUES (?,?,?,?,?,?)
         ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
           downloaded=1, folder=excluded.folder, updated_at=excluded.updated_at
         """, what: "mark downloaded \(episodeID)") { stmt in
-            bind(stmt, 1, site)
-            bind(stmt, 2, dramaID)
+            DramaDatabase.bind(stmt, 1, site)
+            DramaDatabase.bind(stmt, 2, dramaID)
             sqlite3_bind_int64(stmt, 3, Int64(episodeID))
             sqlite3_bind_int(stmt, 4, 1)
-            bind(stmt, 5, folder)
-            bind(stmt, 6, ISO8601DateFormatter().string(from: Date()))
+            DramaDatabase.bind(stmt, 5, folder)
+            DramaDatabase.bind(stmt, 6, ISO8601DateFormatter().string(from: Date()))
         }
     }
 
@@ -328,10 +263,10 @@ enum DramaCache {
         let sql = "SELECT episode_id, sort FROM drama_episodes WHERE site=? AND drama_id=?;"
         var selectStmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &selectStmt, nil) == SQLITE_OK else {
-            fail(db, "reconcile prepare"); return
+            DramaDatabase.fail(db, "reconcile prepare"); return
         }
-        bind(selectStmt, 1, site)
-        bind(selectStmt, 2, dramaID)
+        DramaDatabase.bind(selectStmt, 1, site)
+        DramaDatabase.bind(selectStmt, 2, dramaID)
         var episodeIDs: [Int64] = []
         var sorts: [Int] = []
         while sqlite3_step(selectStmt) == SQLITE_ROW {
@@ -344,17 +279,17 @@ enum DramaCache {
         for (index, id) in episodeIDs.enumerated() {
             let sort = sorts[index]
             let downloaded = folders[sort] != nil
-            execWrite(db, "UPDATE drama_episodes SET downloaded=?, folder=?, updated_at=? WHERE site=? AND drama_id=? AND episode_id=?;",
+            DramaDatabase.execWrite(db, "UPDATE drama_episodes SET downloaded=?, folder=?, updated_at=? WHERE site=? AND drama_id=? AND episode_id=?;",
                       what: "reconcile ep \(sort)") { stmt in
                 sqlite3_bind_int(stmt, 1, downloaded ? 1 : 0)
                 if let folder = folders[sort] {
-                    bind(stmt, 2, folder)
+                    DramaDatabase.bind(stmt, 2, folder)
                 } else {
                     sqlite3_bind_null(stmt, 2)
                 }
-                bind(stmt, 3, now)
-                bind(stmt, 4, site)
-                bind(stmt, 5, dramaID)
+                DramaDatabase.bind(stmt, 3, now)
+                DramaDatabase.bind(stmt, 4, site)
+                DramaDatabase.bind(stmt, 5, dramaID)
                 sqlite3_bind_int64(stmt, 6, id)
             }
         }
@@ -379,9 +314,9 @@ enum DramaCache {
         let sql = "SELECT page_meta FROM drama_cache WHERE site=? AND drama_id=?;"
         var sel: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &sel, nil) == SQLITE_OK {
-            bind(sel, 1, site)
-            bind(sel, 2, dramaID)
-            if sqlite3_step(sel) == SQLITE_ROW, let raw = text(sel, 0),
+            DramaDatabase.bind(sel, 1, site)
+            DramaDatabase.bind(sel, 2, dramaID)
+            if sqlite3_step(sel) == SQLITE_ROW, let raw = DramaDatabase.text(sel, 0),
                let old = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] {
                 pageMeta = old
             }
@@ -391,24 +326,225 @@ enum DramaCache {
         let metaJSON = (try? JSONSerialization.data(withJSONObject: pageMeta, options: [.sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
-        execWrite(db, """
+        DramaDatabase.execWrite(db, """
         INSERT INTO drama_cache (site, drama_id, cover, intro, tags, page_meta, fetched_at)
         VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(site, drama_id) DO UPDATE SET
           cover=excluded.cover, intro=excluded.intro, tags=excluded.tags, page_meta=excluded.page_meta
         """, what: "page meta upsert") { stmt in
-            bind(stmt, 1, site)
-            bind(stmt, 2, dramaID)
-            bind(stmt, 3, cover)
-            bind(stmt, 4, intro)
+            DramaDatabase.bind(stmt, 1, site)
+            DramaDatabase.bind(stmt, 2, dramaID)
+            DramaDatabase.bind(stmt, 3, cover)
+            DramaDatabase.bind(stmt, 4, intro)
             if let tags {
-                bind(stmt, 5, tags)
+                DramaDatabase.bind(stmt, 5, tags)
             } else {
                 sqlite3_bind_null(stmt, 5)
             }
-            bind(stmt, 6, metaJSON)
-            bind(stmt, 7, ISO8601DateFormatter().string(from: Date()))
+            DramaDatabase.bind(stmt, 6, metaJSON)
+            DramaDatabase.bind(stmt, 7, ISO8601DateFormatter().string(from: Date()))
         }
+    }
+
+    // MARK: 写 —— 详情接口整包落库（schema v2）
+
+    /// 把剧集详情接口的响应**整包**存进 `api_detail`，同时把常用字段提升为列便于查询/展示。
+    /// 提升列只是索引方便，任何字段都不会因为「没提升」而丢失；站点以后加字段也无需迁移。
+    ///
+    /// 不动 `name / update_status / fetched_at / page_meta / tags`：它们分别由下载接口与 DOM 收割维护，
+    /// 详情接口的标题另存 `api_title`，两个来源互不覆盖。
+    /// `rawJSON` 传拿到的原始响应体（明文详情 / 解密后的信封 / Nuxt payload 结构化回写）。
+    static func saveDetail(site: String, dramaID: String, rawJSON: String, detail: DramaDetailData) {
+        guard let db = openDB() else { return }
+        defer { sqlite3_close(db) }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let episodes = detail.episodes ?? []
+        let related = detail.relatedList ?? []
+
+        DramaDatabase.transaction(db) {
+            // 1) 剧级：整包 + 提升列
+            var names = ["site", "drama_id"]
+            var setters: [(OpaquePointer?, Int32) -> Void] = []
+            func addText(_ column: String, _ value: String?) {
+                names.append(column)
+                setters.append { stmt, i in
+                    if let value { DramaDatabase.bind(stmt, i, value) } else { sqlite3_bind_null(stmt, i) }
+                }
+            }
+            func addInt(_ column: String, _ value: Int?) {
+                names.append(column)
+                setters.append { stmt, i in
+                    if let value { sqlite3_bind_int64(stmt, i, Int64(value)) } else { sqlite3_bind_null(stmt, i) }
+                }
+            }
+            func addBool(_ column: String, _ value: Bool?) { addInt(column, value.map { $0 ? 1 : 0 }) }
+            func addDouble(_ column: String, _ value: Double?) {
+                names.append(column)
+                setters.append { stmt, i in
+                    if let value { sqlite3_bind_double(stmt, i, value) } else { sqlite3_bind_null(stmt, i) }
+                }
+            }
+            func addJSON<T: Encodable>(_ column: String, _ value: T?) {
+                guard let value, let data = try? JSONEncoder().encode(value),
+                      let text = String(data: data, encoding: .utf8) else {
+                    addText(column, nil); return
+                }
+                addText(column, text)
+            }
+
+            addText("api_detail", rawJSON)
+            addText("detail_fetched_at", now)
+            addText("api_title", detail.title)
+            addDouble("score", detail.score)
+            addText("cover", detail.cover)
+            addText("social_cover", detail.socialCover)
+            addText("intro", detail.description)
+            addJSON("actor_list", detail.actorList)
+            addInt("original", detail.original)
+            addInt("serialize_status", detail.serializeStatus)
+            addText("serialize_status_text", detail.serializeStatusText)
+            addInt("episode_count", detail.episodeCount)
+            addInt("play_count", detail.playCount)
+            addText("play_count_text", detail.playCountText)
+            addInt("like_count", detail.likeCount)
+            addInt("chase_count", detail.chaseCount)
+            addInt("comment_count", detail.commentCount)
+            addInt("collect_count", detail.collectCount)
+            addInt("current_episode_id", detail.currentEpisodeId)
+            addInt("continue_episode_id", detail.continueEpisodeId)
+            addInt("play_duration", detail.playDuration)
+            addText("resolution", detail.resolution)
+            addInt("video_width", detail.videoWidth)
+            addInt("video_height", detail.videoHeight)
+            addText("video_orientation", detail.videoOrientation)
+            addBool("is_collected", detail.isCollected)
+            addBool("is_chased", detail.isChased)
+            addText("content_access_type", detail.contentAccessType)
+            addInt("coin_price", detail.coinPrice)
+            addText("share_url", detail.shareUrl)
+            addText("share_title", detail.shareTitle)
+            addText("share_cover", detail.shareCover)
+            addBool("show_hot_badge", detail.showHotBadge)
+            addBool("show_new", detail.showNew)
+            addBool("show_completed", detail.showCompleted)
+            addBool("show_hot", detail.showHot)
+            addJSON("access_json", detail.access)
+            addJSON("urge_json", detail.urge)
+
+            let placeholders = Array(repeating: "?", count: names.count).joined(separator: ",")
+            let updates = names.dropFirst(2).map { "\($0)=excluded.\($0)" }.joined(separator: ", ")
+            DramaDatabase.execWrite(db, """
+            INSERT INTO drama_cache (\(names.joined(separator: ","))) VALUES (\(placeholders))
+            ON CONFLICT(site, drama_id) DO UPDATE SET \(updates)
+            """, what: "saveDetail \(dramaID)") { stmt in
+                DramaDatabase.bind(stmt, 1, site)
+                DramaDatabase.bind(stmt, 2, dramaID)
+                for (offset, setter) in setters.enumerated() { setter(stmt, Int32(offset + 3)) }
+            }
+
+            // 2) 每集元数据：行不存在时补建（详情接口可能比下载接口多列几集）
+            for ep in episodes {
+                DramaDatabase.execWrite(db, """
+                INSERT INTO drama_episodes (site, drama_id, episode_id, sort, title, duration, resolution,
+                                            is_new, access_state, can_play, content_type, is_trial, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
+                  sort=excluded.sort, title=excluded.title, duration=excluded.duration,
+                  resolution=excluded.resolution, is_new=excluded.is_new, access_state=excluded.access_state,
+                  can_play=excluded.can_play, content_type=excluded.content_type,
+                  is_trial=excluded.is_trial, updated_at=excluded.updated_at
+                """, what: "saveDetail ep \(ep.id)") { stmt in
+                    DramaDatabase.bind(stmt, 1, site)
+                    DramaDatabase.bind(stmt, 2, dramaID)
+                    sqlite3_bind_int64(stmt, 3, Int64(ep.id))
+                    sqlite3_bind_int(stmt, 4, Int32(ep.sort))
+                    DramaDatabase.bind(stmt, 5, ep.title)
+                    sqlite3_bind_int64(stmt, 6, Int64(ep.duration ?? 0))
+                    if let resolution = ep.resolution { DramaDatabase.bind(stmt, 7, resolution) } else { sqlite3_bind_null(stmt, 7) }
+                    sqlite3_bind_int(stmt, 8, (ep.isNew ?? false) ? 1 : 0)
+                    if let state = ep.access?.state { DramaDatabase.bind(stmt, 9, state) } else { sqlite3_bind_null(stmt, 9) }
+                    sqlite3_bind_int(stmt, 10, (ep.access?.canPlay ?? false) ? 1 : 0)
+                    if let type = ep.access?.contentType { DramaDatabase.bind(stmt, 11, type) } else { sqlite3_bind_null(stmt, 11) }
+                    sqlite3_bind_int(stmt, 12, (ep.access?.isTrial ?? false) ? 1 : 0)
+                    DramaDatabase.bind(stmt, 13, now)
+                }
+            }
+
+            // 3) 推荐剧：整份快照替换（列表顺序有意义，用 position 保留）
+            DramaDatabase.execWrite(db, "DELETE FROM drama_related WHERE site=? AND drama_id=?;",
+                                    what: "saveDetail related clear") { stmt in
+                DramaDatabase.bind(stmt, 1, site)
+                DramaDatabase.bind(stmt, 2, dramaID)
+            }
+            for (index, item) in related.enumerated() {
+                guard let videoID = item.videoId else { continue }
+                DramaDatabase.execWrite(db, """
+                INSERT INTO drama_related (site, drama_id, related_video_id, title, cover, tags,
+                                           play_count, play_count_text, serialize_status_text,
+                                           content_access_type, position, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(site, drama_id, related_video_id) DO UPDATE SET
+                  title=excluded.title, cover=excluded.cover, tags=excluded.tags,
+                  play_count=excluded.play_count, play_count_text=excluded.play_count_text,
+                  serialize_status_text=excluded.serialize_status_text,
+                  content_access_type=excluded.content_access_type,
+                  position=excluded.position, updated_at=excluded.updated_at
+                """, what: "saveDetail related \(videoID)") { stmt in
+                    DramaDatabase.bind(stmt, 1, site)
+                    DramaDatabase.bind(stmt, 2, dramaID)
+                    sqlite3_bind_int64(stmt, 3, Int64(videoID))
+                    if let title = item.title { DramaDatabase.bind(stmt, 4, title) } else { sqlite3_bind_null(stmt, 4) }
+                    if let cover = item.cover { DramaDatabase.bind(stmt, 5, cover) } else { sqlite3_bind_null(stmt, 5) }
+                    if let tags = item.tags { DramaDatabase.bind(stmt, 6, tags.joined(separator: " ")) } else { sqlite3_bind_null(stmt, 6) }
+                    sqlite3_bind_int64(stmt, 7, Int64(item.playCount ?? 0))
+                    if let text = item.playCountText { DramaDatabase.bind(stmt, 8, text) } else { sqlite3_bind_null(stmt, 8) }
+                    if let status = item.serializeStatusText { DramaDatabase.bind(stmt, 9, status) } else { sqlite3_bind_null(stmt, 9) }
+                    if let access = item.contentAccessType { DramaDatabase.bind(stmt, 10, access) } else { sqlite3_bind_null(stmt, 10) }
+                    sqlite3_bind_int(stmt, 11, Int32(index))
+                    DramaDatabase.bind(stmt, 12, now)
+                }
+            }
+        }
+        print("CACHE OK[saveDetail] \(site)#\(dramaID) bytes=\(rawJSON.count) episodes=\(episodes.count) related=\(related.count)")
+    }
+
+    /// 读回整包详情原文（后续要用未提升的字段时从这里解析，不必再发请求）
+    static func rawDetail(site: String, dramaID: String) -> String? {
+        guard let db = openDB() else { return nil }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT api_detail FROM drama_cache WHERE site=? AND drama_id=?;", -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "rawDetail prepare"); return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return DramaDatabase.text(stmt, 0)
+    }
+
+    /// 该剧的推荐剧快照（按接口给的顺序），本地推荐算法可用
+    static func relatedDramas(site: String, dramaID: String) -> [(videoID: Int, title: String?, cover: String?, tags: [String], playCount: Int)] {
+        guard let db = openDB() else { return [] }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT related_video_id, title, cover, tags, play_count FROM drama_related
+        WHERE site=? AND drama_id=? ORDER BY position;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "relatedDramas prepare"); return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
+        var result: [(videoID: Int, title: String?, cover: String?, tags: [String], playCount: Int)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let tags = (DramaDatabase.text(stmt, 3) ?? "").split(separator: " ").map(String.init)
+            result.append((Int(sqlite3_column_int64(stmt, 0)), DramaDatabase.text(stmt, 1),
+                           DramaDatabase.text(stmt, 2), tags, Int(sqlite3_column_int64(stmt, 4))))
+        }
+        return result
     }
 
     // MARK: 缓存行 → 领域模型

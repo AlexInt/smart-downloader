@@ -53,8 +53,9 @@ enum DramaMetaDump {
     }
 }
 
-/// 一次性隐藏 webview：加载剧集页提取元数据（og:image/标题/简介），落库后释放。
-/// 仅在纯原生页缺封面/简介时使用；同一剧每次运行只收割一次。
+/// 一次性隐藏 webview：加载剧集页，捕获详情接口响应并整包落库（DramaCache.saveDetail），
+/// 同时提取 DOM 元数据兜底，完成后释放。
+/// 每次进剧集页都抓一次（计数/推荐/服务端观看进度要新）；同一次访问内只抓一次。
 /// 2026-11-11 tags 来源改走请求拦截：注入响应捕获脚本，把剧集页全部 API 响应
 /// （api_*.json）与主文档完整 HTML（html_*.html）落盘，真机样本拿到后按 JSON
 /// 字段定向提取 tags（取代锚点法止血）。`-captureDramaMeta` 启动参数强制收割
@@ -143,15 +144,21 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         guard let cap = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
               let body = cap["body"] as? String else { return }
         var via = "plain"
+        // 入库用的原文：明文直接用响应体；信封用解密后的 JSON；payload 用结构化回写
+        var rawForStore = body
         var detail = try? JSONDecoder().decode(DramaDetailData.self, from: Data(body.utf8))
         if detail == nil, let json = DramaSession.decryptCapturedBody(body),
            let data = try? JSONSerialization.data(withJSONObject: json) {
             detail = try? JSONDecoder().decode(DramaDetailData.self, from: data)
             via = "envelope"
+            rawForStore = String(data: data, encoding: .utf8) ?? body
         }
         if detail == nil, let d = DramaDetailData.fromNuxtPayload(Data(body.utf8), videoID: target.dramaID) {
             detail = d
             via = "payload"
+            if let data = try? JSONEncoder().encode(d), let text = String(data: data, encoding: .utf8) {
+                rawForStore = text
+            }
         }
         guard let detail else {
             // 候选体量（>200B）的解码失败都打：空 beacon/短响应是噪音不记；
@@ -166,6 +173,10 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
             return
         }
         apiDetail = detail
+        // 整包落库：详情接口的全部字段都留下（计数/规格/权限/催更/每集元数据/推荐剧），
+        // 不再只挑 tags —— 挑字段等于把没挑的永久丢掉
+        DramaCache.saveDetail(site: target.site, dramaID: target.dramaID, rawJSON: rawForStore, detail: detail)
+        print("PLAYER_DBG [Entry] harvest detail saved via=\(via) bytes=\(rawForStore.count) episodes=\(detail.episodes?.count ?? 0) related=\(detail.relatedList?.count ?? 0)")
         if let tags = detail.tags, !tags.isEmpty {
             DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID,
                                     update: ["tags": tags.joined(separator: " "), "tags_source": "api"])
@@ -254,8 +265,15 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                     return
                 }
                 var update = d
-                if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
-                if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
+                if let api = self.apiDetail {
+                    // 详情接口的封面/简介比 DOM 干净（简介是完整剧情），以接口为准；
+                    // DOM 的 ogImage/desc 仍留在 page_meta 里备查
+                    if let cover = api.cover, !cover.isEmpty { update["cover"] = cover }
+                    if let intro = api.description, !intro.isEmpty { update["intro"] = intro }
+                } else {
+                    if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
+                    if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
+                }
                 if let t = d["title"] as? String, !t.isEmpty { update["page_title"] = t }
                 if let tags = self.apiDetail?.tags, !tags.isEmpty {
                     update["tags"] = tags.joined(separator: " ")
