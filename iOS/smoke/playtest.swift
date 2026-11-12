@@ -29,21 +29,29 @@ struct PlayTest {
             return
         }
         let asset = AVURLAsset(url: url)
-        // loadValues completion 在任意队列：标志位主线程 RunLoop 轮询（冒烟工具的良性竞争）
+        // 资产加载 async 岛（Apple 非废弃加载 API 只有 async load）：结果写标志位，主线程 RunLoop 等
         var loadDone = false
-        asset.loadValuesAsynchronously(forKeys: ["duration"]) { loadDone = true }
+        var loadedDuration: CMTime?
+        var loadError: Error?
+        Task { @MainActor in
+            do {
+                loadedDuration = try await asset.load(.duration)
+            } catch {
+                loadError = error
+            }
+            loadDone = true
+        }
         let loadDeadline = Date().addingTimeInterval(15)
         while !loadDone && Date() < loadDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
-        switch asset.status(of: .duration) {
-        case .loaded(let duration):
-            print("ASSET: duration=\(CMTimeGetSeconds(duration))s")
-        case .failed(let error):
-            print("RESULT: LOAD-FAILED \(error.localizedDescription)")
+        if let loadError {
+            print("RESULT: LOAD-FAILED \(loadError.localizedDescription)")
             return
-        default:
+        }
+        guard let duration = loadedDuration else {
             print("RESULT: LOAD-FAILED notLoaded/timeout")
             return
         }
+        print("ASSET: duration=\(CMTimeGetSeconds(duration))s")
 
         // 真实播放验证：AVPlayer 播放并观察进度推进
         let item = AVPlayerItem(url: url)

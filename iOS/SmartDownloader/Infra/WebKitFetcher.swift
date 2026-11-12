@@ -16,7 +16,7 @@ import WebKit
 // - fetch 是同步阻塞接口，只允许在后台工作线程调用：主线程发起下载，
 //   工作线程用信号量等结果（120s 超时兜底；WKDownload 本身无超时回调）
 // - startDownload(using:) 只有 async API（Apple 无 completion 变体），
-//   是全代码库唯一保留的 async 岛；拿到 download 对象前 delegate 可能先回调，
+//   是代码库两处 async 岛之一（另一处：PlaybackPlayerService 资产加载）；拿到 download 对象前 delegate 可能先回调，
 //   故 paths/results/waiters 三张表做两阶段握手，回调先行时暂存结果
 // - 所有可变状态只在主线程访问（WebKit 固定在主线程回调）
 
@@ -90,7 +90,7 @@ final class WebKitFetcher: NSObject {
             request.setValue("bytes=\(offset)-\(offset + range.length - 1)",
                              forHTTPHeaderField: "Range")
         }
-        // 唯一 async 岛：startDownload(using:) 无 completion 变体（Apple API 限制）。
+        // async 岛之一：startDownload(using:) 无 completion 变体（Apple API 限制）。
         // delegate 在拿到 download 的主线程同步段内紧随赋值；此后到 waiter 注册
         // 之间若有回调先行，由 results 暂存表覆盖（注册时先查表）。
         Task { @MainActor in

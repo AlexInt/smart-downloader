@@ -4,7 +4,7 @@ import AVFoundation
 /// 依据 ZFPlayer / 开源抖音实践：切集只换 item，绝不在滑动时新建 AVPlayer。
 ///
 /// 相邻集预热池（秒开的关键）：停稳播当前集时，提前为相邻集完成
-/// 回环 URL 解析 + m3u8 拉取解析（`loadValuesAsynchronously(forKeys: ["playable"])`）；
+/// 回环 URL 解析 + m3u8 拉取解析（`asset.load(.isPlayable)`，资产加载 async 岛）；
 /// 用户滑过去时 makeItem 直接命中预热资产构建 item，跳过整条清单加载管线。
 /// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class PlaybackPlayerService {
@@ -13,7 +13,7 @@ final class PlaybackPlayerService {
     /// 预热完成的资产：集号 → 已解析过播放清单的 AVURLAsset
     private var preloadedAssets: [Int: AVURLAsset] = [:]
     /// 正在预热的集号（在飞标记）：淘汰/teardown 时移除，回调落地发现已移除即丢弃资产
-    ///（loadValuesAsynchronously 本身不可取消，与旧 Task.cancel + isCancelled 语义一致）
+    ///（asset.load 不响应中途取消，与旧 Task.cancel + isCancelled 语义一致）
     private var preloadingSorts: Set<Int> = []
 
     init() {
@@ -106,23 +106,26 @@ final class PlaybackPlayerService {
                 return
             }
             let asset = AVURLAsset(url: url)
-            // "playable" 是 isPlayable 的 legacy key：加载完成即完成 m3u8 拉取解析 —— 预热的核心收益
-            asset.loadValuesAsynchronously(forKeys: ["playable"]) {
-                DispatchQueue.main.async {
-                    // 在飞标记已被淘汰（teardown / 滑走）→ 丢弃，等价旧 Task.isCancelled 检查
-                    guard self.preloadingSorts.contains(episode.sort) else { return }
-                    self.preloadingSorts.remove(episode.sort)
-                    // status(of:) 是同步查询（非 async）：.loaded 即加载成功（与旧 load 不抛错同义），
-                    // .failed 携带错误详情
-                    switch asset.status(of: .isPlayable) {
-                    case .loaded:
-                        self.preloadedAssets[episode.sort] = asset
-                        print("PLAYER_DBG [Service] preload OK sort=\(episode.sort)")
-                    case .failed(let error):
-                        print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=\(error.localizedDescription)")
-                    default:
-                        print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=notLoaded")
-                    }
+            // 资产加载 async 岛（与 WebKitFetcher 同原则：Apple 非废弃的加载 API 只有 async load(_:)，
+            // loadValuesAsynchronously 已 deprecated）：load(.isPlayable) 完成 m3u8 拉取解析——预热核心收益。
+            // @MainActor Task：加载完成后回到主 actor 直接碰预热池状态，其余调度仍全 GCD。
+            Task { @MainActor [weak self] in
+                let result: Result<Void, Error>
+                do {
+                    _ = try await asset.load(.isPlayable)
+                    result = .success(())
+                } catch {
+                    result = .failure(error)
+                }
+                // 在飞标记已被淘汰（teardown / 滑走）→ 丢弃，等价旧 Task.isCancelled 检查
+                guard let self, self.preloadingSorts.contains(episode.sort) else { return }
+                self.preloadingSorts.remove(episode.sort)
+                switch result {
+                case .success:
+                    self.preloadedAssets[episode.sort] = asset
+                    print("PLAYER_DBG [Service] preload OK sort=\(episode.sort)")
+                case .failure(let error):
+                    print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=\(error.localizedDescription)")
                 }
             }
         }
