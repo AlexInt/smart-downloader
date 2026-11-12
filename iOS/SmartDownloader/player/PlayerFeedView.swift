@@ -23,15 +23,10 @@ struct PlayerFeedView: View {
                     makeCard: { slot in AnyView(card(for: slot)) }
                 )
                 .ignoresSafeArea()
-                // 停稳防抖：快滑时旧任务自动取消，只在最后一页切换播放源
-                .task(id: scrollID) {
-                    print("PLAYER_DBG [CHECK] feedTask start scrollID=\(scrollID.map(String.init) ?? "nil") vmBefore=\(vm.currentSort.map(String.init) ?? "nil")")
-                    guard let sort = scrollID else { return }
-                    vm.currentSort = sort
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    guard !Task.isCancelled else { return }
-                    await vm.pageSettled(sort: sort)
-                }
+                // 停稳防抖收在 VM（schedulePageSettle）：快滑时旧 WorkItem 取消，
+                // 只在最后一页切换播放源（替代旧 .task(id:) 的自动取消）
+                .onAppear { vm.schedulePageSettle(sort: scrollID) }
+                .onChange(of: scrollID) { _, new in vm.schedulePageSettle(sort: new) }
                 // slots 就绪后把 UIKit 分页定位到用户点的那一集（只做一次）
                 .onChange(of: vm.slots.count, initial: true) { _, count in
                     print("PLAYER_DBG [FeedView] slotsCount=\(count) scrollID=\(scrollID.map(String.init) ?? "nil") vmCurrent=\(vm.currentSort.map(String.init) ?? "nil")")

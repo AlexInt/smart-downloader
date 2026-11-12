@@ -4,7 +4,7 @@ import Combine
 /// 原生剧集页的 ViewModel（架构评估 P8 拆分）：
 /// 剧集数据/下载状态/选择状态与全部编排（缓存优先加载、选集下载、播放入口）都在这里，
 /// DramaNativePage 只渲染 + 转发用户意图。
-@MainActor
+/// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class DramaPageViewModel: ObservableObject {
     let target: DramaTarget
     private let manager: DownloadManager
@@ -21,7 +21,7 @@ final class DramaPageViewModel: ObservableObject {
     @Published private(set) var selected: Set<Int> = []
     /// 当前列表是否来自本地缓存（缓存优先，刷新按钮强制更新）
     @Published private(set) var fromCache = false
-    /// 触发 .task(id:) 重载的版本号（重试按钮）
+    /// 触发 onChange 重载的版本号（重试按钮）
     @Published private(set) var reloadID = UUID()
     /// 头部元数据（缓存 + 后台收割）
     @Published private(set) var coverURL: URL?
@@ -42,7 +42,7 @@ final class DramaPageViewModel: ObservableObject {
     /// 「查看全部 ›」展开的全量选集面板（保留多选下载 / 刷新能力）
     @Published var showAllEpisodes = false
     @Published private(set) var toastText: String?
-    private var toastTask: Task<Void, Never>?
+    private var toastTask: DispatchWorkItem?
     /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除
     private var toastToken = UUID()
     /// 封面重试令牌：换值让 AsyncImage 换 id 重建，重新发起一次图片请求
@@ -188,9 +188,8 @@ final class DramaPageViewModel: ObservableObject {
     func retryCover() {
         guard coverURL != nil else {
             DramaMetaHarvester.harvestedKeys.remove(target.id)
-            Task {
-                await DramaMetaHarvester.harvest(target: target)
-                preloadHeaderFromCache()
+            DramaMetaHarvester.harvest(target: target) { [weak self] in
+                self?.preloadHeaderFromCache()
             }
             return
         }
@@ -204,18 +203,19 @@ final class DramaPageViewModel: ObservableObject {
         let token = UUID()
         toastToken = token
         toastText = text
-        toastTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+        let work = DispatchWorkItem { [weak self] in
             guard let self, self.toastToken == token else { return }
             self.toastText = nil
         }
+        toastTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
-    /// 重试按钮：换 reload 版本号触发 .task(id:) 重新加载
+    /// 重试按钮：换 reload 版本号触发 onChange 重新加载
     func reload() { reloadID = UUID() }
 
     /// ↻ 强制更新：走网络拉取并按集 ID 合并新集（保留下载标记）
-    func refresh() async { await fetchAndCache() }
+    func refresh() { fetchAndCache() }
 
     func selectAll() { selected = Set(selectableEpisodes.map(\.id)) }
     func clearSelection() { selected.removeAll() }
@@ -256,7 +256,7 @@ final class DramaPageViewModel: ObservableObject {
 
     // MARK: - 加载编排
 
-    func load() async {
+    func load() {
         loading = true
         loadError = nil
         selected = []
@@ -265,12 +265,12 @@ final class DramaPageViewModel: ObservableObject {
            let info = DramaCache.dramaInfo(from: entry) {
             self.info = info
             fromCache = true
-            await applyLibraryState(for: info)
+            applyLibraryState(for: info)
             harvestIfNeeded()
             loading = false
             return
         }
-        await fetchAndCache()
+        fetchAndCache()
     }
 
     /// 缓存里已有的封面/简介/标签先上头部（无网络也能显示）
@@ -296,33 +296,36 @@ final class DramaPageViewModel: ObservableObject {
         }
     }
 
-    private func fetchAndCache() async {
+    private func fetchAndCache() {
         loading = true
         loadError = nil
         let session = DramaSession(target: target)
         self.session = session
-        do {
-            let info = try await session.fetchInfo()
-            self.info = info
-            fromCache = false
-            DramaCache.saveInfo(site: target.site, dramaID: target.dramaID, info: info)
-            await applyLibraryState(for: info)
-            harvestIfNeeded()
-        } catch {
-            // 有缓存时网络失败不白屏：回退缓存继续用
-            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
-               let info = DramaCache.dramaInfo(from: entry) {
+        session.fetchInfo { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let info):
                 self.info = info
-                fromCache = true
-                await applyLibraryState(for: info)
-            } else {
-                loadError = error.localizedDescription
+                self.fromCache = false
+                DramaCache.saveInfo(site: self.target.site, dramaID: self.target.dramaID, info: info)
+                self.applyLibraryState(for: info)
+                self.harvestIfNeeded()
+            case .failure(let error):
+                // 有缓存时网络失败不白屏：回退缓存继续用
+                if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID),
+                   let info = DramaCache.dramaInfo(from: entry) {
+                    self.info = info
+                    self.fromCache = true
+                    self.applyLibraryState(for: info)
+                } else {
+                    self.loadError = error.localizedDescription
+                }
             }
+            self.loading = false
         }
-        loading = false
     }
 
-    private func applyLibraryState(for info: DramaInfo) async {
+    private func applyLibraryState(for info: DramaInfo) {
         // 先收编旧版散装下载（只搬不删），再算已下载集（磁盘为账本），并对账写回缓存
         manager.collectLegacyEpisodes(forSeries: info.name)
         manager.refreshLibrary()
@@ -357,13 +360,13 @@ final class DramaPageViewModel: ObservableObject {
             return
         }
         print("PLAYER_DBG [Entry] harvest trigger reason=\(force ? "forcedCapture" : "headerMissing") cover=\(coverURL != nil) intro=\(intro != nil) tags=\(hasApiTags) source=\(tagsSource ?? "nil")")
-        Task {
-            await DramaMetaHarvester.harvest(target: target)
-            if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
-                if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
-                if let introText = entry.intro, !introText.isEmpty { intro = introText }
-                tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
-                tagsSource = entry.tagsSource
+        DramaMetaHarvester.harvest(target: target) { [weak self] in
+            guard let self else { return }
+            if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID) {
+                if let cover = entry.cover, let url = URL(string: cover) { self.coverURL = url }
+                if let introText = entry.intro, !introText.isEmpty { self.intro = introText }
+                self.tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
+                self.tagsSource = entry.tagsSource
             }
         }
     }

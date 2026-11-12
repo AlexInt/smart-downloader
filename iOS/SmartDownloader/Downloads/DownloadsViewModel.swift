@@ -5,7 +5,7 @@ import Combine
 /// 编辑模式/勾选/批量删除编排与「下载中/已下载」两个区域的派生列表都在这里，
 /// DownloadsView 只渲染 + 转发意图。排序偏好持久化由本 VM 接管
 ///（UserDefaults "DownloadsView.sortOrder"，与剧详情页 SeriesDetailView 的 @AppStorage 共享同一 key）。
-@MainActor
+/// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class DownloadsViewModel: ObservableObject {
     private let manager: DownloadManager
 

@@ -19,9 +19,9 @@ struct DramaPlayerContainer: View {
             onClose()
             dismiss()
         })
-            .onAppear { print("PLAYER_DBG [Container] appear series=\(request.seriesName)") }
-            .task {
-                print("PLAYER_DBG [Container] task → configure")
+            .onAppear {
+                print("PLAYER_DBG [Container] appear series=\(request.seriesName)")
+                print("PLAYER_DBG [Container] appear → configure")
                 feedVM.configure(request: request)
             }
             .onDisappear {

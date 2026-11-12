@@ -552,7 +552,7 @@ struct DramaDetailView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        Task { await vm.refresh() }
+                        vm.refresh()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }

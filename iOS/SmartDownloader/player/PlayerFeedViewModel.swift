@@ -3,7 +3,7 @@ import Combine
 
 /// 分页播放页 ViewModel：列表数据源、当前页、边界 toast、停稳后切换播放源。
 /// 不含 UIKit / AVFoundation 对象；资源调度委托 PlaybackQueueService。
-@MainActor
+/// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class PlayerFeedViewModel: ObservableObject {
     @Published private(set) var slots: [PlayableEpisode] = []
     /// 与系统分页的 scrollPosition 双向绑定
@@ -17,7 +17,11 @@ final class PlayerFeedViewModel: ObservableObject {
     private var queue: PlaybackQueueService?
     /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除，避免旧任务误清新提示
     private var toastToken = UUID()
-    private var toastTask: Task<Void, Never>?
+    private var toastTask: DispatchWorkItem?
+    /// 停稳防抖 WorkItem（150ms）：新滑动取消旧的，只在最后一页切换播放源
+    private var settleWork: DispatchWorkItem?
+    /// 停稳代际：每次 pageSettled/stop 递增，迟到的加载完成回调按代际丢弃
+    private var settleGeneration = 0
     private var configured = false
     private var endToastShown = false
 
@@ -52,13 +56,29 @@ final class PlayerFeedViewModel: ObservableObject {
         print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil")")
     }
 
-    /// 滚动停稳后（由 .task(id:) 防抖调用）才切换播放源，避免快滑反复 replaceCurrentItem
-    func pageSettled(sort: Int) async {
+    /// 滚动停稳防抖入口（View 的 onAppear/onChange 转发，替代旧 .task(id:) 自动取消）：
+    /// 150ms 内新滑动取消旧 WorkItem，只在最后一页切换播放源
+    func schedulePageSettle(sort: Int?) {
+        print("PLAYER_DBG [CHECK] feedTask start scrollID=\(sort.map(String.init) ?? "nil") vmBefore=\(currentSort.map(String.init) ?? "nil")")
+        settleWork?.cancel()
+        guard let sort else { return }
+        currentSort = sort
+        let work = DispatchWorkItem { [weak self] in
+            self?.pageSettled(sort: sort)
+        }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// 滚动停稳后才切换播放源，避免快滑反复 replaceCurrentItem
+    func pageSettled(sort: Int) {
         print("PLAYER_DBG [VM] pageSettled begin sort=\(sort)")
         guard let slot = slots.first(where: { $0.sort == sort }) else {
             print("PLAYER_DBG [VM] pageSettled NO SLOT sort=\(sort)")
             return
         }
+        settleGeneration += 1
+        let generation = settleGeneration
         queue?.select(sort: sort)
         // 相邻集预热与当前集加载并行：在用户滑过去之前把 m3u8 管线提前跑完（秒开关键）。
         // wanted 必须带上当前集：上一轮为本集预热的资产不能被本轮邻居预热淘汰
@@ -66,20 +86,21 @@ final class PlayerFeedViewModel: ObservableObject {
         preloadNeighbors(of: sort, current: slot)
         // 先置 false 让卡片回到加载态，load 完成后再置 true 触发一次刷新显露视频层
         playbackReady = false
-        await playback.load(episode: slot)
-        guard !Task.isCancelled else {
-            print("PLAYER_DBG [VM] pageSettled CANCELLED sort=\(sort)（新滑动接管）")
-            return
-        }
-        playbackReady = playback.isReady
-        print("PLAYER_DBG [CHECK] pageSettled done sort=\(sort) isLast=\(isLast(sort)) slots=\(slots.count) current=\(currentSort.map(String.init) ?? "nil") ready=\(playbackReady)")
-        if !slot.isAvailable {
-            // 待办 #4：滑到未下载集给引导提示（不改 resolve 语义：全剧集数可滑、胶囊 4/11 不变）。
-            // 占位卡已有内联提示，toast 补「去哪下载」的行动指引；优先于到底提示（更有信息量）
-            showToast("第\(sort)集尚未下载 · 回剧集页下载后可看")
-        } else if isLast(sort), !endToastShown {
-            endToastShown = true
-            showToast("已经到底了")
+        playback.load(episode: slot) { [weak self] in
+            guard let self, generation == self.settleGeneration else {
+                print("PLAYER_DBG [VM] pageSettled CANCELLED sort=\(sort)（新滑动接管）")
+                return
+            }
+            self.playbackReady = self.playback.isReady
+            print("PLAYER_DBG [CHECK] pageSettled done sort=\(sort) isLast=\(self.isLast(sort)) slots=\(self.slots.count) current=\(self.currentSort.map(String.init) ?? "nil") ready=\(self.playbackReady)")
+            if !slot.isAvailable {
+                // 待办 #4：滑到未下载集给引导提示（不改 resolve 语义：全剧集数可滑、胶囊 4/11 不变）。
+                // 占位卡已有内联提示，toast 补「去哪下载」的行动指引；优先于到底提示（更有信息量）
+                self.showToast("第\(sort)集尚未下载 · 回剧集页下载后可看")
+            } else if self.isLast(sort), !self.endToastShown {
+                self.endToastShown = true
+                self.showToast("已经到底了")
+            }
         }
     }
 
@@ -114,16 +135,21 @@ final class PlayerFeedViewModel: ObservableObject {
         toastToken = token
         toastText = text
         print("PLAYER_DBG [VM] showToast text=\(text) current=\(currentSort.map(String.init) ?? "nil")")
-        toastTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+        let work = DispatchWorkItem { [weak self] in
             guard let self, self.toastToken == token else { return }
             self.toastText = nil
             print("PLAYER_DBG [VM] showToast dismiss reason=timeout3s")
         }
+        toastTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
+        // 停稳防抖与在飞加载一并作废（等价旧 .task 随视图消失自动取消）
+        settleWork?.cancel()
+        settleWork = nil
+        settleGeneration += 1
         // 退出播放页顺手清掉挂着的提示，避免下个页面复用时残留
         toastTask?.cancel()
         toastText = nil

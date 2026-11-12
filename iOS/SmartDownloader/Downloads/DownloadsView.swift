@@ -427,20 +427,24 @@ struct PlayerView: View {
                 ProgressView("准备播放…")
             }
         }
-        .task {
-            var url = item.url
-            if item.isHLSFolder {
-                let playback = await LocalMediaServer.shared.playbackURL(
-                    forFolder: item.url.deletingLastPathComponent())
-                guard playback.scheme == "http" else {
-                    loadError = "本地播放服务启动失败"
-                    return
-                }
-                url = playback
+        .onAppear {
+            let start: (URL) -> Void = { url in
+                let avPlayer = AVPlayer(url: url)
+                player = avPlayer
+                avPlayer.play()
             }
-            let avPlayer = AVPlayer(url: url)
-            player = avPlayer
-            avPlayer.play()
+            if item.isHLSFolder {
+                // playbackURL completion 固定主线程
+                LocalMediaServer.shared.playbackURL(forFolder: item.url.deletingLastPathComponent()) { playback in
+                    guard playback.scheme == "http" else {
+                        loadError = "本地播放服务启动失败"
+                        return
+                    }
+                    start(playback)
+                }
+            } else {
+                start(item.url)
+            }
         }
     }
 }

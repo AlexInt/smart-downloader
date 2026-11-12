@@ -10,7 +10,7 @@ import Foundation
 // 运行时从随包携带的 video_auto.py 解析（与 videocli 读仓库根文件同一思路）。
 
 /// 一次选集下载的会话：登录一次，之后每集下载前重调接口保证 auth_key 新鲜
-@MainActor
+/// 主线程约定：本类只在主线程调用，completion 统一回主线程（UserDefaults 读写同线程）
 final class DramaSession {
     let target: DramaTarget
     private var token = ""
@@ -29,40 +29,56 @@ final class DramaSession {
 
     // MARK: 拉取剧集信息 / 新鲜直链
 
-    func fetchInfo() async throws -> DramaInfo {
-        let constants = try self.constants()
-        token = (try? await login(constants)) ?? ""
-        let data = try await fetchDramaData(constants)
-        if ProcessInfo.processInfo.arguments.contains("dumpDramaMeta") {
-            Self.dumpMeta(data, target: target)
-        }
-        guard let name = data["drama_name"] as? String,
-              let episodeAll = data["episodeAll"] as? [[String: Any]] else {
-            throw DramaError.badResponse
-        }
-        let episodes = episodeAll
-            .filter { !Self.isTrue($0["is_adv"]) }
-            .sorted { ($0["sort"] as? Int ?? 0) < ($1["sort"] as? Int ?? 0) }
-            .map { ep in
-                let access = ep["access"] as? [String: Any]
-                return ApiDramaEpisode(id: ep["id"] as? Int ?? 0,
-                                    sort: ep["sort"] as? Int ?? 0,
-                                    playable: Self.isTrue(access?["can_play"]))
+    func fetchInfo(completion: @escaping (Result<DramaInfo, Error>) -> Void) {
+        do {
+            let constants = try self.constants()
+            login(constants) { token in
+                self.token = token
+                self.fetchDramaData(constants) { result in
+                    completion(result.flatMap { data in
+                        if ProcessInfo.processInfo.arguments.contains("dumpDramaMeta") {
+                            Self.dumpMeta(data, target: self.target)
+                        }
+                        guard let name = data["drama_name"] as? String,
+                              let episodeAll = data["episodeAll"] as? [[String: Any]] else {
+                            return .failure(DramaError.badResponse)
+                        }
+                        let episodes = episodeAll
+                            .filter { !Self.isTrue($0["is_adv"]) }
+                            .sorted { ($0["sort"] as? Int ?? 0) < ($1["sort"] as? Int ?? 0) }
+                            .map { ep in
+                                let access = ep["access"] as? [String: Any]
+                                return ApiDramaEpisode(id: ep["id"] as? Int ?? 0,
+                                                    sort: ep["sort"] as? Int ?? 0,
+                                                    playable: Self.isTrue(access?["can_play"]))
+                            }
+                        return .success(DramaInfo(name: name, updateStatus: data["update_status"] as? String, episodes: episodes))
+                    })
+                }
             }
-        return DramaInfo(name: name, updateStatus: data["update_status"] as? String, episodes: episodes)
+        } catch {
+            completion(.failure(error))
+        }
     }
 
     /// 每集下载前重调接口取新鲜直链（auth_key 有时效）
-    func freshVideoURL(for episode: ApiDramaEpisode) async throws -> String {
-        let constants = try self.constants()
-        let data = try await fetchDramaData(constants)
-        guard let episodeAll = data["episodeAll"] as? [[String: Any]],
-              let fresh = episodeAll.first(where: { ($0["id"] as? Int) == episode.id && !Self.isTrue($0["is_adv"]) }) else {
-            throw DramaError.episodeMissing
+    func freshVideoURL(for episode: ApiDramaEpisode, completion: @escaping (Result<String, Error>) -> Void) {
+        do {
+            let constants = try self.constants()
+            fetchDramaData(constants) { result in
+                completion(result.flatMap { data in
+                    guard let episodeAll = data["episodeAll"] as? [[String: Any]],
+                          let fresh = episodeAll.first(where: { ($0["id"] as? Int) == episode.id && !Self.isTrue($0["is_adv"]) }) else {
+                        return .failure(DramaError.episodeMissing)
+                    }
+                    let url = (fresh["video_url"] as? String) ?? (fresh["video_url_h265"] as? String) ?? ""
+                    guard url.hasPrefix("http") else { return .failure(DramaError.noVideoURL) }
+                    return .success(url)
+                })
+            }
+        } catch {
+            completion(.failure(error))
         }
-        let url = (fresh["video_url"] as? String) ?? (fresh["video_url_h265"] as? String) ?? ""
-        guard url.hasPrefix("http") else { throw DramaError.noVideoURL }
-        return url
     }
 
     /// 调查用：启动参数 dumpDramaMeta 时——①完整字段结构写系统日志（idevicesyslog 可采）
@@ -130,37 +146,49 @@ final class DramaSession {
 
     // MARK: 协议实现（与 videocli.swift 同逻辑）
 
-    private func login(_ constants: Constants) async throws -> String {
+    /// 登录失败/响应无 token 一律回 ""（游客模式，与旧 try? 语义一致）
+    private func login(_ constants: Constants, completion: @escaping (String) -> Void) {
         // token 30 天有效：按站点缓存，避免每次开面板都打登录接口（站点 WAF 对高频登录敏感）
         let tokenKey = "DramaAPI.token.\(target.site)"
         if let cached = UserDefaults.standard.string(forKey: tokenKey), !cached.isEmpty {
             print("DRAMA: 使用缓存 token")
-            return cached
+            completion(cached)
+            return
         }
-        let response = try await apiPost(path: "api/account/login", token: "",
-                                         extra: ["username": constants.username, "password": constants.password],
-                                         constants: constants)
-        if let data = response["data"] as? [String: Any], let t = data["token"] as? String {
-            UserDefaults.standard.set(t, forKey: tokenKey)
-            print("DRAMA: 登录成功")
-            return t
+        apiPost(path: "api/account/login", token: "",
+                extra: ["username": constants.username, "password": constants.password],
+                constants: constants) { result in
+            switch result {
+            case .success(let response):
+                if let data = response["data"] as? [String: Any], let t = data["token"] as? String {
+                    UserDefaults.standard.set(t, forKey: tokenKey)
+                    print("DRAMA: 登录成功")
+                    completion(t)
+                } else {
+                    print("DRAMA: 游客模式（响应无 token）")
+                    completion("")
+                }
+            case .failure:
+                completion("")
+            }
         }
-        print("DRAMA: 游客模式（响应无 token）")
-        return ""
     }
 
-    private func fetchDramaData(_ constants: Constants) async throws -> [String: Any] {
-        let decrypted = try await apiPost(path: "api/playlet/play", token: token,
-                                          extra: ["playlet_id": target.dramaID,
-                                                  "video_id": target.dramaID,
-                                                  "episode_id": "0"],
-                                          constants: constants)
-        guard let data = decrypted["data"] as? [String: Any] else { throw DramaError.badResponse }
-        return data
+    private func fetchDramaData(_ constants: Constants, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        apiPost(path: "api/playlet/play", token: token,
+                extra: ["playlet_id": target.dramaID,
+                        "video_id": target.dramaID,
+                        "episode_id": "0"],
+                constants: constants) { result in
+            completion(result.flatMap { decrypted in
+                guard let data = decrypted["data"] as? [String: Any] else { return .failure(DramaError.badResponse) }
+                return .success(data)
+            })
+        }
     }
 
     private func apiPost(path: String, token: String, extra: [String: String],
-                         constants: Constants) async throws -> [String: Any] {
+                         constants: Constants, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         var form = URLComponents()
         var items: [URLQueryItem] = [
             .init(name: "bundleId", value: "com.pwa.mater"),
@@ -175,7 +203,10 @@ final class DramaSession {
         items += extra.map { URLQueryItem(name: $0.key, value: $0.value) }
         form.queryItems = items
 
-        guard let apiURL = URL(string: "\(target.site)/api.php/\(path)") else { throw DramaError.badRequest }
+        guard let apiURL = URL(string: "\(target.site)/api.php/\(path)") else {
+            completion(.failure(DramaError.badRequest))
+            return
+        }
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
@@ -188,17 +219,32 @@ final class DramaSession {
         let session = URLSession(configuration: .ephemeral,
                                  delegate: DownloadEngine.TrustAllSessionDelegate(),
                                  delegateQueue: nil)
-        let (data, _) = try await session.data(for: request)
-
-        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (envelope["errcode"] as? Int) == 0 else {
-            let snippet = String(data: data, encoding: .utf8)?.prefix(160) ?? ""
-            // 接口错误（含 token 失效）：清缓存，下次开面板重新登录
-            UserDefaults.standard.removeObject(forKey: "DramaAPI.token.\(target.site)")
-            throw DramaError.apiError(String(snippet))
-        }
-        guard let payload = envelope["data"] as? String else { throw DramaError.badResponse }
-        return try Self.decryptPayload(payload, keyString: constants.aesKey, ivString: constants.aesIV)
+        session.dataTask(with: request) { data, _, error in
+            // 回主线程再碰 UserDefaults / 回调调用方（与旧 MainActor 语义一致）
+            DispatchQueue.main.async {
+                if let error {
+                    completion(.failure(error))
+                    return
+                }
+                guard let data else {
+                    completion(.failure(DramaError.badResponse))
+                    return
+                }
+                do {
+                    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          (envelope["errcode"] as? Int) == 0 else {
+                        let snippet = String(data: data, encoding: .utf8)?.prefix(160) ?? ""
+                        // 接口错误（含 token 失效）：清缓存，下次开面板重新登录
+                        UserDefaults.standard.removeObject(forKey: "DramaAPI.token.\(self.target.site)")
+                        throw DramaError.apiError(String(snippet))
+                    }
+                    guard let payload = envelope["data"] as? String else { throw DramaError.badResponse }
+                    completion(.success(try Self.decryptPayload(payload, keyString: constants.aesKey, ivString: constants.aesIV)))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }.resume()
     }
 
     /// base64(空格还原+) -> AES-128-CBC -> PKCS7 去填充 -> JSON（与 video_auto.py 同逻辑）
@@ -245,7 +291,7 @@ final class DramaSession {
 // 选集下载的队列：每集下载前重调接口取新鲜直链；同时最多 2 个集任务在跑
 // （每个任务内部仍 6 并发切片），其余排队「等待中」。用户删掉的等待任务自动跳过。
 
-@MainActor
+/// 主线程约定：调度状态只在主线程访问（GCD 版，无线程标注）
 final class SeriesDownloadCoordinator {
     static let maxConcurrentEpisodes = 2
     /// 保活：进行中的调度器（全部集结束/被删光后自动移除）
@@ -294,15 +340,16 @@ final class SeriesDownloadCoordinator {
                 continue  // 用户已删掉该等待任务，直接跳过
             }
             running += 1
-            Task { @MainActor in
-                do {
-                    let url = try await session.freshVideoURL(for: plan.episode)
+            let manager = self.manager
+            session.freshVideoURL(for: plan.episode) { [weak self] result in
+                switch result {
+                case .success(let url):
                     guard manager.containsTask(id: plan.taskID) else {
-                        finishOne()  // 取到直链前任务被删
+                        self?.finishOne()  // 取到直链前任务被删
                         return
                     }
                     task.url = url
-                    manager.run(task) { [weak self] in
+                    manager.run(task) {
                         // 下载完成：该集"已下载 + 落盘目录名"记入缓存
                         if task.state == .done, let self,
                            let folder = task.outputURL?.deletingLastPathComponent().lastPathComponent {
@@ -313,9 +360,9 @@ final class SeriesDownloadCoordinator {
                         }
                         self?.finishOne()
                     }
-                } catch {
+                case .failure(let error):
                     task.state = .failed("获取第\(plan.episode.sort)集地址失败: \(error.localizedDescription)")
-                    finishOne()
+                    self?.finishOne()
                 }
             }
         }

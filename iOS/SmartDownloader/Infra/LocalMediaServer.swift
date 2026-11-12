@@ -5,67 +5,65 @@ import Network
 ///
 /// 为什么需要它：AVFoundation 无法直接播放文件版 m3u8，也无法播放裸 TS 合并文件（iOS 上没有 ffmpeg）。
 /// 「本地回环 HTTP + 重写后的播放列表」是 iOS 离线 HLS 播放的标准做法。
-/// 可变状态全部收敛在 stateQueue 串行队列上访问，故标注 @unchecked Sendable
-final class LocalMediaServer: @unchecked Sendable {
+/// 可变状态全部收敛在 stateQueue 串行队列上访问（GCD 约定，无线程标注）。
+final class LocalMediaServer {
     static let shared = LocalMediaServer()
 
     private let stateQueue = DispatchQueue(label: "LocalMediaServer.state")
     private var listener: NWListener?
     private var port: UInt16 = 0
-    private var startContinuation: CheckedContinuation<UInt16, Never>?
+    private var startCompletion: ((UInt16) -> Void)?
     private var started = false
     private var handlers: [ObjectIdentifier: HTTPConnectionHandler] = [:]
 
     static var rootDirectory: URL { DownloadEngine.downloadsDir }
 
-    /// 启动监听（幂等），返回端口；0 表示启动失败
-    func start() async -> UInt16 {
-        await withCheckedContinuation { (continuation: CheckedContinuation<UInt16, Never>) in
-            stateQueue.async {
-                if self.started {
-                    continuation.resume(returning: self.port)
-                    return
-                }
-                self.started = true
-                self.startContinuation = continuation
-                do {
-                    let parameters = NWParameters.tcp
-                    parameters.allowLocalEndpointReuse = true
-                    // 仅绑定回环地址，避免监听局域网
-                    parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
-                    let listener = try NWListener(using: parameters)
-                    self.listener = listener
-                    listener.newConnectionHandler = { [weak self] connection in
-                        guard let self else { return }
-                        let handler = HTTPConnectionHandler(connection: connection, root: Self.rootDirectory)
-                        handler.onFinished = { [weak self, weak handler] in
-                            guard let self, let handler else { return }
-                            self.stateQueue.async {
-                                self.handlers.removeValue(forKey: ObjectIdentifier(handler))
-                            }
-                        }
+    /// 启动监听（幂等），completion 返回端口（0 = 启动失败）；在 stateQueue 上回调
+    func start(completion: @escaping (UInt16) -> Void) {
+        stateQueue.async {
+            if self.started {
+                completion(self.port)
+                return
+            }
+            self.started = true
+            self.startCompletion = completion
+            do {
+                let parameters = NWParameters.tcp
+                parameters.allowLocalEndpointReuse = true
+                // 仅绑定回环地址，避免监听局域网
+                parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
+                let listener = try NWListener(using: parameters)
+                self.listener = listener
+                listener.newConnectionHandler = { [weak self] connection in
+                    guard let self else { return }
+                    let handler = HTTPConnectionHandler(connection: connection, root: Self.rootDirectory)
+                    handler.onFinished = { [weak self, weak handler] in
+                        guard let self, let handler else { return }
                         self.stateQueue.async {
-                            self.handlers[ObjectIdentifier(handler)] = handler
-                        }
-                        handler.start()
-                    }
-                    listener.stateUpdateHandler = { [weak self] state in
-                        guard let self else { return }
-                        switch state {
-                        case .ready:
-                            self.stateQueue.async { self.finishStart(port: listener.port?.rawValue ?? 0) }
-                        case .failed:
-                            self.stateQueue.async { self.finishStart(port: 0) }
-                        default:
-                            break
+                            self.handlers.removeValue(forKey: ObjectIdentifier(handler))
                         }
                     }
-                    listener.start(queue: DispatchQueue(label: "LocalMediaServer.connections"))
-                } catch {
-                    if let continuation = self.startContinuation {
-                        self.startContinuation = nil
-                        continuation.resume(returning: 0)
+                    self.stateQueue.async {
+                        self.handlers[ObjectIdentifier(handler)] = handler
                     }
+                    handler.start()
+                }
+                listener.stateUpdateHandler = { [weak self] state in
+                    guard let self else { return }
+                    switch state {
+                    case .ready:
+                        self.stateQueue.async { self.finishStart(port: listener.port?.rawValue ?? 0) }
+                    case .failed:
+                        self.stateQueue.async { self.finishStart(port: 0) }
+                    default:
+                        break
+                    }
+                }
+                listener.start(queue: DispatchQueue(label: "LocalMediaServer.connections"))
+            } catch {
+                if let completion = self.startCompletion {
+                    self.startCompletion = nil
+                    completion(0)
                 }
             }
         }
@@ -73,42 +71,43 @@ final class LocalMediaServer: @unchecked Sendable {
 
     private func finishStart(port value: UInt16) {
         port = value
-        if let continuation = startContinuation {
-            startContinuation = nil
-            continuation.resume(returning: value)
+        if let completion = startCompletion {
+            startCompletion = nil
+            completion(value)
         }
     }
 
-    /// 生成本地 HLS 文件夹的播放地址。
+    /// 生成本地 HLS 文件夹的播放地址；completion 在主线程回调。
     /// 路径必须是相对 root 的完整相对路径：剧集集目录在 Downloads/<剧名>/第NN集/ 下多了一层，
     /// 不能只取 lastPathComponent（在 root 下不存在会 404，且“第01集”跨剧重名）。
-    func playbackURL(forFolder folder: URL) async -> URL {
-        let port = await start()
-        let root = Self.rootDirectory.standardizedFileURL
-        // absoluteURL：容错相对路径入参（App 内部恒为绝对，冒烟工具可能传相对）
-        var cursor = folder.absoluteURL.standardizedFileURL
-        var components: [String] = []
-        var underRoot = false
-        for _ in 0..<16 {
-            if cursor.path == root.path { underRoot = true; break }
-            guard cursor.path.hasPrefix(root.path + "/") else { break }
-            components.insert(cursor.lastPathComponent, at: 0)
-            cursor = cursor.deletingLastPathComponent()
+    func playbackURL(forFolder folder: URL, completion: @escaping (URL) -> Void) {
+        start { port in
+            let root = Self.rootDirectory.standardizedFileURL
+            // absoluteURL：容错相对路径入参（App 内部恒为绝对，冒烟工具可能传相对）
+            var cursor = folder.absoluteURL.standardizedFileURL
+            var components: [String] = []
+            var underRoot = false
+            for _ in 0..<16 {
+                if cursor.path == root.path { underRoot = true; break }
+                guard cursor.path.hasPrefix(root.path + "/") else { break }
+                components.insert(cursor.lastPathComponent, at: 0)
+                cursor = cursor.deletingLastPathComponent()
+            }
+            var result = folder.absoluteURL.appendingPathComponent("playlist.m3u8")
+            if underRoot, !components.isEmpty {
+                let encoded = components
+                    .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0 }
+                    .joined(separator: "/")
+                result = URL(string: "http://127.0.0.1:\(port)/\(encoded)/playlist.m3u8") ?? result
+            }
+            DispatchQueue.main.async { completion(result) }
         }
-        guard underRoot, !components.isEmpty else {
-            return folder.absoluteURL.appendingPathComponent("playlist.m3u8")
-        }
-        let encoded = components
-            .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0 }
-            .joined(separator: "/")
-        return URL(string: "http://127.0.0.1:\(port)/\(encoded)/playlist.m3u8")
-            ?? folder.absoluteURL.appendingPathComponent("playlist.m3u8")
     }
 }
 
 /// 单连接处理：解析 HTTP GET（支持 Range），回送文件后关闭
-/// 单连接的状态只在该连接的回调（同一队列串行回调）中访问，故标注 @unchecked Sendable
-final class HTTPConnectionHandler: @unchecked Sendable {
+/// 单连接的状态只在该连接的回调（同一队列串行回调）中访问
+final class HTTPConnectionHandler {
     private let connection: NWConnection
     private let root: URL
     private var buffer = Data()

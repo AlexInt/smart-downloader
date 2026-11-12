@@ -3,7 +3,7 @@ import Combine
 
 /// 单集播放状态机（ViewModel）。
 /// 只暴露可绑定状态与播放意图；播放器实例归 PlaybackPlayerService，偏好归 PlayerPreferences。
-@MainActor
+/// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class DramaPlayerViewModel: ObservableObject {
     private let playerService: PlaybackPlayerService
     var player: AVPlayer { playerService.player }
@@ -65,8 +65,12 @@ final class DramaPlayerViewModel: ObservableObject {
     private var currentKey = ""
     private var lastLoggedSeek: Double = -1
     private var lastLoggedSecond = -1
-    private var spinnerDelayTask: Task<Void, Never>?
-    private var scrubLingerTask: Task<Void, Never>?
+    private var spinnerDelayWork: DispatchWorkItem?
+    private var scrubLingerWork: DispatchWorkItem?
+    /// 加载代际：每次 load/stop 递增；KVO/看门狗/makeItem 回调捕获代际，
+    /// 过期一律丢弃（等价旧 Task 取消，防快滑/退出后迟到事件翻转状态）
+    private var loadGeneration = 0
+    private var statusWatch: StatusWatch?
     /// 清屏位置参照闪现进行中：闪现与 seek 残影是两种瞬态——切集的 load() 清残影时
     /// 不得把开屏闪现一并吞掉（真机日志实证：cleanScreenOn 闪现被 load 截短，无 linger1500ms 收尾）
     private var isCleanScreenFlashActive = false
@@ -80,10 +84,15 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     /// 滚动停稳后才调用：单播放器常驻，切集只换 item。
-    /// 就绪判定为事件驱动（KVO → AsyncStream）：status 一变立刻翻转 isReady，
-    /// 无轮询量化误差；4s 看门狗兜底；取消安全（新滑动终止等待并清理观察器）。
-    func load(episode: PlayableEpisode) async {
+    /// 就绪判定为事件驱动（KVO 直挂 + 主线程判定）：status 一变立刻翻转 isReady，
+    /// 无轮询量化误差；4s 看门狗兜底；取消安全（代际令牌使迟到事件失效）。
+    /// completion 在加载落地（就绪/失败/超时/取消）后于主线程回调。
+    func load(episode: PlayableEpisode, completion: (() -> Void)? = nil) {
         print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable)")
+        loadGeneration += 1
+        let generation = loadGeneration
+        statusWatch?.invalidate()
+        statusWatch = nil
         endFastForward()
         endSeekGesture()
         hideScrubHudNow()
@@ -95,6 +104,7 @@ final class DramaPlayerViewModel: ObservableObject {
         guard let playlist = episode.playlistURL else {
             print("PLAYER_DBG [Playback] load ABORT reason=episodeNotDownloaded sort=\(episode.sort)")
             playerService.clear()
+            completion?()
             return
         }
         ensureObserver()
@@ -104,48 +114,25 @@ final class DramaPlayerViewModel: ObservableObject {
         saved = preferences.saved(for: currentKey)
         print("PLAYER_DBG [Playback] load prefs key=\(currentKey) liked=\(liked) saved=\(saved)")
 
-        guard let item = await playerService.makeItem(for: episode) else {
-            loadError = "本地播放服务启动失败"
-            print("PLAYER_DBG [Playback] load FAIL reason=makeItemNil error=\(loadError ?? "")")
-            return
-        }
-        player.replaceCurrentItem(with: item)
-        player.isMuted = isMuted
-        player.play()
-        beginSpinnerDelay()
-
-        let startedAt = ContinuousClock.now
-        for await event in Self.statusEvents(for: item, timeout: .seconds(4)) {
-            switch event {
-            case .ready:
-                guard item === player.currentItem else {
-                    print("PLAYER_DBG [Playback] status STALE reason=replacedItem sort=\(episode.sort)")
-                    return
-                }
-                isReady = true
-                cancelSpinnerDelay()
-                // components.seconds 只有整秒，亚秒部分在 attoseconds 里（此前 <1s 全打成 0ms）
-                let waited = startedAt.duration(to: .now)
-                let waitedMs = Int(waited.components.seconds) * 1000
-                    + Int(waited.components.attoseconds / 1_000_000_000_000_000)
-                print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(player.rate) control=\(player.timeControlStatus.rawValue)")
-                return
-            case .failed(let message):
-                guard item === player.currentItem else { return }
-                loadError = message
-                cancelSpinnerDelay()
-                print("PLAYER_DBG [Playback] load FAIL reason=itemFailed error=\(message)")
-                return
-            case .timeout:
-                guard item === player.currentItem else { return }
-                loadError = "视频加载超时"
-                cancelSpinnerDelay()
-                print("PLAYER_DBG [Playback] load FAIL reason=watchdogTimeout sort=\(episode.sort)")
+        playerService.makeItem(for: episode) { [weak self] item in
+            guard let self, generation == self.loadGeneration else {
+                print("PLAYER_DBG [Playback] load CANCELLED sort=\(episode.sort)")
+                completion?()
                 return
             }
+            guard let item else {
+                self.loadError = "本地播放服务启动失败"
+                print("PLAYER_DBG [Playback] load FAIL reason=makeItemNil error=\(self.loadError ?? "")")
+                completion?()
+                return
+            }
+            self.player.replaceCurrentItem(with: item)
+            self.player.isMuted = self.isMuted
+            self.player.play()
+            self.beginSpinnerDelay()
+            self.watchStatus(item: item, episode: episode, generation: generation,
+                             startedAt: Date(), completion: completion)
         }
-        // 走到这里 = 等待被取消（新滑动 / 退出播放页），不翻转任何状态
-        print("PLAYER_DBG [Playback] load CANCELLED sort=\(episode.sort)")
     }
 
     func togglePlayback() {
@@ -213,6 +200,9 @@ final class DramaPlayerViewModel: ObservableObject {
 
     func stop() {
         print("PLAYER_DBG [Playback] stop")
+        loadGeneration += 1
+        statusWatch?.invalidate()
+        statusWatch = nil
         isFastForwarding = false
         endSeekGesture()
         isCleanScreenFlashActive = false
@@ -260,52 +250,88 @@ final class DramaPlayerViewModel: ObservableObject {
         case timeout
     }
 
-    /// AVPlayerItem.status 的事件流：KVO 即时推送（无轮询量化误差）。
+    /// 单次加载的 KVO 观察器 + 看门狗（按次持有：settle 只清理本次的，
+    /// 不误伤新 load 安装的观察器）
+    private final class StatusWatch {
+        var observer: NSKeyValueObservation?
+        var watchdog: DispatchWorkItem?
+        func invalidate() {
+            observer?.invalidate()
+            observer = nil
+            watchdog?.cancel()
+            watchdog = nil
+        }
+    }
+
+    /// AVPlayerItem.status 就绪观察：KVO 即时推送（无轮询量化误差）。
     /// `.initial` 选项让「观察开始前就已 ready」（预热命中）也能立刻收到事件；
-    /// 流终止（取消 / return）时自动清理 KVO 观察器与看门狗任务。
-    private static func statusEvents(for item: AVPlayerItem, timeout: Duration) -> AsyncStream<StatusEvent> {
-        AsyncStream { continuation in
-            let observer = item.observe(\.status, options: [.initial, .new]) { item, _ in
-                switch item.status {
-                case .readyToPlay:
-                    continuation.yield(.ready)
-                case .failed:
-                    continuation.yield(.failed(item.error?.localizedDescription ?? "视频加载失败"))
-                case .unknown:
-                    break
-                @unknown default:
-                    break
-                }
+    /// 4s 看门狗兜底；任一事件落地即清理观察器与看门狗。
+    /// 代际 + item 同一性双保险：新滑动/退出后迟到事件不得翻转状态。
+    private func watchStatus(item: AVPlayerItem, episode: PlayableEpisode, generation: Int,
+                             startedAt: Date, completion: (() -> Void)?) {
+        let watch = StatusWatch()
+        statusWatch = watch
+        let settle: (StatusEvent) -> Void = { [weak self] event in
+            watch.invalidate()
+            defer { completion?() }
+            guard let self, generation == self.loadGeneration else {
+                print("PLAYER_DBG [Playback] load CANCELLED sort=\(episode.sort)")
+                return
             }
-            let watchdog = Task {
-                try? await Task.sleep(for: timeout)
-                continuation.yield(.timeout)
+            guard item === self.player.currentItem else {
+                print("PLAYER_DBG [Playback] status STALE reason=replacedItem sort=\(episode.sort)")
+                return
             }
-            continuation.onTermination = { _ in
-                observer.invalidate()
-                watchdog.cancel()
+            switch event {
+            case .ready:
+                self.isReady = true
+                self.cancelSpinnerDelay()
+                let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+                print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(self.player.rate) control=\(self.player.timeControlStatus.rawValue)")
+            case .failed(let message):
+                self.loadError = message
+                self.cancelSpinnerDelay()
+                print("PLAYER_DBG [Playback] load FAIL reason=itemFailed error=\(message)")
+            case .timeout:
+                self.loadError = "视频加载超时"
+                self.cancelSpinnerDelay()
+                print("PLAYER_DBG [Playback] load FAIL reason=watchdogTimeout sort=\(episode.sort)")
             }
         }
+        watch.observer = item.observe(\.status, options: [.initial, .new]) { item, _ in
+            // KVO 回调线程不定，统一回主线程判定（状态只碰主线程）
+            DispatchQueue.main.async {
+                switch item.status {
+                case .readyToPlay: settle(.ready)
+                case .failed: settle(.failed(item.error?.localizedDescription ?? "视频加载失败"))
+                default: break
+                }
+            }
+        }
+        let watchdog = DispatchWorkItem { settle(.timeout) }
+        watch.watchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: watchdog)
     }
 
     /// spinner 延迟显示：800ms 内就绪的加载完全不出现转圈（预热命中的常态）；
     /// 超过 800ms 仍未就绪才置 isLoadingSlow，让卡片显示 spinner。
     private func beginSpinnerDelay() {
-        spinnerDelayTask?.cancel()
+        spinnerDelayWork?.cancel()
         isLoadingSlow = false
-        spinnerDelayTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(800))
-            guard let self, !Task.isCancelled else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
             if !self.isReady, self.loadError == nil {
                 self.isLoadingSlow = true
                 print("PLAYER_DBG [Playback] spinner show reason=notReadyAfter800ms")
             }
         }
+        spinnerDelayWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
     private func cancelSpinnerDelay() {
-        spinnerDelayTask?.cancel()
-        spinnerDelayTask = nil
+        spinnerDelayWork?.cancel()
+        spinnerDelayWork = nil
         isLoadingSlow = false
     }
 
@@ -313,8 +339,8 @@ final class DramaPlayerViewModel: ObservableObject {
 
     /// HUD 淡入：seek 实际生效（拖动中每次 .changed 续命）/ 开启清屏时的位置参照闪现
     private func showScrubHud(reason: String) {
-        scrubLingerTask?.cancel()
-        scrubLingerTask = nil
+        scrubLingerWork?.cancel()
+        scrubLingerWork = nil
         guard !isScrubbing else { return }
         isScrubbing = true
         print("PLAYER_DBG [Playback] scrub show reason=\(reason) clean=\(isCleanScreen)")
@@ -323,14 +349,15 @@ final class DramaPlayerViewModel: ObservableObject {
     /// HUD 停留一段时间再淡出；seek 抬手默认 800ms，清屏参照闪现 1500ms
     private func scheduleScrubLinger(ms: Int = 800) {
         guard isScrubbing else { return }
-        scrubLingerTask?.cancel()
-        scrubLingerTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(ms))
-            guard let self, !Task.isCancelled, self.isScrubbing else { return }
+        scrubLingerWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isScrubbing else { return }
             self.isScrubbing = false
             self.isCleanScreenFlashActive = false
             print("PLAYER_DBG [Playback] scrub hide reason=linger\(ms)ms")
         }
+        scrubLingerWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms), execute: work)
     }
 
     /// 切集 / 退出：立即清除 seek 残影，不留 800ms 残影。
@@ -340,8 +367,8 @@ final class DramaPlayerViewModel: ObservableObject {
             print("PLAYER_DBG [Playback] scrub hide SKIP reason=cleanScreenFlash")
             return
         }
-        scrubLingerTask?.cancel()
-        scrubLingerTask = nil
+        scrubLingerWork?.cancel()
+        scrubLingerWork = nil
         isScrubbing = false
     }
 
@@ -351,7 +378,7 @@ final class DramaPlayerViewModel: ObservableObject {
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main,
             using: { [weak self] time in
-                MainActor.assumeIsolated { self?.syncTime(time) }
+                self?.syncTime(time)   // queue: .main 已保证主线程
             }
         )
     }

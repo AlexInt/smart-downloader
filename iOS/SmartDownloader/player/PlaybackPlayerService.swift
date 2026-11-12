@@ -4,45 +4,50 @@ import AVFoundation
 /// 依据 ZFPlayer / 开源抖音实践：切集只换 item，绝不在滑动时新建 AVPlayer。
 ///
 /// 相邻集预热池（秒开的关键）：停稳播当前集时，提前为相邻集完成
-/// 回环 URL 解析 + m3u8 拉取解析（`asset.load(.isPlayable)`）；
+/// 回环 URL 解析 + m3u8 拉取解析（`loadValuesAsynchronously(forKeys: ["playable"])`）；
 /// 用户滑过去时 makeItem 直接命中预热资产构建 item，跳过整条清单加载管线。
-@MainActor
+/// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class PlaybackPlayerService {
     let player = AVPlayer()
 
     /// 预热完成的资产：集号 → 已解析过播放清单的 AVURLAsset
     private var preloadedAssets: [Int: AVURLAsset] = [:]
-    /// 进行中的预热任务
-    private var preloadTasks: [Int: Task<Void, Never>] = [:]
+    /// 正在预热的集号（在飞标记）：淘汰/teardown 时移除，回调落地发现已移除即丢弃资产
+    ///（loadValuesAsynchronously 本身不可取消，与旧 Task.cancel + isCancelled 语义一致）
+    private var preloadingSorts: Set<Int> = []
 
     init() {
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
     }
 
-    /// 本地 HLS 回环地址 → AVPlayerItem；未下载或本地服务未启动时返回 nil。
+    /// 本地 HLS 回环地址 → AVPlayerItem；未下载或本地服务未启动时回调 nil。
     /// 命中预热池 → 用已解析过清单的资产直接构建 item（秒开路径）。
-    func makeItem(for episode: PlayableEpisode) async -> AVPlayerItem? {
+    /// completion 统一在主线程回调（HIT 路径同步落地，也走 completion）。
+    func makeItem(for episode: PlayableEpisode, completion: @escaping (AVPlayerItem?) -> Void) {
         guard let playlist = episode.playlistURL else {
             print("PLAYER_DBG [Service] makeItem FAIL reason=noLocalPlaylist sort=\(episode.sort)")
-            return nil
+            completion(nil)
+            return
         }
         if let asset = preloadedAssets.removeValue(forKey: episode.sort) {
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 1
             print("PLAYER_DBG [CHECK] makeItem HIT sort=\(episode.sort) pooled=\(preloadedAssets.count)")
-            return item
+            completion(item)
+            return
         }
-        let url = await LocalMediaServer.shared.playbackURL(
-            forFolder: playlist.deletingLastPathComponent())
-        guard url.scheme == "http" else {
-            print("PLAYER_DBG [Service] makeItem FAIL reason=localServerNotReady sort=\(episode.sort) url=\(url.absoluteString)")
-            return nil
+        LocalMediaServer.shared.playbackURL(forFolder: playlist.deletingLastPathComponent()) { url in
+            guard url.scheme == "http" else {
+                print("PLAYER_DBG [Service] makeItem FAIL reason=localServerNotReady sort=\(episode.sort) url=\(url.absoluteString)")
+                completion(nil)
+                return
+            }
+            let item = AVPlayerItem(url: url)
+            item.preferredForwardBufferDuration = 1
+            print("PLAYER_DBG [Service] makeItem MISS sort=\(episode.sort) url=\(url.absoluteString)")
+            completion(item)
         }
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 1
-        print("PLAYER_DBG [Service] makeItem MISS sort=\(episode.sort) url=\(url.absoluteString)")
-        return item
     }
 
     /// 预热一组集（调用方必须传「当前集 + 相邻集」：wanted 里没有当前集，
@@ -55,11 +60,8 @@ final class PlaybackPlayerService {
         let wanted = episodes.filter { $0.isAvailable }
         let wantedSorts = Set(wanted.map(\.sort))
 
-        let evictedTasks = preloadTasks.filter { !wantedSorts.contains($0.key) }
-        for (sort, task) in evictedTasks {
-            task.cancel()
-            preloadTasks[sort] = nil
-        }
+        // 淘汰在飞标记：迟到的预热回调发现标记没了就丢弃资产（等价旧 task.cancel）
+        preloadingSorts.subtract(wantedSorts)
         let evictedAssets = preloadedAssets.keys.filter { !wantedSorts.contains($0) }
         for sort in evictedAssets {
             preloadedAssets[sort] = nil
@@ -68,10 +70,9 @@ final class PlaybackPlayerService {
 
         guard !wanted.isEmpty else { return }
         for episode in wanted
-        where preloadedAssets[episode.sort] == nil && preloadTasks[episode.sort] == nil {
-            preloadTasks[episode.sort] = Task { [weak self] in
-                await self?.preloadOne(episode)
-            }
+        where preloadedAssets[episode.sort] == nil && !preloadingSorts.contains(episode.sort) {
+            preloadingSorts.insert(episode.sort)
+            preloadOne(episode)
         }
     }
 
@@ -81,11 +82,10 @@ final class PlaybackPlayerService {
         player.replaceCurrentItem(with: nil)
     }
 
-    /// 播放页整体退出时用：停播放器 + 清空预热池与任务，不占用任何资源。
+    /// 播放页整体退出时用：停播放器 + 清空预热池与在飞标记，不占用任何资源。
     func teardown() {
         clear()
-        for (_, task) in preloadTasks { task.cancel() }
-        preloadTasks.removeAll()
+        preloadingSorts.removeAll()
         let count = preloadedAssets.count
         preloadedAssets.removeAll()
         print("PLAYER_DBG [Service] teardown evictedAssets=\(count)")
@@ -93,25 +93,38 @@ final class PlaybackPlayerService {
 
     // MARK: 私有
 
-    private func preloadOne(_ episode: PlayableEpisode) async {
-        defer { preloadTasks[episode.sort] = nil }
-        guard let playlist = episode.playlistURL else { return }
-        let url = await LocalMediaServer.shared.playbackURL(
-            forFolder: playlist.deletingLastPathComponent())
-        guard url.scheme == "http" else {
-            print("PLAYER_DBG [Service] preload FAIL reason=localServerNotReady sort=\(episode.sort)")
+    private func preloadOne(_ episode: PlayableEpisode) {
+        guard let playlist = episode.playlistURL else {
+            preloadingSorts.remove(episode.sort)
             return
         }
-        let asset = AVURLAsset(url: url)
-        do {
-            // .isPlayable 会完成 m3u8 的拉取与解析 —— 预热的核心收益
-            _ = try await asset.load(.isPlayable)
-        } catch {
-            print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=\(error.localizedDescription)")
-            return
+        LocalMediaServer.shared.playbackURL(forFolder: playlist.deletingLastPathComponent()) { [weak self] url in
+            guard let self else { return }
+            guard url.scheme == "http" else {
+                print("PLAYER_DBG [Service] preload FAIL reason=localServerNotReady sort=\(episode.sort)")
+                self.preloadingSorts.remove(episode.sort)
+                return
+            }
+            let asset = AVURLAsset(url: url)
+            // "playable" 是 isPlayable 的 legacy key：加载完成即完成 m3u8 拉取解析 —— 预热的核心收益
+            asset.loadValuesAsynchronously(forKeys: ["playable"]) {
+                DispatchQueue.main.async {
+                    // 在飞标记已被淘汰（teardown / 滑走）→ 丢弃，等价旧 Task.isCancelled 检查
+                    guard self.preloadingSorts.contains(episode.sort) else { return }
+                    self.preloadingSorts.remove(episode.sort)
+                    // status(of:) 是同步查询（非 async）：.loaded 即加载成功（与旧 load 不抛错同义），
+                    // .failed 携带错误详情
+                    switch asset.status(of: .isPlayable) {
+                    case .loaded:
+                        self.preloadedAssets[episode.sort] = asset
+                        print("PLAYER_DBG [Service] preload OK sort=\(episode.sort)")
+                    case .failed(let error):
+                        print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=\(error.localizedDescription)")
+                    default:
+                        print("PLAYER_DBG [Service] preload FAIL reason=load sort=\(episode.sort) error=notLoaded")
+                    }
+                }
+            }
         }
-        guard !Task.isCancelled else { return }
-        preloadedAssets[episode.sort] = asset
-        print("PLAYER_DBG [Service] preload OK sort=\(episode.sort)")
     }
 }

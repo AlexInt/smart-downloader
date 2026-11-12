@@ -1,5 +1,4 @@
 import SwiftUI
-import Synchronization
 
 @main
 struct SmartDownloaderApp: App {
@@ -8,27 +7,24 @@ struct SmartDownloaderApp: App {
     @State private var selectedTab = 1
     /// 启动 splash：盖住冷启动（库扫描/本地服务预启），停留 1.2s 后淡出
     @State private var showSplash = true
-    /// 防止 onAppear 重复触发自动冒烟
-    @MainActor private static var autoTestStarted = false
-    @MainActor private static var stallProbeStarted = false
+    /// 防止 onAppear 重复触发自动冒烟（主线程约定，GCD 版无线程标注）
+    private static var autoTestStarted = false
+    private static var stallProbeStarted = false
 
     private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
 
     /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >250ms 打一条。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
-    @MainActor
     private static func startStallProbeIfNeeded() {
         guard ProcessInfo.processInfo.arguments.contains("perfLog"), !stallProbeStarted else { return }
         stallProbeStarted = true
-        // Timer 回调是 @Sendable，局部可变状态必须显式同步；用 Mutex 表达所有权
-        let last = Mutex(ProcessInfo.processInfo.systemUptime)
+        // Timer 挂在主线程 RunLoop，回调与 last 读写同线程，无需锁
+        final class LastBox { var value = ProcessInfo.processInfo.systemUptime }
+        let last = LastBox()
         Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             let now = ProcessInfo.processInfo.systemUptime
-            let gap = last.withLock { previous -> TimeInterval in
-                let delta = now - previous
-                previous = now
-                return delta
-            }
+            let gap = now - last.value
+            last.value = now
             if gap > 0.25 {
                 print("PERF_DBG mainStall ms=\(Int(gap * 1000)) t=\(Int(now * 1000))")
             }
@@ -37,7 +33,9 @@ struct SmartDownloaderApp: App {
 
     init() {
         // 提前启动本地媒体服务（播放 HLS 文件夹时用）
-        Task.detached { await LocalMediaServer.shared.start() }
+        DispatchQueue.global().async {
+            LocalMediaServer.shared.start { _ in }
+        }
     }
 
     var body: some Scene {
@@ -67,10 +65,10 @@ struct SmartDownloaderApp: App {
             .onAppear {
                 Self.runDeviceAutoTest(manager: manager)
                 Self.startStallProbeIfNeeded()
-            }
-            .task {
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                withAnimation(.easeOut(duration: 0.45)) { showSplash = false }
+                // splash 停留 1.2s 后淡出（替代旧 .task + Task.sleep）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation(.easeOut(duration: 0.45)) { showSplash = false }
+                }
             }
         }
     }
@@ -78,7 +76,6 @@ struct SmartDownloaderApp: App {
     /// 设备端自动冒烟（真机蜂窝网络下验证 WAF/下载链路，无需手工操作 UI）：
     /// `devicectl ... launch --console ... <bundle> -autoTestDownload <m3u8URL>` 启动即自动下载，
     /// 状态经 print() 输出到控制台（Xcode 控制台 / devicectl --console 均可见）。
-    @MainActor
     private static func runDeviceAutoTest(manager: DownloadManager) {
         guard !autoTestStarted else { return }
         let arguments = ProcessInfo.processInfo.arguments
@@ -89,9 +86,9 @@ struct SmartDownloaderApp: App {
         let url = arguments[index + 1]
         print("AUTOTEST: 开始自动下载 -> \(url)")
         let task = manager.startDownload(urlString: url, title: "autotest")
-        Task { @MainActor in
-            while true {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+        // 主线程 500ms 轮询直至任务结束（替代旧 Task + Task.sleep 循环）
+        func poll() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 if case .done = task.state {
                     print("AUTOTEST RESULT: DONE -> \(task.outputURL?.path ?? "?")")
                     return
@@ -100,7 +97,9 @@ struct SmartDownloaderApp: App {
                     print("AUTOTEST RESULT: FAILED: \(message)")
                     return
                 }
+                poll()
             }
         }
+        poll()
     }
 }

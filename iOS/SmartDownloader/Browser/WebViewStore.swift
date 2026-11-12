@@ -6,8 +6,7 @@ import Combine
 // WKWebView 命令通道 + 下载入口编排，独立于 View 文件（AGENTS.md 域内分层）。
 
 /// WKWebView 命令通道：让 SwiftUI 工具栏驱动网页后退/前进/刷新/加载。
-/// 页面状态与下载入口锁都是主线程状态，整体 @MainActor。
-@MainActor
+/// 页面状态与下载入口锁都是主线程状态（主线程约定，GCD 版无线程标注）。
 final class WebViewStore: ObservableObject {
     weak var webView: WKWebView?
     @Published var loadError: String?
@@ -37,13 +36,16 @@ final class WebViewStore: ObservableObject {
         guard !isSubmitting else { return }
         guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
         isSubmitting = true
-        Task {
-            defer { self.isSubmitting = false }
-            var title = ""
-            if let webView = self.webView {
-                title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
+        // evaluateJavaScript completion 固定主线程；取到标题后开下并解锁
+        if let webView = self.webView {
+            webView.evaluateJavaScript("document.title") { [weak self] result, _ in
+                let title = result as? String ?? ""
+                manager.startDownload(urlString: url.absoluteString, title: title)
+                self?.isSubmitting = false
             }
-            manager.startDownload(urlString: url.absoluteString, title: title)
+        } else {
+            manager.startDownload(urlString: url.absoluteString, title: "")
+            isSubmitting = false
         }
     }
 }

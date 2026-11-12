@@ -214,16 +214,15 @@ struct WebViewContainer: UIViewRepresentable {
         // SPA 站点用 pushState 换页时不会触发 didCommit：KVO 跟踪主帧 URL，
         // 地址栏与剧集页路由检测才能跟上
         context.coordinator.urlObservation = webView.observe(\.url, options: [.new]) { [weak coordinator = context.coordinator] view, _ in
-            MainActor.assumeIsolated {
-                guard let coordinator else { return }
-                let current = view.url?.absoluteString ?? ""
-                print("BROWSER: url -> \(current)")
-                // URL 变成剧集页（SPA pushState 或提交）：回调宿主决策（推原生页/回退列表）
-                if let target = DramaTarget.parse(current) {
-                    coordinator.parent.onDramaURLDetected(target, !view.isLoading)
-                }
-                coordinator.parent.address = current
+            // WKWebView.url KVO 固定主线程回调
+            guard let coordinator else { return }
+            let current = view.url?.absoluteString ?? ""
+            print("BROWSER: url -> \(current)")
+            // URL 变成剧集页（SPA pushState 或提交）：回调宿主决策（推原生页/回退列表）
+            if let target = DramaTarget.parse(current) {
+                coordinator.parent.onDramaURLDetected(target, !view.isLoading)
             }
+            coordinator.parent.address = current
         }
         // WebKit 兜底通道宿主仅主浏览页注册（剧集内嵌 webview 不抢宿主）
         if isPrimaryBrowser {
@@ -255,11 +254,9 @@ struct WebViewContainer: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             guard message.name == "sniffer", let urlString = message.body as? String else { return }
-            MainActor.assumeIsolated {
-                parent.manager.recordFound(urlString: urlString)
-                if let current = parent.store.webView?.url?.absoluteString {
-                    parent.address = current
-                }
+            parent.manager.recordFound(urlString: urlString)
+            if let current = parent.store.webView?.url?.absoluteString {
+                parent.address = current
             }
         }
 
@@ -279,24 +276,22 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            MainActor.assumeIsolated {
-                provisionalRetries = 0
-                isInitialRestoreLoad = false
-                parent.store.loadError = nil
-                print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
-                if let current = webView.url?.absoluteString {
-                    if parent.isPrimaryBrowser {
-                        UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
-                    }
-                    parent.address = current
+            provisionalRetries = 0
+            isInitialRestoreLoad = false
+            parent.store.loadError = nil
+            print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
+            if let current = webView.url?.absoluteString {
+                if parent.isPrimaryBrowser {
+                    UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
                 }
+                parent.address = current
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.evaluateJavaScript("document.title") { result, _ in
                 guard let title = result as? String, !title.isEmpty else { return }
-                MainActor.assumeIsolated { self.parent.store.pageTitle = title }
+                self.parent.store.pageTitle = title
             }
             // 调查：提取页面元数据（og:image/标题/简介/图片列表），立即 + 3秒后（SPA 渲染滞后）各一次
             extractMeta(webView, delay: 0)
@@ -305,78 +300,78 @@ struct WebViewContainer: UIViewRepresentable {
 
         /// 调查用：从 DOM 提取短剧元数据，写入 store（页面头部展示 + DramaMeta 落盘）并写系统日志
         func extractMeta(_ webView: WKWebView, delay: Double) {
-            Task { [weak self] in
-                if delay > 0 {
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let js = """
+            (function(){
+              var q = function(sel){ var el = document.querySelector(sel); return el ? (el.content || el.src || el.getAttribute('content') || '') : ''; };
+              var imgs = [];
+              var nodes = document.querySelectorAll('img');
+              for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
+              return JSON.stringify({
+                url: location.href,
+                title: document.title || '',
+                ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
+                ogTitle: q('meta[property="og:title"]'),
+                keywords: q('meta[name="keywords"]'),
+                desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
+                imgs: imgs,
+                text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
+              });
+            })()
+            """
+            let extract = { [weak self] in
+                webView.evaluateJavaScript(js) { result, _ in
+                    guard let self,
+                          let result = result as? String,
+                          let data = result.data(using: .utf8),
+                          (try? JSONSerialization.jsonObject(with: data)) != nil else { return }
+                    self.parent.store.pageMetaJSON = result
+                    // 调查收敛（2026-11-11）：DRAMAMETA-DOM 逐 key 的 NSLog 双份输出删除——
+                    // 动态串被统一日志 <private> 脱敏看不到内容，纯噪音；字段内容看落盘文件
+                    //（harvest_<site>_<dramaID>.json，见 DramaMetaHarvester）
+                    print("BROWSER: extractMeta ok delay=\(delay) bytes=\(result.count)")
                 }
-                let js = """
-                (function(){
-                  var q = function(sel){ var el = document.querySelector(sel); return el ? (el.content || el.src || el.getAttribute('content') || '') : ''; };
-                  var imgs = [];
-                  var nodes = document.querySelectorAll('img');
-                  for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
-                  return JSON.stringify({
-                    url: location.href,
-                    title: document.title || '',
-                    ogImage: q('meta[property="og:image"]') || q('meta[name="twitter:image"]'),
-                    ogTitle: q('meta[property="og:title"]'),
-                    keywords: q('meta[name="keywords"]'),
-                    desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
-                    imgs: imgs,
-                    text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
-                  });
-                })()
-                """
-                guard let self,
-                      let result = try? await webView.evaluateJavaScript(js) as? String,
-                      let data = result.data(using: .utf8),
-                      (try? JSONSerialization.jsonObject(with: data)) != nil else { return }
-                self.parent.store.pageMetaJSON = result
-                // 调查收敛（2026-11-11）：DRAMAMETA-DOM 逐 key 的 NSLog 双份输出删除——
-                // 动态串被统一日志 <private> 脱敏看不到内容，纯噪音；字段内容看落盘文件
-                //（harvest_<site>_<dramaID>.json，见 DramaMetaHarvester）
-                print("BROWSER: extractMeta ok delay=\(delay) bytes=\(result.count)")
+            }
+            if delay > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: extract)
+            } else {
+                extract()
             }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                      withError error: Error) {
-            MainActor.assumeIsolated {
-                // TLS 被担/网络抖动时自动重试（WAF 拦截有时是间歇性的）
-                let code = (error as NSError).code
-                let retryable: Set<Int> = [
-                    NSURLErrorSecureConnectionFailed,   // -1200 TLS/安全连接失败
-                    NSURLErrorNetworkConnectionLost,    // -1005
-                    NSURLErrorTimedOut,                 // -1001
-                    NSURLErrorCannotConnectToHost,      // -1004
-                    NSURLErrorNotConnectedToInternet,   // -1009 蜂窝网络瞬断
-                ]
-                if retryable.contains(code), provisionalRetries < 2, let url = lastMainURL {
-                    provisionalRetries += 1
-                    parent.store.loadError = "连接被重置，自动重试 \(provisionalRetries)/2…"
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        webView.load(URLRequest(url: url))
-                    }
-                    return
+            // TLS 被担/网络抖动时自动重试（WAF 拦截有时是间歇性的）
+            let code = (error as NSError).code
+            let retryable: Set<Int> = [
+                NSURLErrorSecureConnectionFailed,   // -1200 TLS/安全连接失败
+                NSURLErrorNetworkConnectionLost,    // -1005
+                NSURLErrorTimedOut,                 // -1001
+                NSURLErrorCannotConnectToHost,      // -1004
+                NSURLErrorNotConnectedToInternet,   // -1009 蜂窝网络瞬断
+            ]
+            if retryable.contains(code), provisionalRetries < 2, let url = lastMainURL {
+                provisionalRetries += 1
+                parent.store.loadError = "连接被重置，自动重试 \(provisionalRetries)/2…"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    webView.load(URLRequest(url: url))
                 }
-                // 启动恢复的页面首次加载就失败：清掉保存的起始页，下次冷启动不再卡在同一地址
-                if isInitialRestoreLoad && parent.isPrimaryBrowser {
-                    isInitialRestoreLoad = false
-                    UserDefaults.standard.removeObject(forKey: BrowserView.lastPageKey)
-                    parent.store.loadError = "\(error.localizedDescription)（上次页面无法打开，已重置起始页，请重新访问）"
-                    print("BROWSER: 初始恢复页加载失败，已重置保存的起始页")
-                    return
-                }
-                parent.store.loadError = error.localizedDescription
-                print("BROWSER: 加载失败 code=\((error as NSError).code) url=\(lastMainURL?.absoluteString ?? "?") msg=\(error.localizedDescription)")
+                return
             }
+            // 启动恢复的页面首次加载就失败：清掉保存的起始页，下次冷启动不再卡在同一地址
+            if isInitialRestoreLoad && parent.isPrimaryBrowser {
+                isInitialRestoreLoad = false
+                UserDefaults.standard.removeObject(forKey: BrowserView.lastPageKey)
+                parent.store.loadError = "\(error.localizedDescription)（上次页面无法打开，已重置起始页，请重新访问）"
+                print("BROWSER: 初始恢复页加载失败，已重置保存的起始页")
+                return
+            }
+            parent.store.loadError = error.localizedDescription
+            print("BROWSER: 加载失败 code=\((error as NSError).code) url=\(lastMainURL?.absoluteString ?? "?") msg=\(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            MainActor.assumeIsolated {
-                parent.store.loadError = error.localizedDescription
-                print("BROWSER: 加载失败(后段) code=\((error as NSError).code) url=\(webView.url?.absoluteString ?? "?") msg=\(error.localizedDescription)")
-            }
+            parent.store.loadError = error.localizedDescription
+            print("BROWSER: 加载失败(后段) code=\((error as NSError).code) url=\(webView.url?.absoluteString ?? "?") msg=\(error.localizedDescription)")
         }
     }
 

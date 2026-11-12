@@ -29,7 +29,6 @@ let dramaMetaJS = """
 /// 调查数据落盘：Documents/DramaMeta/<name>（Finder 文件共享可拷出分析）。
 /// 只放页面公开内容（DOM 提取结果）；带账号凭据的接口原始 dump 仍由
 /// dumpDramaMeta 启动参数门控（见 DramaAPI），不从这里走。
-@MainActor
 enum DramaMetaDump {
     /// 文件名 sanitize：site 形如 https://yeguodj.com，直接拼进文件名时
     /// 斜杠会让 write 把它当子路径解析（真机日志实证：文件夹“yeguodj.com_4094.json”不存在）；
@@ -60,28 +59,30 @@ enum DramaMetaDump {
 /// （api_*.json）与主文档完整 HTML（html_*.html）落盘，真机样本拿到后按 JSON
 /// 字段定向提取 tags（取代锚点法止血）。`-captureDramaMeta` 启动参数强制收割
 /// （绕过头部缓存判定），供已缓存剧补采样本。
-@MainActor
+/// 主线程约定：收割器状态只在主线程访问（WebKit 回调固定主线程）
 final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     static var harvestedKeys: Set<String> = []
+    /// 进行中的收割器（保活）：finish 后自动移除。
+    /// 曾把实例建在闭包体内：闭包一返回引用即消失，隐藏 webview 被连带释放
+    ///（delegate 是 weak），didFinish/25s 超时全部落空、harvest_*.json 永不产生（真机日志实证）
+    private static var active: [DramaMetaHarvester] = []
 
-    static func harvest(target: DramaTarget) async {
+    static func harvest(target: DramaTarget, completion: (() -> Void)? = nil) {
         let key = target.id
         guard !harvestedKeys.contains(key) else {
             print("PLAYER_DBG [Entry] harvest SKIP reason=alreadyHarvested key=\(key)")
+            completion?()
             return
         }
         harvestedKeys.insert(key)
         print("PLAYER_DBG [Entry] harvest begin site=\(target.site) dramaID=\(target.dramaID)")
         let harvester = DramaMetaHarvester()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // harvester 必须由 async 函数局部变量持有（挂起期间任务上下文保活）。
-            // 原实现把它建在 continuation 闭包体内：闭包一返回引用即消失，
-            // 隐藏 webview 被连带释放（delegate 是 weak），didFinish/25s 超时全部落空——
-            // continuation 泄漏、harvest_*.json 永不产生（真机日志：TASK CONTINUATION MISUSE）
-            harvester.finishHandler = { continuation.resume() }
-            harvester.begin(target: target)
+        active.append(harvester)
+        harvester.finishHandler = {
+            print("PLAYER_DBG [Entry] harvest done site=\(target.site) dramaID=\(target.dramaID)")
+            completion?()
         }
-        print("PLAYER_DBG [Entry] harvest done site=\(target.site) dramaID=\(target.dramaID)")
+        harvester.begin(target: target)
     }
 
     private var webView: WKWebView?
@@ -105,9 +106,8 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         view.navigationDelegate = self
         webView = view
         view.load(URLRequest(url: URL(string: target.pageURLString)!))
-        // 超时兜底：25 秒后用已拿到的部分数据收尾
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 25_000_000_000)
+        // 超时兜底：25 秒后用已拿到的部分数据收尾（finish 幂等，迟到触发无害）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
             self?.finish()
         }
     }
@@ -115,6 +115,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     private func finish() {
         guard !finished else { return }
         finished = true
+        Self.active.removeAll { $0 === self }
         // userContentController 强持有 handler，不解除会 harvester↔webview 循环引用
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "apicap")
         if apiDetail == nil {
@@ -229,19 +230,29 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     """#
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // SPA 渲染滞后：轮询提取直到拿到 og/desc 或超时收尾
-        Task { [weak self] in
-            guard let self, let target = self.pendingTarget else { return }
-            // 主文档完整 HTML 一次性落盘：meta keywords / class 选择器的样本，
-            // SSR 直出 tags 时也是兜底证据（不用靠 innerText 猜选择器）
-            if let html = try? await webView.evaluateJavaScript("document.documentElement.outerHTML") as? String {
+        guard let target = pendingTarget else { return }
+        // 主文档完整 HTML 一次性落盘：meta keywords / class 选择器的样本，
+        // SSR 直出 tags 时也是兜底证据（不用靠 innerText 猜选择器）
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { html, _ in
+            if let html = html as? String {
                 DramaMetaDump.write(String(html.prefix(2_000_000)),
                                     name: "html_\(target.site)_\(target.dramaID).html")
             }
-            for _ in 0..<5 {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let result = try? await webView.evaluateJavaScript(dramaMetaJS) as? String,
-                      let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else { continue }
+        }
+        // SPA 渲染滞后：轮询提取直到拿到 og/desc 或超时收尾
+        pollMeta(webView: webView, target: target, round: 0)
+    }
+
+    /// 每 2s 一轮、最多 5 轮（与旧 Task.sleep 轮询同节奏）；拿到 og/desc 提前收尾
+    private func pollMeta(webView: WKWebView, target: DramaTarget, round: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.finished else { return }
+            webView.evaluateJavaScript(dramaMetaJS) { result, _ in
+                guard let result = result as? String,
+                      let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else {
+                    self.nextRound(webView: webView, target: target, round: round)
+                    return
+                }
                 var update = d
                 if let og = d["ogImage"] as? String, !og.isEmpty { update["cover"] = og }
                 if let desc = d["desc"] as? String, !desc.isEmpty { update["intro"] = desc }
@@ -257,9 +268,20 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
-                if !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty { break }
+                if !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty {
+                    self.finish()
+                } else {
+                    self.nextRound(webView: webView, target: target, round: round)
+                }
             }
-            self.finish()
+        }
+    }
+
+    private func nextRound(webView: WKWebView, target: DramaTarget, round: Int) {
+        if round + 1 < 5 {
+            pollMeta(webView: webView, target: target, round: round + 1)
+        } else {
+            finish()
         }
     }
 }

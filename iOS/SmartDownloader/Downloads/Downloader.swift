@@ -38,8 +38,8 @@ final class DownloadTask: ObservableObject, Identifiable {
 }
 
 // MARK: - 下载管理（UI 层状态）
+// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 
-@MainActor
 final class DownloadManager: ObservableObject {
     @Published private(set) var tasks: [DownloadTask] = []
     @Published private(set) var foundURLs: [String] = []
@@ -79,21 +79,20 @@ final class DownloadManager: ObservableObject {
 
     /// 任务内部状态（进度/完成/失败）变化时转发本管理器的 objectWillChange：
     /// 分区归属依赖任务 state，不转发则完成后要重启 App 才换区。
-    /// receive(on: main) 保证回调线程，避免 sink 在后台线程触发主线程隔离断言
+    /// receive(on: main) 保证回调在主线程
     private func observeTaskState(_ task: DownloadTask) {
         task.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.objectWillChange.send() }
+                self?.objectWillChange.send()
             }
             .store(in: &stateCancellables)
     }
 
     /// 启动已登记任务；onFinish 在任务结束（成功/失败）后于主线程回调（多集调度依赖它接力）
-    func run(_ task: DownloadTask, onFinish: (@MainActor () -> Void)? = nil) {
-        Task { @MainActor in
-            await DownloadEngine().run(task: task)
-            onFinish?()
+    func run(_ task: DownloadTask, onFinish: (() -> Void)? = nil) {
+        DownloadEngine().run(task: task) {
+            DispatchQueue.main.async { onFinish?() }
         }
     }
 
@@ -241,10 +240,10 @@ final class DownloadManager: ObservableObject {
     }
 
     /// 目录名 -> 集号：第01集 / 第01集(1)（重下防覆盖后缀）；不匹配返回 nil
-    /// nonisolated：纯字符串解析、不碰任何 UI 状态，允许非 MainActor 的磁盘扫描复用
+    /// 纯字符串解析、不碰任何 UI 状态，磁盘扫描（PlaybackQueueService）可直接复用
     /// 【player 模块隐性契约】PlaybackQueueService 磁盘槽位扫描依赖集号解析；
     /// 改命名规则或签名前必须同步评估 player/PlaybackQueueService 与 player/PlayerPreferences。
-    nonisolated static func episodeSort(fromFolderName name: String) -> Int? {
+    static func episodeSort(fromFolderName name: String) -> Int? {
         guard name.hasPrefix("第") else { return nil }
         let body = name.dropFirst()
         guard let range = body.range(of: "集") else { return nil }
@@ -344,21 +343,33 @@ final class DownloadEngine {
 
     // MARK: 主流程
 
-    func run(task: DownloadTask) async {
-        await setTask(task) { $0.state = .parsing }
+    /// 同步管线（GCD 版）：入口可在任意线程，内部派到后台工作线程执行，
+    /// completion 在管线线程触发。网络/解密全部阻塞式（信号量等回调），
+    /// 管线只允许跑在后台线程——主线程 wait 会死锁（见 httpData 注释）。
+    /// 线程账：每任务 1 条管线线程 + 每批最多 6 条切片线程；2 集并发峰值 14 条，
+    /// 远低于 GCD 线程池上限，不会线程爆炸。
+    func run(task: DownloadTask, completion: @escaping () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.perform(task: task)
+            completion()
+        }
+    }
+
+    private func perform(task: DownloadTask) {
+        setTask(task) { $0.state = .parsing }
         do {
             guard let startURL = URL(string: task.url), startURL.scheme != nil else {
                 throw DownloadError.notMediaPlaylist
             }
 
             var playlistURL = startURL
-            var text = try await Self.fetchText(playlistURL)
+            var text = try Self.fetchText(playlistURL)
 
             // 多级播放列表：逐层选最高带宽子列表（最多 3 层）
             for _ in 0..<3 {
                 if let best = Self.bestVariantURI(in: text) {
                     playlistURL = URL(string: best, relativeTo: playlistURL)?.absoluteURL ?? playlistURL
-                    text = try await Self.fetchText(playlistURL)
+                    text = try Self.fetchText(playlistURL)
                 } else {
                     break
                 }
@@ -367,7 +378,7 @@ final class DownloadEngine {
             let playlist = try Self.parseMediaPlaylist(text: text, base: playlistURL)
             guard !playlist.segments.isEmpty else { throw DownloadError.emptySegments }
 
-            await setTask(task) {
+            setTask(task) {
                 $0.total = playlist.segments.count
                 $0.state = .downloading
             }
@@ -376,13 +387,13 @@ final class DownloadEngine {
             var keys: [String: Data] = [:]
             for keyString in playlist.keyURLs {
                 guard let keyURL = URL(string: keyString) else { continue }
-                keys[keyString] = try await Self.fetchData(keyURL)
+                keys[keyString] = try Self.fetchData(keyURL)
             }
 
             // fMP4 初始化段 (EXT-X-MAP)
             var initData: Data?
             if let mapURL = playlist.initURL {
-                initData = try await Self.fetchData(mapURL)
+                initData = try Self.fetchData(mapURL)
             }
 
             // 切片先落盘到临时目录，避免长视频内存峰值
@@ -396,24 +407,36 @@ final class DownloadEngine {
             while finished < segments.count {
                 if task.isCancelled { throw DownloadError.cancelled }
                 let end = min(finished + Self.maxConcurrency, segments.count)
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    for index in finished..<end {
-                        let segment = segments[index]
-                        group.addTask {
-                            try await Self.processSegment(segment, index: index,
-                                                          tempDir: tempDir, keys: keys)
+                // 一批 6 切片并发（DispatchGroup 替代 withThrowingTaskGroup）：
+                // 任一切片失败记录首个错误，整批等完后抛出（不做缺洞合并）
+                let group = DispatchGroup()
+                let errorLock = NSLock()
+                var batchError: Error?
+                for index in finished..<end {
+                    let segment = segments[index]
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        defer { group.leave() }
+                        do {
+                            try Self.processSegment(segment, index: index,
+                                                    tempDir: tempDir, keys: keys)
+                        } catch {
+                            errorLock.lock()
+                            if batchError == nil { batchError = error }
+                            errorLock.unlock()
                         }
                     }
-                    try await group.waitForAll()
                 }
+                group.wait()
+                if let batchError { throw batchError }
                 finished = end
                 let done = finished
-                await setTask(task) { $0.current = done }
+                setTask(task) { $0.current = done }
             }
 
             // ---- 保存为本地 HLS 文件夹 ----
             if task.isCancelled { throw DownloadError.cancelled }
-            await setTask(task) { $0.state = .saving }
+            setTask(task) { $0.state = .saving }
             let isTS = Self.isTSStream(tempDir: tempDir, hasInit: initData != nil)
 
             // 选集下载落到 Downloads/<剧名>/<集>/，散装仍是 Downloads/<标题>/
@@ -436,7 +459,7 @@ final class DownloadEngine {
             let playlistURL2 = folder.appendingPathComponent("playlist.m3u8")
             try playlistText.write(to: playlistURL2, atomically: true, encoding: .utf8)
 
-            await setTask(task) {
+            setTask(task) {
                 $0.state = .done
                 $0.outputURL = playlistURL2
                 $0.isHLSFolder = true
@@ -449,12 +472,14 @@ final class DownloadEngine {
             if Self.isConnectionLevelError(error) {
                 message += "；当前网络无法连接该视频源（蜂窝网络下常见，网页内视频也会同样卡住），请换 WiFi 或开启 VPN 后重试"
             }
-            await setTask(task) { $0.state = .failed(message) }
+            setTask(task) { $0.state = .failed(message) }
         }
     }
 
-    private func setTask(_ task: DownloadTask, _ mutate: @MainActor (DownloadTask) -> Void) async {
-        await MainActor.run {
+    /// 状态回写统一回主线程（DownloadTask 是 UI 绑定对象）；
+    /// main.async 不等待，管线线程不会被主线程卡住
+    private func setTask(_ task: DownloadTask, _ mutate: @escaping (DownloadTask) -> Void) {
+        DispatchQueue.main.async {
             mutate(task)
             // print 到 stdout：Xcode 控制台 / devicectl --console 可见，便于真机日志定位
             print("DL[\(task.title)]: \(task.state) \(task.current)/\(task.total)")
@@ -500,7 +525,8 @@ final class DownloadEngine {
     /// 冒烟测试强制走 WebKit 通道（验证兜底链路用）
     static let forceWebKit = ProcessInfo.processInfo.environment["SMARTDOWNLOADER_FORCE_WEBKIT"] == "1"
     /// 一旦 WebKit 兜底成功即置位，后续请求跳过注定失败的 URLSession
-    nonisolated(unsafe) static var preferWebKit = false
+    /// （工作线程间共享的标志位，沿用旧实现的良性竞争，不加锁）
+    static var preferWebKit = false
 
     /// 连接层错误：WAF TLS 指纹拦截的典型表现（握手被 RST / 无法建连），值得降级
     private static func isConnectionLevelError(_ error: Error) -> Bool {
@@ -514,24 +540,51 @@ final class DownloadEngine {
         }
     }
 
-    private static func fetchViaWebKit(_ url: URL, byteRange: ByteRange?) async throws -> Data {
-        try await WebKitFetcher.shared.fetch(url: url, byteRange: byteRange)
+    private static func fetchViaWebKit(_ url: URL, byteRange: ByteRange?) throws -> Data {
+        try WebKitFetcher.shared.fetch(url: url, byteRange: byteRange)
     }
 
-    static func fetchData(_ url: URL, retries: Int = 3, byteRange: ByteRange? = nil) async throws -> Data {
+    /// URLSession 同步桥：dataTask + 信号量。只允许在后台工作线程调用——
+    /// completion 在 URLSession 自有队列回调，主线程 wait 会死锁。
+    /// 35s 超时兜底（略大于 request 的 30s），超时 cancel 任务并抛 URLError.timedOut。
+    private static func httpData(for request: URLRequest) throws -> (Data, URLResponse) {
+        let semaphore = DispatchSemaphore(value: 0)
+        // 结果箱：回调队列写、工作线程读，先后序由信号量建立
+        var outcome: Result<(Data, URLResponse), Error>?
+        let task = SharedSession.session.dataTask(with: request) { data, response, error in
+            if let error {
+                outcome = .failure(error)
+            } else if let data, let response {
+                outcome = .success((data, response))
+            } else {
+                outcome = .failure(URLError(.unknown))
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 35) == .success, let result = outcome else {
+            task.cancel()
+            throw URLError(.timedOut)
+        }
+        return try result.get()
+    }
+
+    /// 同步阻塞下载（信号量等回调），只允许在后台工作线程调用。
+    /// 重试/降级链与旧 async 版一致：URLSession → IP 直连 → WebKit，成功后 sticky。
+    static func fetchData(_ url: URL, retries: Int = 3, byteRange: ByteRange? = nil) throws -> Data {
         if forceWebKit || preferWebKit {
-            return try await fetchViaWebKit(url, byteRange: byteRange)
+            return try fetchViaWebKit(url, byteRange: byteRange)
         }
         // 该域名已证实需 IP 直连（域名连接被网络侧 RST），直接走，省去每次必败的常规连接
         if let host = url.host, ipDirectHosts.contains(host),
-           let data = try? await fetchIPDirect(url, byteRange: byteRange) {
+           let data = try? fetchIPDirect(url, byteRange: byteRange) {
             return data
         }
         var lastError: Error = DownloadError.badStatus(-1)
         for attempt in 0...retries {
             do {
                 let (request, expectedLength) = makeRequest(url: url, byteRange: byteRange)
-                let (payload, response) = try await SharedSession.session.data(for: request)
+                let (payload, response) = try httpData(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw DownloadError.badStatus(http.statusCode)
                 }
@@ -542,14 +595,14 @@ final class DownloadEngine {
                     print("DL[\(url.host ?? "")]: URLSession 连接层错误(\(error.localizedDescription))")
                     // 先试 IP 直连（域名 SNI 被网络侧 RST 时有效），再试 WebKit（客户端 TLS 指纹被拦时有效）
                     if let host = url.host,
-                       let data = try? await fetchIPDirect(url, byteRange: byteRange) {
+                       let data = try? fetchIPDirect(url, byteRange: byteRange) {
                         ipDirectHosts.insert(host)
                         print("DL[\(host)]: ✅ IP 直连成功，该域名后续请求直接走 IP")
                         return data
                     }
                     print("DL[\(url.host ?? "")]: IP 直连也失败，尝试 WebKit 兜底…")
                     do {
-                        let data = try await fetchViaWebKit(url, byteRange: byteRange)
+                        let data = try fetchViaWebKit(url, byteRange: byteRange)
                         preferWebKit = true
                         print("DL[\(url.host ?? "")]: ✅ WebKit 兜底成功，后续请求直接走 WebKit")
                         return data
@@ -559,7 +612,7 @@ final class DownloadEngine {
                 }
                 if attempt == retries { throw lastError }
                 let delay = min(20.0, pow(2.0, Double(attempt + 1)))
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                Thread.sleep(forTimeInterval: delay)
             }
         }
         throw lastError
@@ -597,59 +650,57 @@ final class DownloadEngine {
     // 证书与 IP 不匹配由 TrustAllSessionDelegate 兜底。
     // 若拦截是按目的 IP 进行的（而非域名），此法同样无效，自然降级到 WebKit/报错。
 
-    /// 已证实 IP 直连可用的域名（sticky）
-    nonisolated(unsafe) static var ipDirectHosts: Set<String> = []
+    /// 已证实 IP 直连可用的域名（sticky；工作线程间共享，良性竞争不加锁）
+    static var ipDirectHosts: Set<String> = []
     /// 域名 -> [IP] 解析缓存（进程内）
-    nonisolated(unsafe) static var dnsCache: [String: [String]] = [:]
+    static var dnsCache: [String: [String]] = [:]
 
     private static func isLiteralIP(_ host: String) -> Bool {
         var v4 = in_addr(); var v6 = in6_addr()
         return inet_pton(AF_INET, host, &v4) == 1 || inet_pton(AF_INET6, host, &v6) == 1
     }
 
-    /// 解析域名（getaddrinfo 为阻塞调用，放后台线程；优先 IPv4），成功后缓存
-    static func resolveHost(_ host: String) async -> [String] {
+    /// 解析域名（getaddrinfo 为阻塞调用，本函数只在后台工作线程跑；优先 IPv4），成功后缓存
+    static func resolveHost(_ host: String) -> [String] {
         if let cached = dnsCache[host], !cached.isEmpty { return cached }
-        let ips: [String] = await Task.detached(priority: .utility) {
-            var hints = addrinfo()
-            hints.ai_family = AF_UNSPEC
-            hints.ai_socktype = SOCK_STREAM
-            var result: UnsafeMutablePointer<addrinfo>?
-            guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return [] }
-            defer { freeaddrinfo(first) }
-            var all: [String] = []
-            var cursor: UnsafeMutablePointer<addrinfo>? = first
-            while let node = cursor {
-                defer { cursor = node.pointee.ai_next }
-                guard let sa = node.pointee.ai_addr else { continue }
-                var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
-                if sa.pointee.sa_family == sa_family_t(AF_INET) {
-                    var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-                    if inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
-                        let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-                        all.append(String(decoding: bytes, as: UTF8.self))
-                    }
-                } else if sa.pointee.sa_family == sa_family_t(AF_INET6) {
-                    var addr = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
-                    if inet_ntop(AF_INET6, &addr.sin6_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
-                        let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-                        all.append(String(decoding: bytes, as: UTF8.self))
-                    }
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return [] }
+        defer { freeaddrinfo(first) }
+        var all: [String] = []
+        var cursor: UnsafeMutablePointer<addrinfo>? = first
+        while let node = cursor {
+            defer { cursor = node.pointee.ai_next }
+            guard let sa = node.pointee.ai_addr else { continue }
+            var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+            if sa.pointee.sa_family == sa_family_t(AF_INET) {
+                var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                if inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
+                    let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                    all.append(String(decoding: bytes, as: UTF8.self))
+                }
+            } else if sa.pointee.sa_family == sa_family_t(AF_INET6) {
+                var addr = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+                if inet_ntop(AF_INET6, &addr.sin6_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
+                    let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                    all.append(String(decoding: bytes, as: UTF8.self))
                 }
             }
-            let ipv4 = all.filter { !$0.contains(":") }
-            return ipv4.isEmpty ? all : ipv4
-        }.value
+        }
+        let ipv4 = all.filter { !$0.contains(":") }
+        let ips = ipv4.isEmpty ? all : ipv4
         if !ips.isEmpty { dnsCache[host] = ips }
         return ips
     }
 
     /// IP 直连：URL 换成 IP（无 SNI），Host 头置原域名；逐个尝试解析出的 IP（最多 3 个）
-    static func fetchIPDirect(_ url: URL, byteRange: ByteRange?) async throws -> Data {
+    static func fetchIPDirect(_ url: URL, byteRange: ByteRange?) throws -> Data {
         guard let host = url.host, !isLiteralIP(host) else {
             throw DownloadError.badStatus(-3)
         }
-        let ips = await resolveHost(host)
+        let ips = resolveHost(host)
         guard !ips.isEmpty else {
             throw DownloadError.badStatus(-3)  // DNS 解析不到 IP
         }
@@ -661,7 +712,7 @@ final class DownloadEngine {
             do {
                 var (request, expectedLength) = makeRequest(url: ipURL, byteRange: byteRange)
                 request.setValue(host, forHTTPHeaderField: "Host")
-                let (payload, response) = try await SharedSession.session.data(for: request)
+                let (payload, response) = try httpData(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw DownloadError.badStatus(http.statusCode)
                 }
@@ -674,8 +725,8 @@ final class DownloadEngine {
         throw lastIPError
     }
 
-    static func fetchText(_ url: URL) async throws -> String {
-        let data = try await fetchData(url)
+    static func fetchText(_ url: URL) throws -> String {
+        let data = try fetchData(url)
         return String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1)
             ?? ""
@@ -851,8 +902,8 @@ final class DownloadEngine {
     // MARK: 切片处理
 
     static func processSegment(_ segment: ParsedSegment, index: Int,
-                               tempDir: URL, keys: [String: Data]) async throws {
-        var data = try await fetchData(segment.url, byteRange: segment.byteRange)
+                               tempDir: URL, keys: [String: Data]) throws {
+        var data = try fetchData(segment.url, byteRange: segment.byteRange)
         if let keyURL = segment.keyURL {
             guard let key = keys[keyURL.absoluteString] else { throw DownloadError.missingKey }
             let iv = segment.iv ?? Data(repeating: 0, count: 16)
