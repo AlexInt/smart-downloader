@@ -52,6 +52,15 @@ final class DramaPageViewModel: ObservableObject {
     /// 首次库对账完成前不报「下载完成」，避免进页把已有文件误报成刚下完
     private var initialLibraryApplied = false
 
+    // MARK: 「为你推荐」与「剧集档案」（数据全部来自本地 SQLite，离线可用）
+
+    /// 推荐剧快照，按接口 position 保序；详情整包抓取完成后刷新
+    @Published private(set) var recommendations: [RecommendedDrama] = []
+    /// 详情整包派生的分组展示行（View 只渲染，不碰原始 DTO）
+    @Published private(set) var archiveSections: [DramaArchiveSection] = []
+    /// 点击推荐卡片要推入的新剧集页；View 只置位，导航由组装根挂 destination
+    @Published var recommendedTarget: DramaTarget?
+
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
         self.manager = manager
@@ -132,33 +141,7 @@ final class DramaPageViewModel: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
-    /// CTA 视觉语义：true = 已可播（红橙渐变 + 白字），false = 需要下载（白底 + 红字）。
-    /// 用户要求「需要下载时底部按钮不要是红色」，播放与下载两种动作要一眼可分。
-    var ctaIsPlay: Bool {
-        guard let sort = selectedSort else { return false }
-        return downloadedSorts.contains(sort)
-    }
-
-    /// CTA 文案随选中集的真实状态变化：已下载可播、未下载可下、排队中/锁定如实告知
-    var ctaTitle: String {
-        guard let sort = selectedSort else { return "请选择剧集" }
-        if downloadedSorts.contains(sort) { return "播放第 \(sort) 集" }
-        if queuedSorts.contains(sort) {
-            if case .active(let p) = downloadPhase(for: sort), p > 0.03 {
-                return "第 \(sort) 集 · \(Int(p * 100))%"
-            }
-            return "第 \(sort) 集下载中"
-        }
-        if let ep = info?.episodes.first(where: { $0.sort == sort }), !ep.playable {
-            return "第 \(sort) 集暂不可看"
-        }
-        return "下载第 \(sort) 集"
-    }
-
-    // MARK: - 用户意图（剧集详情页）
-
-    /// 格子单选：只改选中态，不触发下载/播放（设计稿 radiogroup 语义）
-    func select(sort: Int) { selectedSort = sort }
+    // MARK: - 用户意图（主屏格子直点，已移除底部 CTA）
 
     func toggleDescription() { isDescriptionExpanded.toggle() }
 
@@ -166,26 +149,6 @@ final class DramaPageViewModel: ObservableObject {
         isFavorite.toggle()
         favorites.setFavorite(isFavorite, for: target.id)
         showToast(isFavorite ? "已加入收藏" : "已取消收藏")
-    }
-
-    /// 底部 CTA：已下载则播放，未下载且可播则把该集加入下载队列，其余状态如实提示
-    func playSelected() {
-        guard let info, let sort = selectedSort,
-              let ep = info.episodes.first(where: { $0.sort == sort }) else {
-            showToast("请先选择剧集")
-            return
-        }
-        if downloadedSorts.contains(sort) {
-            makePlaybackRequest(for: ep)
-        } else if queuedSorts.contains(sort) {
-            showToast("第 \(sort) 集已在下载队列")
-        } else if !ep.playable {
-            showToast("第 \(sort) 集暂不可看")
-        } else {
-            selected = [ep.id]
-            startDownload()
-            showToast("已加入下载队列：第 \(sort) 集")
-        }
     }
 
     /// 封面占位「点击重试」：有 URL 时换 token 让 AsyncImage 重建；
@@ -265,6 +228,78 @@ final class DramaPageViewModel: ObservableObject {
                                         episodes: chosen, manager: manager, session: session)
     }
 
+    // MARK: - 格子直点 / 批量 / 推荐跳转
+
+    /// 主屏选集格子直点（设计稿语义，取代原「单选 + 底部 CTA」）：
+    /// 已下载→播放；下载中/排队→取消；未下载且可播→直接下载该集；锁定→如实提示。
+    /// 「查看全部」面板仍用 tapEpisode 的多选语义，两条路径互不干扰。
+    func tapEpisodeDirect(_ ep: ApiDramaEpisode) {
+        if downloadedSorts.contains(ep.sort) {
+            selectedSort = ep.sort
+            makePlaybackRequest(for: ep)
+        } else if queuedSorts.contains(ep.sort) {
+            cancelDownload(sort: ep.sort)
+        } else if !ep.playable {
+            showToast("第 \(ep.sort) 集暂不可看")
+        } else {
+            selectedSort = ep.sort
+            selected = [ep.id]
+            startDownload()
+            showToast("已加入下载队列：第 \(ep.sort) 集")
+        }
+    }
+
+    /// 设计稿「下载全部」：把全部可下且未入队的集一次交给 SeriesDownloadCoordinator
+    ///（仍是最多 2 集并行、每集下载前重取新鲜直链），不绕过现有调度。
+    func downloadAll() {
+        guard let info else { return }
+        let pending = info.episodes.filter {
+            $0.playable && !downloadedSorts.contains($0.sort) && !queuedSorts.contains($0.sort)
+        }
+        guard !pending.isEmpty else {
+            showToast("没有可下载的剧集")
+            return
+        }
+        selected = Set(pending.map(\.id))
+        startDownload()
+        showToast("已加入下载队列：\(pending.count) 集")
+    }
+
+    /// 取消单集下载：复用 DownloadManager.remove —— 它置 isCancelled、删半成品、
+    /// 清行为数据并移出队列；引擎在切片间隙检查 isCancelled 后收尾。
+    /// setTask 直接持有 task 对象（不查 tasks 数组），任务移出后回写仍安全。
+    private func cancelDownload(sort: Int) {
+        guard let info else { return }
+        let title = String(format: "第%02d集", sort)
+        guard let task = manager.tasks.first(where: {
+            $0.seriesName == info.name && $0.title == title && !$0.state.isFinished
+        }) else {
+            showToast("第 \(sort) 集不在下载队列")
+            return
+        }
+        manager.remove(task)
+        showToast("已取消第 \(sort) 集下载")
+    }
+
+    /// 推荐卡片点击：站点地址从当前页 target 推导，代码内不硬编码站点（AGENTS.md 第 2 条）。
+    /// 只置位，导航由 DramaNativePage 挂的 navigationDestination 负责。
+    func openRecommendation(_ item: RecommendedDrama) {
+        let next = DramaTarget(site: target.site, dramaID: String(item.videoID))
+        print("PLAYER_DBG [Entry] reco tap -> \(next.id) title=\(item.displayTitle)")
+        recommendedTarget = next
+    }
+
+    /// 推荐与档案都读本地 SQLite：drama_related 快照 + api_detail 整包解码，离线可用。
+    /// 进页先读一次（有缓存即可显示），详情收割完成后再读一次拿最新字段。
+    func refreshRecommendations() {
+        recommendations = DramaCache.relatedDramas(site: target.site, dramaID: target.dramaID)
+        let fetchedAt = DramaCache.load(site: target.site, dramaID: target.dramaID)?.fetchedAt
+        archiveSections = DramaArchive.sections(
+            from: DramaCache.detailData(site: target.site, dramaID: target.dramaID),
+            fetchedAt: fetchedAt)
+        print("PLAYER_DBG [Entry] reco refresh count=\(recommendations.count) archiveSections=\(archiveSections.count)")
+    }
+
     // MARK: - 加载编排
 
     func load() {
@@ -293,6 +328,8 @@ final class DramaPageViewModel: ObservableObject {
             tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
             tagsSource = entry.tagsSource
         }
+        // 有缓存就先亮出推荐与档案，不等后台收割
+        refreshRecommendations()
     }
 
     /// 任一任务状态变化时重算已下载集；新落盘的集给一条完成 toast（下载提示）。
@@ -320,6 +357,7 @@ final class DramaPageViewModel: ObservableObject {
                 self.fromCache = false
                 DramaCache.saveInfo(site: self.target.site, dramaID: self.target.dramaID, info: info)
                 self.applyLibraryState(for: info)
+                self.refreshRecommendations()
                 self.harvestIfNeeded()
             case .failure(let error):
                 // 有缓存时网络失败不白屏：回退缓存继续用
@@ -373,6 +411,8 @@ final class DramaPageViewModel: ObservableObject {
                 self.tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
                 self.tagsSource = entry.tagsSource
             }
+            // 详情整包这时才落库，推荐剧 / 档案字段在此刷新为最新值
+            self.refreshRecommendations()
         }
     }
 

@@ -15,6 +15,11 @@ struct DramaNativePage: View {
 
     var body: some View {
         DramaDetailView(vm: vm)
+            // 「为你推荐」卡片：在当前 NavigationStack 再推一层原生剧集页。
+            // 站点地址由 VM 从当前 target.site 推导（不硬编码），返回即回到本剧。
+            .navigationDestination(item: $vm.recommendedTarget) { target in
+                DramaNativePage(target: target, manager: manager)
+            }
             .fullScreenCover(item: $vm.playbackRequest) { request in
                 DramaPlayerContainer(request: request, onClose: { vm.playbackRequest = nil })
             }

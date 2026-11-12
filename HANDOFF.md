@@ -14,7 +14,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 
 ### 已实现并真机验证（细节见 AGENTS / 代码 / git）
 
-剧集嗅探 → 原生剧集页 → 选集下载（含蜂窝 IP 直连降级）· 下载页双 tab 横滑 + 排序 + 批量编辑 · 重复点击下载防重 · 播放页设计稿还原 + 真实 AVPlayer + 长按 2× + 点按暂停 + 全屏无黑边 + 左缘返回 · 横向 seek 全屏化（相对映射，一屏宽≈全片时长）· 全剧集数同步（三真实来源，绝不造槽位）+ 边界 toast · UIKit 原生分页 · 秒开三件套（预热池 + KVO 直挂 + spinner 延迟）· 清屏模式 · 启动页 splash · 剧集详情页设计稿（390×840 三态 / 单选 CTA / 查看全部下载面板 / 收藏 / 下载进度环）。
+剧集嗅探 → 原生剧集页 → 选集下载（含蜂窝 IP 直连降级）· 下载页双 tab 横滑 + 排序 + 批量编辑 · 重复点击下载防重 · 播放页设计稿还原 + 真实 AVPlayer + 长按 2× + 点按暂停 + 全屏无黑边 + 左缘返回 · 横向 seek 全屏化（相对映射，一屏宽≈全片时长）· 全剧集数同步（三真实来源，绝不造槽位）+ 边界 toast · UIKit 原生分页 · 秒开三件套（预热池 + KVO 直挂 + spinner 延迟）· 清屏模式 · 启动页 splash · 剧集详情页设计稿（390×840 三态 / 格子直点 / 查看全部下载面板 / 收藏 / 下载进度环）。**本轮新增的推荐专区 / 档案区 / 可滚动布局待真机回归，见 §7。**
 
 ### 本轮（2026-11-12）改动
 
@@ -39,6 +39,9 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 详情接口整包落库 | 此前详情响应只有 tags 被收集，其余 39 个顶层字段解码即丢。新增 `DramaCache.saveDetail`：`api_detail` 存响应体整包 + 35 个提升列（计数/规格/权限/催更/服务端观看进度）、`drama_episodes` 加 8 个每集元数据列、新表 `drama_related` 存推荐剧快照；采集改为每次进剧集页一次 | 用真实样本 3703.json 验证：整包一字不差回读、4 集元数据、10 条推荐、v1→v2 升级不丢行为数据 |
 | 数据库迁移收口 | 新增 `Drama/DramaDatabase.swift` 统一 open/建表/补列/旧数据搬迁（`user_version` 整库一个，两个 Service 各管一段会互相跳过建表）；补列逐列查 table_info，搬迁用独立标记门控；共用 bind/text/execWrite/fail/transaction | 同上 |
 | saveInfo 合并式落库 | 原「先 DELETE 全表再逐集 INSERT」使 ON CONFLICT 永不触发，刷新集列表把 `downloaded/folder` 清成 0/NULL。改为读现有 id 后只删接口已不存在的集、既有集 upsert 不动下载标记与每集元数据（v1 老库升级 + 同列表刷新 + 列表变化 + saveDetail 幂等重跑四场景冒烟通过） | 已修，冒烟通过，待真机回归 |
+| 剧集详情页对齐新设计稿 | 设计稿 `drama-detail.html` 的 `.screen` 本来就是 `overflow-y:auto`，原实现是固定 390×840 不可滚。改为可滚动画布（高度 = 840 + 推荐 + 档案）、缩放按屏宽、toast 改屏幕悬浮；**移除底部固定 CTA**，格子恢复直点（已下载→播放 / 下载中→取消 / 未下载→直接下载 / 锁定→提示）；补「下载全部」与下载中 `n/100` 分数。保留海报 376、绿色进度环、查看全部 sheet、≤12 集栅格 | 模拟器构建通过，真实样本验证通过，**待真机回归** |
+| 「为你推荐」专区 | `Drama/RecommendedDrama.swift`（纯数据）+ `DramaCache.relatedDramas` 由 5 列扩到 8 列（补 `play_count_text` / `serialize_status_text` / `content_access_type`）；双列瀑布流、封面 228/184/150 三档循环、连载+VIP 角标、标题/标签/播放量；卡片点击由 `DramaNativePage` 的 `navigationDestination` 再推一层剧集页（站点从 `target.site` 推导，不硬编码） | 同上 |
+| 「剧集档案」区 | `Drama/DramaArchive.swift` 把 `api_detail` 整包解码回 `DramaDetailData` 后纯函数派生分组展示行：数据表现 / 内容规格 / 权限与付费 / 角标状态 / 催更 / 服务端观看进度 / 分享与链接 / 每集元数据 / 本地记录；0 与 nil 如实显示，不编造文案 | 真实样本 3703.json：解码 4 集 / 10 推荐，档案 9 组 70 行、VIP 角标正确；**待真机回归** |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -49,7 +52,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | `PlaybackModels.swift` / `DramaEpisode.swift` | Model | 纯数据：`PlayableEpisode` / `ImmersivePlaybackRequest`、卡片展示模型 |
 | `PlaybackQueueService.swift` | Service | **上下滑资源调度唯一入口**：全剧集数三来源、槽位、history 回溯栈、`resolveNext/resolvePrevious`（推荐算法接入点）、`neighbors(of:)` |
 | `PlaybackPlayerService.swift` | Service | 唯一常驻 `AVPlayer`、`makeItem`（预热池 HIT/MISS）、`preload`/`clear`/`teardown` |
-| `PlayerPreferences.swift` | Service | 静音/清屏/点赞/收藏/**剩余时间显示**持久化（UserDefaults 封装）|
+| `PlayerPreferences.swift` | Service | 静音/清屏/**剩余时间显示**持久化（UserDefaults 封装）；点赞/收藏已迁 `EpisodeActionsStore`（SQLite）|
 | `PlayerGesturePolicy.swift` | Service | 仅剩 scrub 灵敏度纯函数（命中带已废）|
 | `PlaybackProgressTracker.swift` | Service | 进度落库与续播：1Hz 攒内存 + 关键时机 flush，播完/接近片尾从头播 |
 | `DramaPlayerViewModel.swift` | ViewModel | 单集播放状态机：load（KVO 直挂 + 看门狗 + 代际令牌）、isReady/isLoadingSlow/isScrubbing、seek、倍速、时间进度 |
@@ -75,12 +78,13 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 5. **集数绝不造假**：来源优先级 = 调用方 knownSorts → SQLite `DramaCache.allSorts` → 磁盘已下载兜底。没有元数据时只有 1 集就不能滑，toast「已经到底了」。
 6. **推荐算法接入点**：只改 `PlaybackQueueService.resolveNext/resolvePrevious`；`neighbors(of:)` 也走它们，预热自动跟随新序。
 7. **诊断日志**：`PLAYER_DBG` 前缀 + `[CHECK]` 断言行；失败分支必须有 log；排障后保留不清理（全文见 AGENTS）。
+8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已按用户拍板移除**，主屏格子直点；「查看全部」sheet 仍保留多选下载语义，两条路径别合并。勿改回固定高度或加回 CTA。
 
 ## 5. 待办清单（按优先级）
 
 | # | 事项 | 优先级 |
 |---|---|---|
-| 1 | **本轮全部改动的真机回归**（清单见 §7）：GCD 迁移行为不变量 + 保活 + 手势 + toast/服务器/进度条/剩余时间 | 高（验证） |
+| 1 | **本轮全部改动的真机回归**（清单见 §7）：GCD 迁移行为不变量 + 保活 + 手势 + toast/服务器/进度条/剩余时间 + 详情页滚动/直点/推荐跳转/档案 | 高（验证） |
 | 2 | 浏览页路由统一（见 §6，本轮只查未改） | 中 |
 | 3 | 相邻卡片首帧海报（渐变占位 → AVAssetImageGenerator + 磁盘缓存，可复用预热池 asset） | 中 |
 | 4 | 本地推荐算法（接入点已留 §4.6） | 按需 |
@@ -109,7 +113,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 - 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
 - tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。
 
-**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变。
+**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架。
 
 ## 8. 维护本文档
 

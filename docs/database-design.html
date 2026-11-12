@@ -100,7 +100,7 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
 <section id="overview">
   <h2><span class="no">01</span>总览与 ER 关系图</h2>
   <p class="lead">
-    四张表住在同一个文件里。<code>drama_cache</code> 与 <code>drama_episodes</code> 由 <code>DramaCache</code> 维护（站点元数据镜像）；
+    五张表住在同一个文件里。<code>drama_cache</code> 与 <code>drama_episodes</code> 由 <code>DramaCache</code> 维护（站点元数据镜像）；
     <code>episode_actions</code> 与 <code>local_actions</code> 由 <code>EpisodeActionsStore</code> 维护（用户行为数据）。
     两组表<strong>没有外键约束</strong>，关联靠「同一套主键字段 + 代码约定」，删除时的联动由代码显式执行。
     建表与版本迁移统一在 <code>Drama/DramaDatabase.swift</code>：整库只有一个 <code>user_version</code>，
@@ -578,7 +578,10 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
     position INTEGER, updated_at TEXT,
     PRIMARY KEY (site, drama_id, related_video_id)
 );</code></pre>
-  <p>读回接口：<code>DramaCache.relatedDramas(site:dramaID:)</code> → 按 position 排序的 (videoID, title, cover, tags, playCount)。</p>
+  <p>读回接口：<code>DramaCache.relatedDramas(site:dramaID:)</code> → 按 position 排序的
+  <code>[RecommendedDrama]</code>（<code>Drama/RecommendedDrama.swift</code>，纯数据）。
+  2026-11-12 起 SELECT 从 5 列扩到 8 列，补上 <code>play_count_text</code> / <code>serialize_status_text</code> /
+  <code>content_access_type</code>，供剧集页「为你推荐」卡片的播放量文案、连载/VIP 角标直接使用，不必再解析整包。</p>
 </section>
 
 <section id="detailcols">
@@ -773,7 +776,7 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
   <h3>9.2 磁盘</h3>
   <table>
     <tr><th>路径</th><th>内容</th><th>说明</th></tr>
-    <tr><td class="name">Documents/drama_cache.sqlite3</td><td>本文档描述的四张表</td><td>Finder 文件共享可见，可直接拷出来用 sqlite3 查</td></tr>
+    <tr><td class="name">Documents/drama_cache.sqlite3</td><td>本文档描述的五张表</td><td>Finder 文件共享可见，可直接拷出来用 sqlite3 查</td></tr>
     <tr><td class="name">Documents/Downloads/&lt;剧名&gt;/第NN集/</td><td>playlist.m3u8 + 切片（.ts）</td><td>「是否已下载」的真正账本：playlist.m3u8 存在即已下载</td></tr>
     <tr><td class="name">Documents/Downloads/&lt;条目名&gt;/</td><td>散装 HLS 的 playlist.m3u8 + 切片</td><td>无剧名归属，行为数据走 local_actions</td></tr>
     <tr><td class="name">Documents/Downloads/&lt;文件&gt;.mp4</td><td>普通视频文件</td><td>同上</td></tr>
@@ -857,7 +860,7 @@ WHERE e.site = ? AND e.drama_id = ?
 ORDER BY e.sort;</code></pre>
 
   <h3>10.10 库体检</h3>
-  <pre><code>PRAGMA user_version;                 -- 期望 1
+  <pre><code>PRAGMA user_version;                 -- 期望 2
 PRAGMA table_info(drama_cache);      -- 逐列看类型/约束/默认
 SELECT 'drama_cache'     AS t, COUNT(*) FROM drama_cache
 UNION ALL SELECT 'drama_episodes',  COUNT(*) FROM drama_episodes

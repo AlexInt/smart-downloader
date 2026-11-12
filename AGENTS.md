@@ -84,7 +84,7 @@ View → ViewModel → Service → 系统能力 / Model
 本节的适用范围是 `iOS/SmartDownloader/` **全部** Swift 文件，不只是 `player/`。目录按「功能域」划分，**不按 Model / Service / ViewModel / View 分**：同 target 没有 import 边界，按层分目录不产生任何依赖约束，只会把一个功能的四个文件打散到四处。按域分则「一个功能一个目录」，域内是否分层一眼可查。
 
 - `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `MediaIdentity` / `ApiDramaEpisode` / `DramaInfo` / `DramaError` / `EpisodeDownloadPhase`）、`DownloadModels.swift`（`TaskState` / `DownloadError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`）。只放被 2 个以上域引用的类型，不塞 Service / 业务逻辑
-- `Drama/`：剧集域。Model（`DramaDetailData`）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites` / `EpisodeActionsStore` 集级行为数据表 / `DramaDatabase` 统一连接与迁移）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`）、组装根（`DramaNativePage`）
+- `Drama/`：剧集域。Model（`DramaDetailData` 详情 DTO / `RecommendedDrama` 推荐卡片纯数据 / `DramaArchive` 档案展示行与派生纯函数）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites` / `EpisodeActionsStore` 集级行为数据表 / `DramaDatabase` 统一连接与迁移）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`）、组装根（`DramaNativePage`）
 - `Downloads/`：下载域。`Downloader`（Service：下载核心 + 任务/队列）、`DownloadsViewModel`（VM）、`DownloadsView`（View）
 - `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）
 - `Settings/`：设置域。Service（`QuickLinkStore` 快捷站点 key/value 持久化 / `AppLaunchPreferences` 启动 tab 持久化）、ViewModel（`SettingsViewModel`）、View（`SettingsView` + `QuickLinkEditorSheet`）

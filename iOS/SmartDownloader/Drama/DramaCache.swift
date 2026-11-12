@@ -547,13 +547,16 @@ enum DramaCache {
         return DramaDatabase.text(stmt, 0)
     }
 
-    /// 该剧的推荐剧快照（按接口给的顺序），本地推荐算法可用
-    static func relatedDramas(site: String, dramaID: String) -> [(videoID: Int, title: String?, cover: String?, tags: [String], playCount: Int)] {
+    /// 该剧的推荐剧快照（按接口给的顺序），「为你推荐」专区与本地推荐算法共用。
+    /// 8 列全读：卡片角标/播放量文案/权限都在表里，不需要再解析整包（整包是权威，提升列只为查询）。
+    static func relatedDramas(site: String, dramaID: String) -> [RecommendedDrama] {
         guard let db = openDB() else { return [] }
         defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT related_video_id, title, cover, tags, play_count FROM drama_related
+        SELECT related_video_id, title, cover, tags, play_count,
+               play_count_text, serialize_status_text, content_access_type
+        FROM drama_related
         WHERE site=? AND drama_id=? ORDER BY position;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -562,13 +565,35 @@ enum DramaCache {
         defer { sqlite3_finalize(stmt) }
         DramaDatabase.bind(stmt, 1, site)
         DramaDatabase.bind(stmt, 2, dramaID)
-        var result: [(videoID: Int, title: String?, cover: String?, tags: [String], playCount: Int)] = []
+        var result: [RecommendedDrama] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             let tags = (DramaDatabase.text(stmt, 3) ?? "").split(separator: " ").map(String.init)
-            result.append((Int(sqlite3_column_int64(stmt, 0)), DramaDatabase.text(stmt, 1),
-                           DramaDatabase.text(stmt, 2), tags, Int(sqlite3_column_int64(stmt, 4))))
+            result.append(RecommendedDrama(
+                videoID: Int(sqlite3_column_int64(stmt, 0)),
+                title: DramaDatabase.text(stmt, 1),
+                cover: DramaDatabase.text(stmt, 2),
+                tags: tags,
+                playCount: Int(sqlite3_column_int64(stmt, 4)),
+                playCountText: DramaDatabase.text(stmt, 5),
+                serializeStatusText: DramaDatabase.text(stmt, 6),
+                contentAccessType: DramaDatabase.text(stmt, 7)))
         }
+        print("CACHE OK[relatedDramas] \(site)#\(dramaID) rows=\(result.count)")
         return result
+    }
+
+    /// 读回整包详情并解码，供「剧集档案」展示那些没提升为列的字段（权限 / 催更 / 分享 / 角标等）。
+    /// 明文与信封形态存的是真原文；Nuxt payload 形态存的是模型结构化回写，只含模型声明的字段。
+    /// 解码失败只打日志返回 nil，VM 据此隐藏档案区，绝不编造字段值。
+    static func detailData(site: String, dramaID: String) -> DramaDetailData? {
+        guard let raw = rawDetail(site: site, dramaID: dramaID),
+              let data = raw.data(using: .utf8) else { return nil }
+        do {
+            return try JSONDecoder().decode(DramaDetailData.self, from: data)
+        } catch {
+            print("CACHE FAIL[detailData] \(site)#\(dramaID) error=\(error.localizedDescription)")
+            return nil
+        }
     }
 
     // MARK: 缓存行 → 领域模型
