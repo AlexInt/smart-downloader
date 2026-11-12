@@ -7,6 +7,8 @@ import UIKit
 /// 卡片是 UIHostingController.rootView，只在 `refreshCards` 时重设；
 /// 因此当前页 **与** 播放就绪状态任一变化都必须刷新，否则视频层会一直被
 /// `opacity(isActive && isReady ? 1 : 0)` 藏在渐变后面（播放器在播但画面不显示）。
+/// toast 文案同理：它按值快照传入卡片（不随 playback 观察），变化时也必须刷新，
+/// 否则 dismiss 置 nil 后卡片不重绘，toast 永远收不回（老 bug 根因）。
 struct PlayerPagingScrollView: UIViewRepresentable {
     let slots: [PlayableEpisode]
     @Binding var currentSort: Int?
@@ -14,6 +16,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     let vmCurrentSort: Int?
     /// 播放是否就绪：变化时需要刷新卡片 rootView
     let isReady: Bool
+    /// 当前页 toast 文案：变化时同样需要刷新卡片 rootView（toast 按值传入卡片）
+    let activeToast: String?
     /// 左缘右滑返回（fullScreenCover 没有系统边缘返回，自己补）
     var onEdgeBack: () -> Void = {}
     let makeCard: (PlayableEpisode) -> AnyView
@@ -73,6 +77,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var startApplied = false
         private var lastRefreshedSort: Int?
         private var lastRefreshedReady: Bool?
+        private var lastRefreshedToast: String?
         private var lastLoggedY: CGFloat = -999
         private var lastLoggedSize = ""
         private var lastPendingReason = ""
@@ -159,15 +164,18 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         // MARK: 页面管理
 
         func refreshCardsIfNeeded() {
-            let changed = lastRefreshedSort != parent.currentSort || lastRefreshedReady != parent.isReady
+            let changed = lastRefreshedSort != parent.currentSort
+                || lastRefreshedReady != parent.isReady
+                || lastRefreshedToast != parent.activeToast
             guard !hosts.isEmpty, changed else { return }
             lastRefreshedSort = parent.currentSort
             lastRefreshedReady = parent.isReady
+            lastRefreshedToast = parent.activeToast
             let current = parent.currentSort
             for slot in parent.slots {
                 hosts[slot.sort]?.rootView = parent.makeCard(slot)
             }
-            print("PLAYER_DBG [CHECK] refreshCards current=\(current.map(String.init) ?? "nil") isReady=\(parent.isReady) activeHost=\(current.flatMap { hosts[$0] } != nil)")
+            print("PLAYER_DBG [CHECK] refreshCards current=\(current.map(String.init) ?? "nil") isReady=\(parent.isReady) toast=\(parent.activeToast ?? "nil") activeHost=\(current.flatMap { hosts[$0] } != nil)")
         }
 
         func rebuildIfNeeded(in scroll: PagingScrollView) {
@@ -177,6 +185,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             startApplied = false
             lastRefreshedSort = nil
             lastRefreshedReady = nil
+            lastRefreshedToast = nil
             lastPendingReason = ""
             print("PLAYER_DBG [CHECK] rebuild sorts=\(sorts) count=\(sorts.count)")
 

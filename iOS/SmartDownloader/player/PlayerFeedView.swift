@@ -19,6 +19,7 @@ struct PlayerFeedView: View {
                     playback: vm.playback,
                     vmCurrentSort: vm.currentSort,
                     isReady: vm.playbackReady,
+                    activeToast: vm.toastText,
                     onEdgeBack: onClose,
                     makeCard: { slot in AnyView(card(for: slot)) }
                 )
