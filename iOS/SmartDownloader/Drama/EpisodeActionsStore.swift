@@ -18,7 +18,7 @@ import SQLite3
 
 enum EpisodeActionsStore {
 
-    /// 一集的行为数据快照：字段即表列，新增行为就加字段 + 加一次版本迁移。
+    /// 一集的行为数据快照：字段即表列，新增行为就加字段 + 在 DramaDatabase 的建表/补列清单加一条（迁移统一走那里）。
     struct Actions: Equatable {
         var liked = false
         var saved = false
@@ -30,10 +30,6 @@ enum EpisodeActionsStore {
             positionTotal > 0 ? PlaybackProgress(seconds: positionSeconds, total: positionTotal) : nil
         }
     }
-
-    private static let schemaVersion = 1
-    /// 建表/迁移每进程只做一次（主线程约定，无需加锁）
-    private static var migrated = false
 
     // MARK: 连接
 
