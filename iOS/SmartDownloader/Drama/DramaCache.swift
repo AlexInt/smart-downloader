@@ -136,6 +136,76 @@ enum DramaCache {
         return sorts
     }
 
+    /// 剧的「行为数据身份」：按剧名反查 site/drama_id 与 集号→服务端集 id 映射。
+    /// 下载页入口只有剧名，这是能拿到的最强身份；同名多剧（撞名/多站点）取最近抓取的一条并打日志，
+    /// 剧集页入口应直接把 `DramaTarget` 传进来，不走这条歧义路径。
+    struct SeriesIdentity {
+        let site: String
+        let dramaID: String
+        let episodeIDsBySort: [Int: Int]
+    }
+
+    static func seriesIdentity(forSeriesName name: String) -> SeriesIdentity? {
+        guard let db = openDB() else {
+            print("PLAYER_DBG [Service] seriesIdentity FAIL reason=openDB name=\(name)")
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        var site: String?
+        var dramaID: String?
+        var candidates = 0
+        let dramaSQL = "SELECT site, drama_id FROM drama_cache WHERE name=? ORDER BY fetched_at DESC;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, dramaSQL, -1, &stmt, nil) == SQLITE_OK else {
+            fail(db, "seriesIdentity prepare"); return nil
+        }
+        bind(stmt, 1, name)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            candidates += 1
+            if site == nil {
+                site = text(stmt, 0)
+                dramaID = text(stmt, 1)
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard let realSite = site, let realID = dramaID else {
+            print("PLAYER_DBG [Service] seriesIdentity MISS reason=noDramaByName name=\(name)")
+            return nil
+        }
+        if candidates > 1 {
+            print("PLAYER_DBG [Service] seriesIdentity AMBIGUOUS name=\(name) rows=\(candidates) 取最近抓取的一条 \(realSite)#\(realID)")
+        }
+        return seriesIdentity(site: realSite, dramaID: realID)
+    }
+
+    /// 已知 (site, drama_id) 时直接走这条：剧集页入口带 target 过来，不必按剧名猜
+    static func seriesIdentity(site: String, dramaID: String) -> SeriesIdentity? {
+        guard let db = openDB() else {
+            print("PLAYER_DBG [Service] seriesIdentity FAIL reason=openDB \(site)#\(dramaID)")
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        var ids: [Int: Int] = [:]
+        var stmt: OpaquePointer?
+        let epSQL = "SELECT episode_id, sort FROM drama_episodes WHERE site=? AND drama_id=?;"
+        guard sqlite3_prepare_v2(db, epSQL, -1, &stmt, nil) == SQLITE_OK else {
+            fail(db, "seriesIdentity episodes prepare")
+            return nil
+        }
+        bind(stmt, 1, site)
+        bind(stmt, 2, dramaID)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            ids[Int(sqlite3_column_int(stmt, 1))] = Int(sqlite3_column_int64(stmt, 0))
+        }
+        sqlite3_finalize(stmt)
+        if ids.isEmpty {
+            print("PLAYER_DBG [Service] seriesIdentity MISS reason=noEpisodes \(site)#\(dramaID)")
+            return nil
+        }
+        print("PLAYER_DBG [Service] seriesIdentity \(site)#\(dramaID) episodes=\(ids.count)")
+        return SeriesIdentity(site: site, dramaID: dramaID, episodeIDsBySort: ids)
+    }
+
     static func load(site: String, dramaID: String) -> Entry? {
         guard let db = openDB() else { return nil }
         defer { sqlite3_close(db) }

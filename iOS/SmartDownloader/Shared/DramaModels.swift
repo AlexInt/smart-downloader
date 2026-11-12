@@ -31,6 +31,26 @@ struct DramaTarget: Identifiable, Hashable {
     }
 }
 
+/// 一段可播放资源的「行为数据归属」标识（纯数据）。
+/// 对得上服务端集 id 就走 (site, drama_id, episode_id)：重新下载、改目录、改名都不丢历史；
+/// 对不上的（散装 HLS / 普通文件 / 磁盘收编的历史条目）退化为相对下载根目录的资源路径。
+/// 行为数据本体在 `EpisodeActionsStore`（SQLite），本类型只回答「这条记录属于谁」。
+enum MediaIdentity: Hashable {
+    case episode(site: String, dramaID: String, episodeID: Int)
+    /// 相对下载根目录的资源文件路径（HLS 为 `<目录>/playlist.m3u8`）
+    case localPath(String)
+
+    /// 日志用短句：不把整条绝对路径喷进 console，但足够定位到哪集
+    var label: String {
+        switch self {
+        case .episode(let site, let dramaID, let episodeID):
+            return "ep@\(site)#\(dramaID)/\(episodeID)"
+        case .localPath(let path):
+            return "local\(path)"
+        }
+    }
+}
+
 struct ApiDramaEpisode: Identifiable, Equatable, Codable {
     let id: Int
     let sort: Int
