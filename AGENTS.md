@@ -57,7 +57,7 @@ xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
 ## 开发约定
 
 1. **下载能力统一走 `core/downloader.py`**（Python 侧）/ `Downloader.swift`（iOS 侧）。站点特有逻辑（登录、加密 API、嗅探）放独立脚本或独立文件，不要混入通用模块。
-2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由 `quickLinks` 数组（BrowserView.swift）+ 地址栏输入，剧集点击由 URL 检测（DramaTarget.parse）路由到原生剧集页。
+2. **代码内不硬编码视频站点地址**。站点入口：`video_auto.py` 由输入 URL 推导；iOS 浏览页由设置页配置的快捷站点（`QuickLinkStore`，代码内只保留首次启动的默认一项）+ 地址栏输入，剧集点击由 URL 检测（DramaTarget.parse）路由到原生剧集页。
 3. **输出目录必须在用户主目录下**（`core/utils.get_download_dir` 有安全检查，越界抛 PermissionError）。
 4. 临时文件放 `temp_*` 目录，任务结束必须清理；同名文件加 `(1)` 后缀防覆盖。
 
@@ -87,6 +87,7 @@ View → ViewModel → Service → 系统能力 / Model
 - `Drama/`：剧集域。Model（`DramaDetailData`）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`）、组装根（`DramaNativePage`）
 - `Downloads/`：下载域。`Downloader`（Service：下载核心 + 任务/队列）、`DownloadsViewModel`（VM）、`DownloadsView`（View）
 - `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）
+- `Settings/`：设置域。Service（`QuickLinkStore` 快捷站点 key/value 持久化 / `AppLaunchPreferences` 启动 tab 持久化）、ViewModel（`SettingsViewModel`）、View（`SettingsView` + `QuickLinkEditorSheet`）
 - `Infra/`：系统能力。`LocalMediaServer`（本地回环 HTTP）、`WebKitFetcher`（WKDownload 兜底）
 - `player/`：播放域，五层齐全。Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `PlayerPreferences` / `PlaybackPlayerService` / `PlayerGesturePolicy`）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerPagingScrollView` / `PlayerSurfaceView`）、组装根（`DramaPlayerContainer`）
 - `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定
@@ -107,10 +108,10 @@ View → ViewModel → Service → 系统能力 / Model
    - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
 3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `asset.load(.isPlayable)`（async 岛）完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT；**wanted 名单必须含当前集+两侧邻居**——只报邻居会被自己的淘汰逻辑打穿，曾全 MISS；刚离开的集作为邻居重暖是回滑 HIT 保险，勿加「跳过正在播的集」过滤，曾因 playingSort 过滤致回滑必 MISS）+ `DramaPlayerViewModel` 的 **KVO 直挂就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 800ms 延迟显示**（`isLoadingSlow`；阈值依真机实测定——HIT 就绪 642–871ms，300ms 每滑必闪）。
 4. 全屏横向拖动 = 相对 scrub（拖动位移/屏宽换算进度，一屏宽≈全片时长），左缘 30pt 起手除外（保留给返回手势）；垂直滑动只切集，不碰进度。清屏下 seek 照常生效且全屏可用，进度条+时间瞬态淡入（`VM.isScrubbing`，松手停留 800ms 淡出；开启清屏闪现 1.5s 作空间参照）；**勿复用 `isSeekGestureActive` 驱动该 UI**——那是非渲染的手势仲裁闸门，两者语义不同（一个管仲裁、一个管显示）。
-5. **所有持久化统一走 Service，ViewModel 里不得出现 `UserDefaults.standard` / `FileManager`**：播放页偏好走 `PlayerPreferences`，剧集页收藏走 `DramaFavorites`，登录 token 由 `DramaSession` 自行读写（Service 内部允许）。Service 只做读写，不含业务判断。判据：删掉 UI 后这个读写仍然成立。
+5. **所有持久化统一走 Service，ViewModel 里不得出现 `UserDefaults.standard` / `FileManager`**：播放页偏好走 `PlayerPreferences`，剧集页收藏走 `DramaFavorites`，快捷站点与启动 tab 走 `QuickLinkStore` / `AppLaunchPreferences`，登录 token 由 `DramaSession` 自行读写（Service 内部允许）。Service 只做读写，不含业务判断。判据：删掉 UI 后这个读写仍然成立。
 6. 不为了分层而分层：不硬造协议、不搬 Coordinator/Router、不给三行代码加一层；等一个类型出现第二个变更理由再拆。`struct` 做 Service 可以。
 7. 已知低优先级待办：有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」占位页（见 `PlaybackQueueService` 的 resolve 注释）。
-8. **App 用 ZStack 保活容器而非系统 TabView**：浏览页（WKWebView）常驻底层可见、下载页以不透明背景盖上去，切 tab 只改可见性——因为 SwiftUI TabView 会藏起非活跃 tab，WKWebView 离屏被 WebKit 挂起/回收图层，切回唤醒阻塞主线程 300ms–1s（真机日志实证）。自定义底部 tab bar（safeAreaInset），剧集详情 push 时经 `BrowserView` 的 `detailActive` 绑定隐藏。勿改回用 TabView 装 WKWebView。
+8. **App 用 ZStack 保活容器而非系统 TabView**：浏览页（WKWebView）常驻底层可见、其余 tab（下载页 / 设置页）各自以不透明背景盖上去，切 tab 只改可见性——因为 SwiftUI TabView 会藏起非活跃 tab，WKWebView 离屏被 WebKit 挂起/回收图层，切回唤醒阻塞主线程 300ms–1s（真机日志实证）。tab 条目与顺序只在 `Shared/MainTab.swift` 一处定义（新增 tab 改那里），底部 bar 是自定义 `safeAreaInset`，剧集详情 push 时经 `BrowserView` 的 `detailActive` 绑定隐藏。勿改回用 TabView 装 WKWebView。
 
 ### 并发与线程（GCD 约定，2026-11-12 全量迁移）
 

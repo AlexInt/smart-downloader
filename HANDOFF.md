@@ -8,7 +8,7 @@
 
 智能 m3u8 视频下载器，跨平台多形态（Python CLI / Streamlit / Mac App / iOS App）。**近期全部工作聚焦 iOS**（`iOS/SmartDownloader/`，Xcode 26 folder-sync 工程，新 Swift 文件放入目录即自动编译）。用户只要求维护 iOS，勿主动改 Python 侧。
 
-iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 HLS 离线播放。核心页面：浏览（WKWebView，tag 0）、下载（tag 1）、沉浸式播放页（抖音式上下滑切集，fullScreenCover）。
+iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 HLS 离线播放。核心页面：浏览（WKWebView，`MainTab.browser`）、下载（`MainTab.downloads`）、设置（`MainTab.settings`）、沉浸式播放页（抖音式上下滑切集，fullScreenCover）。
 
 ## 2. 功能状态
 
@@ -32,6 +32,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 右侧时长切换剩余时间 | label 点按切 `-M:SS`↔总时长，`PlayerPreferences.showRemainingTime` 持久化 | 待真机验证 |
 | toast 时长 | 3s→2s | 已完成 |
 | 注释清理 | 删 GCD 迁移回声注释（等价旧 Task/.task 等），保留防回归说明 | 已完成 |
+| 设置 tab 页 | 新增 `Settings/` 域（Service/VM/View）：条目 1 选启动落在哪个 tab，条目 2 浏览页快捷站点多对 key/value 增删改；浏览页 label 行改读配置 | 模拟器构建通过，待真机验证 |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
