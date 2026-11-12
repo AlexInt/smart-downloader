@@ -146,7 +146,7 @@ final class DramaSession {
 
     // MARK: 协议实现（与 videocli.swift 同逻辑）
 
-    /// 登录失败/响应无 token 一律回 ""（游客模式，与旧 try? 语义一致）
+    /// 登录失败/响应无 token 一律回 ""（游客模式）
     private func login(_ constants: Constants, completion: @escaping (String) -> Void) {
         // token 30 天有效：按站点缓存，避免每次开面板都打登录接口（站点 WAF 对高频登录敏感）
         let tokenKey = "DramaAPI.token.\(target.site)"
@@ -220,7 +220,7 @@ final class DramaSession {
                                  delegate: DownloadEngine.TrustAllSessionDelegate(),
                                  delegateQueue: nil)
         session.dataTask(with: request) { data, _, error in
-            // 回主线程再碰 UserDefaults / 回调调用方（与旧 MainActor 语义一致）
+            // 回主线程再碰 UserDefaults / 回调调用方
             DispatchQueue.main.async {
                 if let error {
                     completion(.failure(error))

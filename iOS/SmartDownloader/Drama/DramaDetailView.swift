@@ -531,8 +531,7 @@ struct DramaDetailView: View {
 
     // MARK: - 查看全部：保留全量选集 + 多选下载 + 刷新
 
-    /// 设计稿主屏只放 12 格；下载能力（全选/清空/下载所选/刷新）收进这个面板，
-    /// 行为与旧版剧集页完全一致，避免「换皮」把下载器入口弄丢。
+    /// 设计稿主屏只放 12 格；全量选集 + 多选下载（全选/清空/下载所选/刷新）收进这个面板。
     private var allEpisodesSheet: some View {
         NavigationStack {
             ScrollView {

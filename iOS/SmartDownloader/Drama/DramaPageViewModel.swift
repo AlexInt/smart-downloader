@@ -196,8 +196,8 @@ final class DramaPageViewModel: ObservableObject {
         coverReloadToken += 1
     }
 
-    /// 2 秒后自动消失（用户指定）。旧实现 `guard !Task.isCancelled else { return }`
-    /// 会让被取消的任务跳过清除 —— 最后一条 toast 若被取消就永远挂着，这是「不消失」的根因。
+    /// 2 秒后自动消失（用户指定）。取消旧 WorkItem + UUID 令牌：连续提示时旧任务
+    /// 因令牌不匹配不会误清新提示，最后一条只要令牌仍匹配就必须无条件清掉（不留永久挂着的 toast）。
     func showToast(_ text: String) {
         toastTask?.cancel()
         let token = UUID()

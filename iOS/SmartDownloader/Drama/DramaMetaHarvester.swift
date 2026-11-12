@@ -243,7 +243,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         pollMeta(webView: webView, target: target, round: 0)
     }
 
-    /// 每 2s 一轮、最多 5 轮（与旧 Task.sleep 轮询同节奏）；拿到 og/desc 提前收尾
+    /// 每 2s 一轮、最多 5 轮；拿到 og/desc 提前收尾，轮次用尽也收尾
     private func pollMeta(webView: WKWebView, target: DramaTarget, round: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self, !self.finished else { return }

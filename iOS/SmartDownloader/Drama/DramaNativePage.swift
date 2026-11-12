@@ -19,7 +19,7 @@ struct DramaNativePage: View {
                 DramaPlayerContainer(request: request, onClose: { vm.playbackRequest = nil })
             }
             // 顺序敏感：先回填缓存头部再 load——load 的 harvestIfNeeded 依赖头部缓存判定，
-            // 反过来会让有缓存的页面误判缺封面/简介而多跑一次收割（旧 .task 异步启动天然晚于 onAppear）
+            // 反过来会让有缓存的页面误判缺封面/简介而多跑一次收割
             .onAppear {
                 vm.preloadHeaderFromCache()
                 vm.load()
