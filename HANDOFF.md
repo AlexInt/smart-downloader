@@ -202,7 +202,9 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 **浏览页路由诊断（本轮只查未改，等用户拍板）**：卡片「有时进原生、有时停在 web」不是随机。`decidePolicyFor` 只在 `navigationType == .linkActivated`（真实 `<a>` 点击）且 `DramaTarget.parse` 命中时取消网页并推原生；卡片若用 JS `location.href` / `pushState` / `window.open` 跳，`navigationType == .other` 拦不住，网页自己加载剧集页。URL KVO / 地址栏变化虽会兜底推原生，但 `detectDrama` 有 `lastAutoDramaKey` 去重（同剧只自动推一次、离开剧集 URL 才清空），而 `pushDramaPage` 不写该标记 → 两条路径状态不一致，同剧二次点击可能被挡；`undoSPA` 回退还依赖 `canGoBack`，SPA 首跳 / 地址栏直达时退不回去。加上 `DramaTarget.parse` 只认 `/drama/(video|detail)/<数字>`，其它形式 URL 一律不路由。建议方向：主帧剧集 URL 一律 `.cancel` 并推原生、两条路径共用一个去重标记，但改动触及浏览页导航，先等确认。
 
-验证：`swiftc -typecheck` 全 32 文件 0 错误。**待真机确认**：iOS 26 悬浮 tab bar 是否被 `.toolbar(.hidden, for: .tabBar)` 真正隐藏（若不生效需改 UIKit 桥接）、边缘手势跟手手感与阈值、进度环刷新是否跟得上切片速度、海报缩短后标题/简介与渐变层的视觉衔接。
+**追加（同日 10:08）**：用户反馈「简介与选集区之间空白太大」——设计稿简介底 y422、选集标题 y490，空 68pt。内容组整块上移 32pt（新增 `DetailLayout.sectionLift`），间距收到 36pt；展开态的 +54pt 位移叠加在同一 `.offset` 上，折叠/展开两态间距一致，不逐个改坐标。副作用：hint 随之上移到 y618，与固定分隔线 y758 的空白从 90 增到 122pt，底部固定区未动，待真机看是否需要再平衡。
+
+验证：`swiftc -typecheck` 全 32 文件 0 错误。**待真机确认**：iOS 26 悬浮 tab bar 是否被 `.toolbar(.hidden, for: .tabBar)` 真正隐藏（若不生效需改 UIKit 桥接）、边缘手势跟手手感与阈值、进度环刷新是否跟得上切片速度、海报缩短后标题/简介与渐变层的视觉衔接、内容组上移后底部留白观感。
 
 ### 目录与分层第一批整理（架构讨论后落地）
 

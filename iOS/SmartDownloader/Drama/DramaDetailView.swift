@@ -99,6 +99,9 @@ struct DramaDetailView: View {
     /// 文字层（标题 310 / 标签 352 / 简介 386 / 选集 490）坐标保持不动，不牵动整页布局。
     private enum DetailLayout {
         static let posterHeight: CGFloat = 376
+        /// 内容组相对设计稿整体上移：简介底 y422 → 选集标题 y490 原本空 68pt，
+        /// 用户反馈太散，收紧到 36pt。展开态的 +54pt 位移会在此之上叠加，两态间距一致。
+        static let sectionLift: CGFloat = 32
     }
 
     private var posterGradient: some View {
@@ -363,7 +366,8 @@ struct DramaDetailView: View {
                 .designFrame(20, 650, 350, 18, alignment: .leading)
         }
         .frame(width: 390, height: 840)
-        .offset(y: descShift)
+        // 整体上移收紧「简介 → 选集」空白 + 展开态的 54pt 位移，两者叠加
+        .offset(y: descShift - DetailLayout.sectionLift)
         .animation(motion, value: vm.isDescriptionExpanded)
     }
 
