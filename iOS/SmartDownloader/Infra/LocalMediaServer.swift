@@ -20,9 +20,9 @@ final class LocalMediaServer {
     static var rootDirectory: URL { DownloadEngine.downloadsDir }
 
     /// 启动监听（幂等），completion 返回端口（0 = 启动失败）；在 stateQueue 上回调。
-    /// 已就绪（port != 0）直接回真实端口；启动中登记等待，ready 时统一回调。
-    /// 修复旧实现「启动中第二次调用立即回 port=0」的竞态——播放器偶现「无法连接服务器」
-    /// （App 启动预启服务与首次 playbackURL 并发，listener 尚未 ready 就拿到了 0 端口）。
+    /// 已就绪（port != 0）直接回真实端口；未就绪时登记等待，ready 时统一回调。
+    /// 切勿未就绪就回 port=0：App 预启服务与首次 playbackURL 并发，listener 还没 ready 时
+    /// 拼出 http://127.0.0.1:0 会让播放器偶现「无法连接服务器」。
     func start(completion: @escaping (UInt16) -> Void) {
         stateQueue.async {
             if self.port != 0 {

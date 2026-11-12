@@ -525,7 +525,7 @@ final class DownloadEngine {
     /// 冒烟测试强制走 WebKit 通道（验证兜底链路用）
     static let forceWebKit = ProcessInfo.processInfo.environment["SMARTDOWNLOADER_FORCE_WEBKIT"] == "1"
     /// 一旦 WebKit 兜底成功即置位，后续请求跳过注定失败的 URLSession
-    /// （工作线程间共享的标志位，沿用旧实现的良性竞争，不加锁）
+    /// （工作线程间共享的标志位，良性竞争，不加锁）
     static var preferWebKit = false
 
     /// 连接层错误：WAF TLS 指纹拦截的典型表现（握手被 RST / 无法建连），值得降级
@@ -570,7 +570,7 @@ final class DownloadEngine {
     }
 
     /// 同步阻塞下载（信号量等回调），只允许在后台工作线程调用。
-    /// 重试/降级链与旧 async 版一致：URLSession → IP 直连 → WebKit，成功后 sticky。
+    /// 重试/降级链：URLSession → IP 直连 → WebKit，成功后 sticky。
     static func fetchData(_ url: URL, retries: Int = 3, byteRange: ByteRange? = nil) throws -> Data {
         if forceWebKit || preferWebKit {
             return try fetchViaWebKit(url, byteRange: byteRange)

@@ -17,12 +17,12 @@ struct SmartDownloaderApp: App {
 
     /// 主线程卡顿探针：20ms 心跳，单次 runloop 间隔 >100ms 打一条（真实卡顿）。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
-    /// 心跳必须远小于阈值：旧版 100ms 心跳 + 100ms 阈值，正常调度抖动就超阈，
-    /// 刷屏 ms=100 假阳性；改 20ms 心跳后正常 gap≈20ms，>100ms 才是真卡顿。
+    /// 心跳必须远小于阈值：否则正常调度抖动就超阈、刷屏假阳性（100ms 心跳配 100ms 阈值会
+    /// 每个心跳误报 ms=100）；20ms 心跳下正常 gap≈20ms，>100ms 才是真卡顿。
     /// Debug 默认开启（真机排障无需记参数）；Release 仍需 -perfLog 显式启用。
     private static func startStallProbeIfNeeded() {
         // 曾靠 -perfLog 门控，但多次复测都没传参/没启用，拿不到 mainStall——改为 Debug 常开。
-        // 兼容 -perfLog / perfLog 两种写法（旧版只匹配无横杠 perfLog，传 -perfLog 静默不启动）
+        // 兼容 -perfLog / perfLog 两种写法（横杠与否都可能传）
         #if DEBUG
         let enabled = true
         #else
@@ -88,7 +88,7 @@ struct SmartDownloaderApp: App {
             .onAppear {
                 Self.runDeviceAutoTest(manager: manager)
                 Self.startStallProbeIfNeeded()
-                // splash 停留 1.2s 后淡出（替代旧 .task + Task.sleep）
+                // splash 停留 1.2s 后淡出
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     withAnimation(.easeOut(duration: 0.45)) { showSplash = false }
                 }
@@ -137,7 +137,7 @@ struct SmartDownloaderApp: App {
         let url = arguments[index + 1]
         print("AUTOTEST: 开始自动下载 -> \(url)")
         let task = manager.startDownload(urlString: url, title: "autotest")
-        // 主线程 500ms 轮询直至任务结束（替代旧 Task + Task.sleep 循环）
+        // 主线程 500ms 轮询直至任务结束
         func poll() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 if case .done = task.state {

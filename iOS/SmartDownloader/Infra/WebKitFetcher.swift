@@ -44,7 +44,7 @@ final class WebKitFetcher: NSObject {
     func fetch(url: URL, byteRange: DownloadEngine.ByteRange?) throws -> Data {
         let semaphore = DispatchSemaphore(value: 0)
         // 结果箱：主线程写、工作线程读，先后序由信号量建立；
-        // 超时后迟到回调再写箱已无人读取，无害（极端挂死需手动重试，与旧实现一致）
+        // 超时后迟到回调再写箱已无人读取，无害（极端挂死需手动重试）
         var outcome: Result<Data, Error>?
         DispatchQueue.main.async {
             self.start(url: url, byteRange: byteRange) { result in

@@ -109,7 +109,7 @@ struct BrowserView: View {
                 lastAutoDramaKey = nil
             } else if let target = DramaTarget.parse(address) {
                 // 保活容器下浏览页常驻，onAppear 只在启动触发一次；
-                // 回到浏览页时补一次剧集页自动推入（对齐旧 TabView 每次出现的语义）
+                // 回到浏览页时补一次剧集页自动推入（保持每次进入浏览页都推入）
                 detectDrama(target, undoSPA: false)
             }
         }
