@@ -48,19 +48,24 @@ struct DramaDetailView: View {
         // TabView 的悬浮 tab bar 会压住 y772 的 CTA，进详情页必须隐藏
         .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $vm.showAllEpisodes) { allEpisodesSheet }
-        .gesture(edgeBackGesture)
+        // 集数 >12 时选集区内有纵向 ScrollView，用 simultaneousGesture 与它的 pan 共存；
+        // 仍只在左缘 + 横向主导时生效，不抢格子的点按。
+        .simultaneousGesture(edgeBackGesture)
     }
 
-    /// 只在屏幕左缘 30pt 内起手、向右拖才生效；抬手过阈值触发 dismiss，否则弹回。
-    /// 挂在最外层而非卡片内，避免与格子 Button / 展开按钮抢连续手势（SwiftUI 深度优先，Button 仍优先）。
+    /// 只在屏幕左缘 30pt 内起手、横向主导地右拖才生效；抬手过阈值触发 dismiss，否则弹回。
+    /// 横向主导判定是新增可滚动选集区后必须的：否则在 x≤30 的格子上纵向滑动会误触发返回。
     private var edgeBackGesture: some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .local)
             .onChanged { value in
-                guard value.startLocation.x <= 30, value.translation.width > 0 else { return }
+                guard value.startLocation.x <= 30,
+                      value.translation.width > 0,
+                      value.translation.width > abs(value.translation.height) * 1.2 else { return }
                 edgeDragWidth = min(value.translation.width, 160)
             }
             .onEnded { value in
-                guard value.startLocation.x <= 30 else {
+                guard value.startLocation.x <= 30,
+                      value.translation.width > abs(value.translation.height) * 1.2 else {
                     withAnimation(.easeOut(duration: 0.2)) { edgeDragWidth = 0 }
                     return
                 }
@@ -371,43 +376,64 @@ struct DramaDetailView: View {
         .animation(motion, value: vm.isDescriptionExpanded)
     }
 
-    /// 设计稿 6×2 共 12 格；点格子只单选（radio），播放/下载统一交给底部 CTA。
-    /// **底色表达「能不能播」**：已下载淡绿、待下载中性深色、锁定灰 —— 与「查看全部」面板
-    /// 共用 cellBackground/cellForeground，两处一眼可分的配色一致；边缘环只负责下载进度。
+    /// 集数展示区：**≤12 集保持设计稿固定 6×2 绝对定位，不可滚动、视觉零变化**；
+    /// >12 集把同一批格子装进选集区内固定高（112pt）的纵向 ScrollView，
+    /// 只在选集区里滚，标题 / hint / 分隔线 / CTA 全部不动。
+    /// 两条分支共用 episodeCellButton，点击语义恒为 `vm.select(sort:)`（radio 单选）；
+    /// 下载与播放仍由底部 CTA、「查看全部」面板负责，行为一个都不变。
+    @ViewBuilder
     private func episodeGrid(_ info: DramaInfo) -> some View {
-        let episodes = Array(info.episodes.prefix(12))
-        return ForEach(Array(episodes.enumerated()), id: \.element.id) { index, ep in
-            let col = CGFloat(index % 6)
-            let row = CGFloat(index / 6)
-            let isSelected = vm.selectedSort == ep.sort
-            let isDownloaded = vm.downloadedSorts.contains(ep.sort)
-            let phase = vm.downloadPhase(for: ep.sort)
-            Button { vm.select(sort: ep.sort) } label: {
-                HStack(spacing: 2) {
-                    Text("\(ep.sort)")
-                    if case .done = phase {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.green)
-                    }
-                }
-                .font(DWFont.en(13, .medium))
-                .foregroundStyle(cellForeground(isSelected: isSelected,
-                                                isDownloaded: isDownloaded,
-                                                playable: ep.playable))
-                .frame(width: 50, height: 44)
-                .background(cellBackground(isSelected: isSelected,
-                                           isDownloaded: isDownloaded,
-                                           playable: ep.playable))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay { progressRing(phase) }
-                .contentShape(Rectangle())
+        if info.episodes.count <= 12 {
+            ForEach(Array(info.episodes.enumerated()), id: \.element.id) { index, ep in
+                let col = CGFloat(index % 6)
+                let row = CGFloat(index / 6)
+                episodeCellButton(ep)
+                    .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
             }
-            .buttonStyle(.plain)
-            .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
-            .accessibilityLabel("第 \(ep.sort) 集")
-            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        } else {
+            ScrollView(.vertical) {
+                // 固定 6 列 × 50 + 5×10 间距 = 350，与主屏固定布局同一栅格；
+                // 行距 8 让第 3 行露出 8pt，形成「下面还有」的滚动暗示。
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 6),
+                          spacing: 8) {
+                    ForEach(info.episodes) { ep in episodeCellButton(ep) }
+                }
+            }
+            .scrollIndicators(.visible)
+            .designFrame(20, 530, 350, 112)
         }
+    }
+
+    /// 单个集格子的视觉与点击：底色 = 可播性、边缘环 = 下载进度、选中红底优先。
+    /// 固定布局与可滚动布局共用，保证集数多少都只有一套点击行为。
+    private func episodeCellButton(_ ep: ApiDramaEpisode) -> some View {
+        let isSelected = vm.selectedSort == ep.sort
+        let isDownloaded = vm.downloadedSorts.contains(ep.sort)
+        let phase = vm.downloadPhase(for: ep.sort)
+        return Button { vm.select(sort: ep.sort) } label: {
+            HStack(spacing: 2) {
+                Text("\(ep.sort)")
+                if case .done = phase {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.green)
+                }
+            }
+            .font(DWFont.en(13, .medium))
+            .foregroundStyle(cellForeground(isSelected: isSelected,
+                                            isDownloaded: isDownloaded,
+                                            playable: ep.playable))
+            .frame(width: 50, height: 44)
+            .background(cellBackground(isSelected: isSelected,
+                                       isDownloaded: isDownloaded,
+                                       playable: ep.playable))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay { progressRing(phase) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("第 \(ep.sort) 集")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// 剧集按钮边缘进度环：绿色从 0 逐渐闭环到 100%（用户指定），完成后保持绿色闭环 +
