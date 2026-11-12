@@ -110,7 +110,7 @@ extension WebKitFetcher: WKDownloadDelegate {
     nonisolated func download(_ download: WKDownload,
                               decideDestinationUsing response: URLResponse,
                               suggestedFilename filename: String,
-                              completionHandler: @escaping (URL?) -> Void) {
+                              completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
         MainActor.assumeIsolated {
             let path = FileManager.default.temporaryDirectory
                 .appendingPathComponent("wkdl_\(UUID().uuidString)_\(filename)")

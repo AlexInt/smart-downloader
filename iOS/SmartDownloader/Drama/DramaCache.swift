@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Synchronization
 
 // MARK: - 剧集元数据本地缓存（SQLite）
 //
@@ -71,15 +72,19 @@ enum DramaCache {
             fail(db, "schema")
         }
         // v2 迁移：tags 列（话题标签，来自 DOM 收割 P7）。列已存在时 ALTER 报错，静默忽略；
-        // 每进程只试一次，避免每次 openDB 重复 ALTER
-        if !tagsMigrated {
-            tagsMigrated = true
+        // 每进程只试一次。Swift 6 下全局可变状态必须显式同步，用 Mutex 表达所有权。
+        let shouldMigrate = tagsMigrated.withLock { migrated -> Bool in
+            if migrated { return false }
+            migrated = true
+            return true
+        }
+        if shouldMigrate {
             sqlite3_exec(db, "ALTER TABLE drama_cache ADD COLUMN tags TEXT;", nil, nil, nil)
         }
         return db
     }
 
-    private static var tagsMigrated = false
+    private static let tagsMigrated = Mutex(false)
 
     private static func bind(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
         sqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, SQLITE_TRANSIENT)
