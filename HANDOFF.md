@@ -372,6 +372,20 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 
 **补充（同日，用户拍板消 deprecated 警告）**：`loadValuesAsynchronously` 的 iOS 16 deprecated 警告按「Apple 无同步/非废弃 API 的边界可留岛」原则消除——`PlaybackPlayerService.preloadOne` 与 smoke `playtest` 改回 `asset.load(.isPlayable/.duration)` 包 Task 岛（恢复迁移前真机验证过的写法，秒开行为不变），加载完成回主线程碰预热池状态。async 岛由一处增为两处（WebKit `startDownload` + 资产加载），AGENTS.md「并发与线程」节已同步。构建零警告。
 
+### 三个老 bug 修复（2026-11-12，用户确认均为迁移前就存在）
+
+用户复测报三个问题，逐一查明都是**迁移前老 bug**（非 GCD 迁移引入）：
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| **播放页 toast 弹出不收回** | `toastText` 按值快照传入 `UIHostingController` 卡片（不随 playback 观察）；`PlayerPagingScrollView.refreshCardsIfNeeded` 只在 currentSort/isReady 变化时重设 rootView。toast 弹出时恰逢 isReady 变化→显示；dismiss 置 nil 后两者都不变→卡片不重绘→永挂 | `f8fef9a`：新增 `activeToast` 传入容器并纳入刷新触发条件 |
+| **播放器偶现「无法连接服务器」（次数多）** | `LocalMediaServer.start` 旧实现：listener 尚未 ready 时第二次调用立即回 `port=0`；App 预启服务与首次 playbackURL 并发→拼出 `http://127.0.0.1:0`→AVPlayer 连接失败 | `ef115dc`：启动中登记等待者、ready 统一回真实端口；playbackURL 端口 0 回文件 URL 显式失败 |
+| **tab 切换卡** | 未定位。日志有 tabSwitch 但无 mainStall——探针开关原只匹配无横杠 `perfLog`，传 `-perfLog` 静默不启动 | `48bf1ab` 修探针横杠兼容；`ade0c08` 阈值 250→100ms。**待用户带 -perfLog 复测拿 mainStall 数据** |
+
+剧集页 toast（纯 SwiftUI `@ObservedObject`）逻辑与观察都正确，未发现 bug；`ade0c08` 补了 entry/dismiss/staleToken 日志，若用户仍报剧集页 toast 不收，靠该日志判读 dismiss 是否触发。
+
+**验证**：模拟器构建 BUILD SUCCEEDED；playtest 重编零警告、PLAYING（LocalMediaServer 重构后服务正常）。toast/服务器修复待用户真机复测。
+
 ## 6. 验证与调试
 
 ```bash
