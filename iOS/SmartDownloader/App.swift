@@ -22,6 +22,8 @@ struct SmartDownloaderApp: App {
         let enabled = ProcessInfo.processInfo.arguments.contains { $0 == "-perfLog" || $0 == "perfLog" }
         guard enabled, !stallProbeStarted else { return }
         stallProbeStarted = true
+        // 自检日志：下一份日志有没有这行即可判定探针是否真启用（-perfLog 是否传进来）
+        print("PERF_DBG stallProbe enabled threshold=100ms")
         // Timer 挂在主线程 RunLoop，回调与 last 读写同线程，无需锁
         final class LastBox { var value = ProcessInfo.processInfo.systemUptime }
         let last = LastBox()
