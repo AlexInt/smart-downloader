@@ -11,6 +11,8 @@ struct DramaDetailView: View {
     @ObservedObject var vm: DramaPageViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 左缘右滑返回的跟手位移（系统 pop 手势在导航栏隐藏时失效，这里自己补）
+    @State private var edgeDragWidth: CGFloat = 0
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -33,6 +35,8 @@ struct DramaDetailView: View {
                         .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
                         .scaleEffect(scale)
                         .frame(width: geo.size.width, height: geo.size.height)
+                        // 左缘右滑时整屏跟手，露出左侧底层，模拟系统返回观感
+                        .offset(x: edgeDragWidth)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -41,7 +45,31 @@ struct DramaDetailView: View {
         .background(DWColor.background.ignoresSafeArea())
         // 设计稿是沉浸式全屏，状态栏之上不叠系统导航栏；返回用屏内自带按钮
         .toolbar(.hidden, for: .navigationBar)
+        // TabView 的悬浮 tab bar 会压住 y772 的 CTA，进详情页必须隐藏
+        .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $vm.showAllEpisodes) { allEpisodesSheet }
+        .gesture(edgeBackGesture)
+    }
+
+    /// 只在屏幕左缘 30pt 内起手、向右拖才生效；抬手过阈值触发 dismiss，否则弹回。
+    /// 挂在最外层而非卡片内，避免与格子 Button / 展开按钮抢连续手势（SwiftUI 深度优先，Button 仍优先）。
+    private var edgeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .local)
+            .onChanged { value in
+                guard value.startLocation.x <= 30, value.translation.width > 0 else { return }
+                edgeDragWidth = min(value.translation.width, 160)
+            }
+            .onEnded { value in
+                guard value.startLocation.x <= 30 else {
+                    withAnimation(.easeOut(duration: 0.2)) { edgeDragWidth = 0 }
+                    return
+                }
+                if value.translation.width > 80 || value.predictedEndTranslation.width > 180 {
+                    dismiss()
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { edgeDragWidth = 0 }
+                }
+            }
     }
 
     // MARK: - 屏内画布
@@ -67,6 +95,12 @@ struct DramaDetailView: View {
 
     // MARK: ① 海报层
 
+    /// 设计稿海报高 470，用户要求降低 20% → 376。海报内的光晕 / scrim / 占位一并等比缩放（×0.8），
+    /// 文字层（标题 310 / 标签 352 / 简介 386 / 选集 490）坐标保持不动，不牵动整页布局。
+    private enum DetailLayout {
+        static let posterHeight: CGFloat = 376
+    }
+
     private var posterGradient: some View {
         LinearGradient(stops: [
             .init(color: DWColor.posterTop, location: 0),
@@ -86,7 +120,7 @@ struct DramaDetailView: View {
                         switch phase {
                         case .success(let image):
                             image.resizable().scaledToFill()
-                                .frame(width: 390, height: 470)
+                                .frame(width: 390, height: DetailLayout.posterHeight)
                                 .clipped()
                         case .failure:
                             DWColor.coverPlaceholder
@@ -114,7 +148,7 @@ struct DramaDetailView: View {
                             EmptyView()
                         }
                     }
-                    .frame(width: 390, height: 470)
+                    .frame(width: 390, height: DetailLayout.posterHeight)
                 }
                 .id(vm.coverReloadToken)
             } else {
@@ -124,10 +158,10 @@ struct DramaDetailView: View {
                     scrimBottom
                     failurePlaceholder
                 }
-                .frame(width: 390, height: 470)
+                .frame(width: 390, height: DetailLayout.posterHeight)
             }
         }
-        .designFrame(0, 0, 390, 470)
+        .designFrame(0, 0, 390, DetailLayout.posterHeight)
         .clipped()
     }
 
@@ -135,51 +169,51 @@ struct DramaDetailView: View {
         RadialGradient(stops: [
             .init(color: DWColor.glowCenter.opacity(0.18), location: 0),
             .init(color: Color.clear, location: 1)
-        ], center: .center, startRadius: 0, endRadius: 150)
-            .designFrame(60, 70, 270, 300)
+        ], center: .center, startRadius: 0, endRadius: 120)
+            .designFrame(60, 56, 270, 240)
             .allowsHitTesting(false)
     }
 
     private var scrimTop: some View {
         LinearGradient(colors: [.black.opacity(0.45), .clear],
                        startPoint: .top, endPoint: .bottom)
-            .designFrame(0, 0, 390, 120)
+            .designFrame(0, 0, 390, 96)
             .allowsHitTesting(false)
     }
 
     private var scrimBottom: some View {
         LinearGradient(colors: [.clear, .black.opacity(0.92)],
                        startPoint: .top, endPoint: .bottom)
-            .designFrame(0, 220, 390, 250)
+            .designFrame(0, 176, 390, 200)
             .allowsHitTesting(false)
     }
 
-    /// 加载中占位：spinner + 「正在加载封面…」（设计稿 ph-label-load 与图标同中轴）
+    /// 加载中占位：spinner + 「正在加载封面…」（y 随海报 ×0.8）
     private var loadingPlaceholder: some View {
         ZStack(alignment: .topLeading) {
             ProgressView()
                 .tint(DWColor.gold)
-                .designFrame(171, 168, 48, 48)
+                .designFrame(171, 134, 48, 48)
             Text("正在加载封面…")
                 .font(DWFont.cn(13, .medium))
                 .foregroundStyle(DWColor.textHint)
-                .designFrame(115, 238, 160, 18)
+                .designFrame(115, 190, 160, 18)
         }
-        .frame(width: 390, height: 470)
+        .frame(width: 390, height: DetailLayout.posterHeight)
         .allowsHitTesting(false)
     }
 
-    /// 失败占位：破图图标 + 文案 + 点击重试（命中区 90×44，视觉盒仍在设计稿坐标）
+    /// 失败占位：破图图标 + 文案 + 点击重试（y 随海报 ×0.8，命中区仍 90×44）
     private var failurePlaceholder: some View {
         ZStack(alignment: .topLeading) {
             Image(systemName: "photo")
                 .font(.system(size: 30, weight: .regular))
                 .foregroundStyle(DWColor.placeholderIcon)
-                .designFrame(171, 168, 48, 48)
+                .designFrame(171, 134, 48, 48)
             Text("封面加载失败")
                 .font(DWFont.cn(13, .medium))
                 .foregroundStyle(DWColor.textHint)
-                .designFrame(156, 238, 78, 18)
+                .designFrame(156, 190, 78, 18)
             Button { vm.retryCover() } label: {
                 Text("点击重试")
                     .font(DWFont.cn(12, .medium))
@@ -188,10 +222,10 @@ struct DramaDetailView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .designFrame(150, 260, 90, 44)
+            .designFrame(150, 208, 90, 44)
             .accessibilityLabel("点击重试加载封面")
         }
-        .frame(width: 390, height: 470)
+        .frame(width: 390, height: DetailLayout.posterHeight)
     }
 
     // MARK: ② 顶栏
@@ -334,33 +368,62 @@ struct DramaDetailView: View {
     }
 
     /// 设计稿 6×2 共 12 格；点格子只单选（radio），播放/下载统一交给底部 CTA。
-    /// 已下载加 5pt 绿点、锁定集降透明度 —— 保留真实状态，不把未下载集画成已可播。
+    /// 边缘环显示下载进度，闭环后内部出现打勾；锁定集降透明度，不把未下载画成已可播。
     private func episodeGrid(_ info: DramaInfo) -> some View {
         let episodes = Array(info.episodes.prefix(12))
         return ForEach(Array(episodes.enumerated()), id: \.element.id) { index, ep in
             let col = CGFloat(index % 6)
             let row = CGFloat(index / 6)
+            let phase = vm.downloadPhase(for: ep.sort)
             Button { vm.select(sort: ep.sort) } label: {
-                Text("\(ep.sort)")
-                    .font(DWFont.en(13, .medium))
-                    .foregroundStyle(.white.opacity(ep.playable ? 1 : 0.4))
-                    .frame(width: 50, height: 44)
-                    .background(vm.selectedSort == ep.sort ? DWColor.primary : DWColor.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(alignment: .topTrailing) {
-                        if vm.downloadedSorts.contains(ep.sort) {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 5, height: 5)
-                                .offset(x: -4, y: 4)
-                        }
+                HStack(spacing: 2) {
+                    Text("\(ep.sort)")
+                    if case .done = phase {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.green)
                     }
-                    .contentShape(Rectangle())
+                }
+                .font(DWFont.en(13, .medium))
+                .foregroundStyle(.white.opacity(ep.playable ? 1 : 0.4))
+                .frame(width: 50, height: 44)
+                .background(vm.selectedSort == ep.sort ? DWColor.primary : DWColor.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay { progressRing(phase) }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
             .accessibilityLabel("第 \(ep.sort) 集")
             .accessibilityAddTraits(vm.selectedSort == ep.sort ? [.isSelected] : [])
+        }
+    }
+
+    /// 剧集按钮边缘进度环：下载中按进度 trim 逐渐闭环，完成后完整闭环 + 内部打勾，
+    /// 排队是淡色轨道、失败是红环、未下载无边。
+    /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪），trim 起点在右上角顺时针闭合。
+    @ViewBuilder
+    private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
+        switch phase {
+        case .idle:
+            EmptyView()
+        case .queued:
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(DWColor.gold.opacity(0.35), lineWidth: 2)
+                .padding(1)
+        case .active(let progress):
+            RoundedRectangle(cornerRadius: 10)
+                .trim(from: 0, to: progress)
+                .stroke(DWColor.gold, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .padding(1)
+        case .done:
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.green, lineWidth: 2)
+                .padding(1)
+        case .failed:
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(DWColor.primary, lineWidth: 2)
+                .padding(1)
         }
     }
 
@@ -475,15 +538,16 @@ struct DramaDetailView: View {
         .preferredColorScheme(.dark)
     }
 
-    /// 全量面板的集格子：沿用旧版三态（已下载 ▶ / 排队中 ↓ / 锁定 🔒 / 选中高亮）
+    /// 全量面板的集格子：与主屏同一套下载阶段（边缘进度环 / 完成打勾）
     private func episodeCell(_ ep: ApiDramaEpisode) -> some View {
         let isSelected = vm.selected.contains(ep.id)
         let isDownloaded = vm.downloadedSorts.contains(ep.sort)
         let isQueued = vm.queuedSorts.contains(ep.sort)
+        let phase = vm.downloadPhase(for: ep.sort)
         return Button { vm.tapEpisode(ep) } label: {
             Group {
-                if isDownloaded {
-                    Label("第\(ep.sort)集", systemImage: "play.fill")
+                if case .done = phase {
+                    Label("第\(ep.sort)集", systemImage: "checkmark")
                         .labelStyle(.titleAndIcon)
                 } else if isQueued {
                     Label("第\(ep.sort)集", systemImage: "arrow.down.circle")
@@ -503,6 +567,7 @@ struct DramaDetailView: View {
                 ? Color(uiColor: .tertiaryLabel)
                 : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay { progressRing(phase) }
         }
         .buttonStyle(.plain)
         .disabled(!ep.playable || isQueued)

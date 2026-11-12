@@ -45,6 +45,8 @@ final class DramaPageViewModel: ObservableObject {
     private var toastTask: Task<Void, Never>?
     /// 封面重试令牌：换值让 AsyncImage 换 id 重建，重新发起一次图片请求
     @Published private(set) var coverReloadToken = 0
+    /// 首次库对账完成前不报「下载完成」，避免进页把已有文件误报成刚下完
+    private var initialLibraryApplied = false
 
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
@@ -59,6 +61,32 @@ final class DramaPageViewModel: ObservableObject {
     var queuedSorts: Set<Int> {
         guard let info else { return [] }
         return manager.queuedEpisodeSorts(forSeries: info.name)
+    }
+
+    /// 单集下载阶段：磁盘是「已完成」的账本，进行中状态取自 DownloadTask 的
+    /// state / current / total。manager 会转发每个任务的 objectWillChange，
+    /// 详情页 onReceive 触发刷新时这里读到的就是实时进度。
+    func downloadPhase(for sort: Int) -> EpisodeDownloadPhase {
+        if downloadedSorts.contains(sort) { return .done }
+        guard let info else { return .idle }
+        let title = String(format: "第%02d集", sort)
+        // tasks 是头插，first 即该集最新任务（重试时旧的失败任务排后面）
+        guard let task = manager.tasks.first(where: {
+            $0.seriesName == info.name && $0.title == title
+        }) else { return .idle }
+        switch task.state {
+        case .done:
+            return .done
+        case .failed(let message):
+            return .failed(message)
+        case .waiting:
+            return .queued
+        case .parsing, .saving:
+            return .active(0.03)   // 解析/保存阶段还没切片进度，给一点可见起点
+        case .downloading:
+            let ratio = task.total > 0 ? Double(task.current) / Double(task.total) : 0.03
+            return .active(min(max(ratio, 0.03), 0.99))
+        }
     }
 
     /// 可下载且未入队的集（已下载、排队中、付费锁定都排除）
@@ -101,7 +129,12 @@ final class DramaPageViewModel: ObservableObject {
     var ctaTitle: String {
         guard let sort = selectedSort else { return "请选择剧集" }
         if downloadedSorts.contains(sort) { return "播放第 \(sort) 集" }
-        if queuedSorts.contains(sort) { return "第 \(sort) 集下载中" }
+        if queuedSorts.contains(sort) {
+            if case .active(let p) = downloadPhase(for: sort), p > 0.03 {
+                return "第 \(sort) 集 · \(Int(p * 100))%"
+            }
+            return "第 \(sort) 集下载中"
+        }
         if let ep = info?.episodes.first(where: { $0.sort == sort }), !ep.playable {
             return "第 \(sort) 集暂不可看"
         }
@@ -238,10 +271,16 @@ final class DramaPageViewModel: ObservableObject {
         }
     }
 
-    /// 任一任务状态变化时重算已下载集（下载完成 → 格子即时变 ▶ 播放；仅内存重算，不每 tick 写库）
+    /// 任一任务状态变化时重算已下载集；新落盘的集给一条完成 toast（下载提示）。
+    /// 只做内存比对，不每 tick 写库。
     func refreshDownloadedSorts() {
         guard let info else { return }
-        downloadedSorts = Set(manager.downloadedEpisodeFolders(forSeries: info.name).keys)
+        let fresh = Set(manager.downloadedEpisodeFolders(forSeries: info.name).keys)
+        let newlyDone = fresh.subtracting(downloadedSorts)
+        downloadedSorts = fresh
+        if initialLibraryApplied, let sort = newlyDone.min() {
+            showToast("第 \(sort) 集下载完成")
+        }
     }
 
     private func fetchAndCache() async {
@@ -278,6 +317,7 @@ final class DramaPageViewModel: ObservableObject {
         downloadedSorts = Set(folders.keys)
         DramaCache.reconcileDownloaded(site: target.site, dramaID: target.dramaID, folders: folders)
         ensureSelection(for: info)
+        initialLibraryApplied = true
     }
 
     /// 详情页默认选中集：优先第一个已下载（可直接播），否则第一集。刷新换集后若旧选中集

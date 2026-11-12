@@ -183,6 +183,21 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 验证：`swiftc -typecheck -disable-sandbox -D DEBUG -target x86_64-apple-ios26.5-simulator`（全部 29 个 Swift 文件，含 `iOS/LaunchSplashView.swift`）0 错误；`xcodebuild` 两次均被沙箱拦（`sandbox_apply` / 宏插件 `PreviewsMacros` 加载失败），属环境限制非代码错误。**待真机回归**：三态切换、封面失败重试、展开动画手感、CTA 四种状态、查看全部下载面板、返回/收藏。
 
+### 真机截图反馈四项修复（2026-11-12，待真机复测）
+
+用户截图显示：iOS 26 悬浮 tab bar 压住 y772 的 CTA、两个已下载集只有右上绿点、下载过程无任何反馈。按反馈逐项改：
+
+| 反馈 | 实现 |
+|---|---|
+| tab bar 应隐藏 | `DramaDetailView` 加 `.toolbar(.hidden, for: .tabBar)`（详情页在 `BrowserView` 的 `NavigationStack` 内 push，TabView 不会自动隐藏悬浮 tab bar） |
+| 没有边缘左滑返回 | 系统 pop 手势在 `.toolbar(.hidden, for: .navigationBar)` 下失效，改用左缘 30pt 起手的 `DragGesture`：整屏跟手右移（≤160pt），抬手位移 >80 或预测 >180 触发 `dismiss()`，否则弹回。挂最外层，Button 深度优先不受影响 |
+| 背景图高度降低 20% | 海报 470 → 376（新增 `DetailLayout.posterHeight`）；光晕 / 上下 scrim / 失败·加载占位 y 坐标一并 ×0.8；文字层（标题 310 / 标签 352 / 简介 386 / 选集 490）保持不动，不牵动整页布局 |
+| 下载无提示、无进度 | `Shared/DramaModels.swift` 加 `EpisodeDownloadPhase`（idle/queued/active/done/failed）；VM 用磁盘账本 + `DownloadTask.state/current/total` 派生每集阶段，新落盘集 toast「第 N 集下载完成」（首次库对账前不误报），CTA 显示百分比；主屏 12 格与「查看全部」sheet 格子加圆角矩形边缘进度环（金色 trim 逐渐闭环），完成后绿色闭环 + 数字旁打勾，移除原右上绿点 |
+
+进度实时性的关键链路：`DownloadTask.current` 变化 → `DownloadManager.observeTaskState` 转发 `objectWillChange` → `DramaNativePage.onReceive` → `vm.refreshDownloadedSorts()` 里给 `downloadedSorts` 赋值（`@Published` 的 willSet 无条件发通知，即使值相同也触发 View 重绘）→ `downloadPhase(for:)` 重读进度。失败态显示红环，重试走原有 CTA/面板入口。
+
+验证：`swiftc -typecheck` 全 32 文件 0 错误。**待真机确认**：iOS 26 悬浮 tab bar 是否被 `.toolbar(.hidden, for: .tabBar)` 真正隐藏（若不生效需改 UIKit 桥接）、边缘手势跟手手感与阈值、进度环刷新是否跟得上切片速度、海报缩短后标题/简介与渐变层的视觉衔接。
+
 ### 目录与分层第一批整理（架构讨论后落地）
 
 **先改规则再动代码**：`AGENTS.md` §目录 补「按功能域分组、域内再分层」，写明适用范围是 `iOS/SmartDownloader/` 全部文件（此前只规定 `player/` 与 `Components/`，根目录无规可依，新代码一直往根目录堆）；第 5 条改为「所有持久化统一走 Service，VM 里不得出现 `UserDefaults.standard` / `FileManager`」。不按 Model/Service/VM/View 分目录的理由：同 target 没有 import 边界，按层分不产生任何依赖约束，只会把一个功能打散到四处。
@@ -256,7 +271,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 5 | 本地推荐算法 | 接入点已留好（见 §4.5），算法本身未实现 | 按需 |
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
-| 8 | **剧集详情页设计稿真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏，清单见 §2 末节 | 高（验证） |
+| 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
 | 9 | 第二批目录迁移 | `Downloads/` / `Browser/` / `Infra/`，并从 `BrowserView.swift` 拆出 `WebViewStore`、从 `Downloader.swift` 抽出 `DownloadModels.swift`；按域分批 commit | 中 |
 
 ## 6. 验证与调试

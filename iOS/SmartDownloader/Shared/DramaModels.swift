@@ -67,3 +67,13 @@ enum DramaError: LocalizedError {
         }
     }
 }
+
+/// 单集下载阶段（剧集格子边缘进度环的数据源，纯数据无行为）。
+/// 状态由 `DramaPageViewModel` 从磁盘账本 + `DownloadTask.state/current/total` 派生。
+enum EpisodeDownloadPhase: Equatable {
+    case idle                   // 未下载：无边缘
+    case queued                 // 已入队：淡色轨道
+    case active(Double)         // 下载中：0...1 逐渐闭环
+    case done                   // 完成：闭环 + 内部打勾
+    case failed(String)         // 失败：红环
+}
