@@ -38,6 +38,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 身份链补齐 | `MediaIdentity`（Shared 纯数据）+ `PlayableEpisode.identity` + `ImmersivePlaybackRequest.target`；剧集页入口带 site/drama_id 直达，下载页按剧名反查（同名多剧打 AMBIGUOUS 日志）；`EpisodeActionsStore.identity(...)` 为唯一解析口径 | 同上 |
 | 详情接口整包落库 | 此前详情响应只有 tags 被收集，其余 39 个顶层字段解码即丢。新增 `DramaCache.saveDetail`：`api_detail` 存响应体整包 + 35 个提升列（计数/规格/权限/催更/服务端观看进度）、`drama_episodes` 加 8 个每集元数据列、新表 `drama_related` 存推荐剧快照；采集改为每次进剧集页一次 | 用真实样本 3703.json 验证：整包一字不差回读、4 集元数据、10 条推荐、v1→v2 升级不丢行为数据 |
 | 数据库迁移收口 | 新增 `Drama/DramaDatabase.swift` 统一 open/建表/补列/旧数据搬迁（`user_version` 整库一个，两个 Service 各管一段会互相跳过建表）；补列逐列查 table_info，搬迁用独立标记门控；共用 bind/text/execWrite/fail/transaction | 同上 |
+| saveInfo 合并式落库 | 原「先 DELETE 全表再逐集 INSERT」使 ON CONFLICT 永不触发，刷新集列表把 `downloaded/folder` 清成 0/NULL。改为读现有 id 后只删接口已不存在的集、既有集 upsert 不动下载标记与每集元数据（v1 老库升级 + 同列表刷新 + 列表变化 + saveDetail 幂等重跑四场景冒烟通过） | 已修，冒烟通过，待真机回归 |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 

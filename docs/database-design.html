@@ -391,13 +391,13 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
     <tr><td class="name">content_type</td><td class="type">TEXT</td><td>episodes[].access.content_type</td><td>内容类型（free / paid …）</td></tr>
     <tr><td class="name">is_trial</td><td class="type">INTEGER</td><td>episodes[].access.is_trial</td><td>是否试看集</td></tr>
   </table>
-  <div class="note warn">
-    <b>实现与注释不一致（读代码时别被注释误导）：</b>
-    <code>saveInfo</code> 的注释写「既有集的 downloaded/folder 保留不动」，但实现是
-    <code>DELETE FROM drama_episodes WHERE site=? AND drama_id=?</code> 之后再逐集
-    <code>INSERT … downloaded=0, folder=NULL</code> —— 先删后插使 <code>ON CONFLICT</code> 永不触发，
-    <strong>刷新集列表会把下载标记清成 0/NULL</strong>，随后靠 <code>reconcileDownloaded</code> 的磁盘对账恢复。
-    行为数据表 <code>episode_actions</code> 是独立表，<b>不受这次 DELETE 影响</b>（点赞/收藏/进度不会被刷新冲掉）。
+  <div class="note ok">
+    <b>saveInfo 是合并式落库（2026-11-12 修复）：</b>
+    不再先 <code>DELETE</code> 全表再插（那会使 <code>ON CONFLICT</code> 永不触发、把下载标记与
+    saveDetail 写入的每集元数据一起冲掉）。现在读现有集 id 后，只删接口已不存在的集
+    （含详情接口多列的集，如下次 <code>saveDetail</code> 会按接口现状重建），既有集只更新
+    sort/playable/updated_at，<code>downloaded/folder</code> 与每集元数据保留不动。
+    行为数据表 <code>episode_actions</code> 是独立表，<b>刷新不受影响</b>。
   </div>
 </section>
 
@@ -881,9 +881,9 @@ UNION ALL SELECT 'drama_related',   COUNT(*) FROM drama_related;</code></pre>
       <td>已覆盖暂停 / seek 收尾 / 切集 / 退出 / 进后台五个时机；要更稳可加定时 flush（代价是写库频率）</td>
     </tr>
     <tr>
-      <td>3</td><td><code>saveInfo</code> 先删后插</td>
-      <td>刷新集列表会把 <code>downloaded/folder</code> 清成 0/NULL（与注释宣称的「保留」不符）</td>
-      <td>靠 <code>reconcileDownloaded</code> 磁盘对账恢复；行为数据表不受影响。要修就把 DELETE 改成按 id upsert + 删除已消失的集</td>
+      <td>3</td><td><code>saveInfo</code> 先删后插（<b>已修复</b>）</td>
+      <td>曾把刷新集列表的 <code>downloaded/folder</code> 清成 0/NULL</td>
+      <td>2026-11-12 改合并式落库：按 id upsert + 只删接口已不存在的集；同列表刷新与列表变化场景均已冒烟验证</td>
     </tr>
     <tr>
       <td>4</td><td>无外键、无级联</td>

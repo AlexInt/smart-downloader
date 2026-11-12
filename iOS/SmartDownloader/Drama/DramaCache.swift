@@ -193,46 +193,70 @@ enum DramaCache {
 
     // MARK: 写 —— 剧集信息 + 集数列表（合并式 upsert，保留下载状态）
 
-    /// 网络刷新返回的剧集信息落库；集数按集 ID upsert：
-    /// 新集合入、已消失的集删除、既有集的 downloaded/folder 保留不动
+    /// 网络刷新返回的剧集信息落库；集数按集 ID 合并式 upsert：
+    /// 新集合入、接口已不存在的集删除、既有集的 downloaded/folder 与每集元数据保留不动。
+    /// 注意不能先 DELETE 全表再插（先删后插 ON CONFLICT 永不触发，会把下载标记与
+    /// saveDetail 写入的每集元数据一起冲掉）。集列表以下载接口为准：详情接口多列的集
+    /// （如广告集，DramaInfo 构造时已剔除）也一并清掉，下次进剧集页 saveDetail 会按接口现状重建。
     static func saveInfo(site: String, dramaID: String, info: DramaInfo) {
         guard let db = openDB() else { return }
         defer { sqlite3_close(db) }
         let now = ISO8601DateFormatter().string(from: Date())
+        let newIDs = Set(info.episodes.map { $0.id })
 
-        DramaDatabase.execWrite(db, """
-        INSERT INTO drama_cache (site, drama_id, name, update_status, fetched_at)
-        VALUES (?,?,?,?,?)
-        ON CONFLICT(site, drama_id) DO UPDATE SET
-          name=excluded.name, update_status=excluded.update_status, fetched_at=excluded.fetched_at
-        """, what: "info upsert") { stmt in
-            DramaDatabase.bind(stmt, 1, site)
-            DramaDatabase.bind(stmt, 2, dramaID)
-            DramaDatabase.bind(stmt, 3, info.name)
-            DramaDatabase.bind(stmt, 4, info.updateStatus ?? "")
-            DramaDatabase.bind(stmt, 5, now)
-        }
-
-        // 以最新列表为准清掉接口已不存在的集
-        DramaDatabase.execWrite(db, "DELETE FROM drama_episodes WHERE site=? AND drama_id=?", what: "episodes clear") { stmt in
-            DramaDatabase.bind(stmt, 1, site)
-            DramaDatabase.bind(stmt, 2, dramaID)
-        }
-
-        for ep in info.episodes {
+        DramaDatabase.transaction(db) {
             DramaDatabase.execWrite(db, """
-            INSERT INTO drama_episodes (site, drama_id, episode_id, sort, playable, downloaded, folder, updated_at)
-            VALUES (?,?,?,?,?,0,NULL,?)
-            ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
-              sort=excluded.sort, playable=excluded.playable, updated_at=excluded.updated_at
-            """, what: "episode upsert \(ep.id)") { stmt in
+            INSERT INTO drama_cache (site, drama_id, name, update_status, fetched_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(site, drama_id) DO UPDATE SET
+              name=excluded.name, update_status=excluded.update_status, fetched_at=excluded.fetched_at
+            """, what: "info upsert") { stmt in
                 DramaDatabase.bind(stmt, 1, site)
                 DramaDatabase.bind(stmt, 2, dramaID)
-                sqlite3_bind_int64(stmt, 3, Int64(ep.id))
-                sqlite3_bind_int(stmt, 4, Int32(ep.sort))
-                sqlite3_bind_int(stmt, 5, ep.playable ? 1 : 0)
-                DramaDatabase.bind(stmt, 6, now)
+                DramaDatabase.bind(stmt, 3, info.name)
+                DramaDatabase.bind(stmt, 4, info.updateStatus ?? "")
+                DramaDatabase.bind(stmt, 5, now)
             }
+
+            // 以最新列表为准清掉接口已不存在的集：读现有 id 后逐个删，不 DELETE 全表
+            var vanishedIDs: [Int64] = []
+            var sel: OpaquePointer?
+            if sqlite3_prepare_v2(db, "SELECT episode_id FROM drama_episodes WHERE site=? AND drama_id=?;", -1, &sel, nil) == SQLITE_OK {
+                DramaDatabase.bind(sel, 1, site)
+                DramaDatabase.bind(sel, 2, dramaID)
+                while sqlite3_step(sel) == SQLITE_ROW {
+                    let id = sqlite3_column_int64(sel, 0)
+                    if !newIDs.contains(Int(id)) { vanishedIDs.append(id) }
+                }
+            } else {
+                DramaDatabase.fail(db, "saveInfo existing prepare")
+            }
+            sqlite3_finalize(sel)
+            for id in vanishedIDs {
+                DramaDatabase.execWrite(db, "DELETE FROM drama_episodes WHERE site=? AND drama_id=? AND episode_id=?;",
+                                        what: "episode drop \(id)") { stmt in
+                    DramaDatabase.bind(stmt, 1, site)
+                    DramaDatabase.bind(stmt, 2, dramaID)
+                    sqlite3_bind_int64(stmt, 3, id)
+                }
+            }
+
+            for ep in info.episodes {
+                DramaDatabase.execWrite(db, """
+                INSERT INTO drama_episodes (site, drama_id, episode_id, sort, playable, downloaded, folder, updated_at)
+                VALUES (?,?,?,?,?,0,NULL,?)
+                ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
+                  sort=excluded.sort, playable=excluded.playable, updated_at=excluded.updated_at
+                """, what: "episode upsert \(ep.id)") { stmt in
+                    DramaDatabase.bind(stmt, 1, site)
+                    DramaDatabase.bind(stmt, 2, dramaID)
+                    sqlite3_bind_int64(stmt, 3, Int64(ep.id))
+                    sqlite3_bind_int(stmt, 4, Int32(ep.sort))
+                    sqlite3_bind_int(stmt, 5, ep.playable ? 1 : 0)
+                    DramaDatabase.bind(stmt, 6, now)
+                }
+            }
+            print("PLAYER_DBG [Service] saveInfo \(site)#\(dramaID) episodes=\(info.episodes.count) dropped=\(vanishedIDs.count) droppedIDs=\(vanishedIDs.prefix(5))")
         }
     }
 
