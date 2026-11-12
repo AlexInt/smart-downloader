@@ -196,6 +196,8 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 进度实时性的关键链路：`DownloadTask.current` 变化 → `DownloadManager.observeTaskState` 转发 `objectWillChange` → `DramaNativePage.onReceive` → `vm.refreshDownloadedSorts()` 里给 `downloadedSorts` 赋值（`@Published` 的 willSet 无条件发通知，即使值相同也触发 View 重绘）→ `downloadPhase(for:)` 重读进度。失败态显示红环，重试走原有 CTA/面板入口。
 
+**追加修正（同日 09:36 用户反馈）**：主屏 12 格原本「已可播」与「待下载」都是 `DWColor.surface` 深色底，只有进度环/打勾不同，一眼分不出。改为与「查看全部」面板共用 `cellBackground` / `cellForeground`：**底色表达能不能播** —— 已下载淡绿 (`Color.green.opacity(0.18)`)、待下载中性深色、锁定灰底、选中红底优先；边缘环只负责下载进度。选中是红底时绿环/红环撞色，done/failed 两态改白色环，进度金色环两种底色都清楚。设计约定：底色 = 可播性，边缘 = 下载进度，勿再混用。若希望选中态也保留绿底（改成红色描边表达选中），是下一轮可选方案。
+
 验证：`swiftc -typecheck` 全 32 文件 0 错误。**待真机确认**：iOS 26 悬浮 tab bar 是否被 `.toolbar(.hidden, for: .tabBar)` 真正隐藏（若不生效需改 UIKit 桥接）、边缘手势跟手手感与阈值、进度环刷新是否跟得上切片速度、海报缩短后标题/简介与渐变层的视觉衔接。
 
 ### 目录与分层第一批整理（架构讨论后落地）

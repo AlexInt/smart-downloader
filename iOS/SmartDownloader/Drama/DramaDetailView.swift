@@ -368,12 +368,15 @@ struct DramaDetailView: View {
     }
 
     /// 设计稿 6×2 共 12 格；点格子只单选（radio），播放/下载统一交给底部 CTA。
-    /// 边缘环显示下载进度，闭环后内部出现打勾；锁定集降透明度，不把未下载画成已可播。
+    /// **底色表达「能不能播」**：已下载淡绿、待下载中性深色、锁定灰 —— 与「查看全部」面板
+    /// 共用 cellBackground/cellForeground，两处一眼可分的配色一致；边缘环只负责下载进度。
     private func episodeGrid(_ info: DramaInfo) -> some View {
         let episodes = Array(info.episodes.prefix(12))
         return ForEach(Array(episodes.enumerated()), id: \.element.id) { index, ep in
             let col = CGFloat(index % 6)
             let row = CGFloat(index / 6)
+            let isSelected = vm.selectedSort == ep.sort
+            let isDownloaded = vm.downloadedSorts.contains(ep.sort)
             let phase = vm.downloadPhase(for: ep.sort)
             Button { vm.select(sort: ep.sort) } label: {
                 HStack(spacing: 2) {
@@ -381,29 +384,34 @@ struct DramaDetailView: View {
                     if case .done = phase {
                         Image(systemName: "checkmark")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.green)
+                            .foregroundStyle(isSelected ? Color.white : Color.green)
                     }
                 }
                 .font(DWFont.en(13, .medium))
-                .foregroundStyle(.white.opacity(ep.playable ? 1 : 0.4))
+                .foregroundStyle(cellForeground(isSelected: isSelected,
+                                                isDownloaded: isDownloaded,
+                                                playable: ep.playable))
                 .frame(width: 50, height: 44)
-                .background(vm.selectedSort == ep.sort ? DWColor.primary : DWColor.surface)
+                .background(cellBackground(isSelected: isSelected,
+                                           isDownloaded: isDownloaded,
+                                           playable: ep.playable))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay { progressRing(phase) }
+                .overlay { progressRing(phase, onSelected: isSelected) }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
             .accessibilityLabel("第 \(ep.sort) 集")
-            .accessibilityAddTraits(vm.selectedSort == ep.sort ? [.isSelected] : [])
+            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         }
     }
 
     /// 剧集按钮边缘进度环：下载中按进度 trim 逐渐闭环，完成后完整闭环 + 内部打勾，
     /// 排队是淡色轨道、失败是红环、未下载无边。
     /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪），trim 起点在右上角顺时针闭合。
+    /// 选中态是红底，绿环/红环撞色看不清，这两态改白色环，进度金色环两种底色都清楚。
     @ViewBuilder
-    private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
+    private func progressRing(_ phase: EpisodeDownloadPhase, onSelected: Bool) -> some View {
         switch phase {
         case .idle:
             EmptyView()
@@ -418,11 +426,11 @@ struct DramaDetailView: View {
                 .padding(1)
         case .done:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.green, lineWidth: 2)
+                .stroke(onSelected ? Color.white : Color.green, lineWidth: 2)
                 .padding(1)
         case .failed:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.primary, lineWidth: 2)
+                .stroke(onSelected ? Color.white : DWColor.primary, lineWidth: 2)
                 .padding(1)
         }
     }
@@ -567,12 +575,14 @@ struct DramaDetailView: View {
                 ? Color(uiColor: .tertiaryLabel)
                 : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay { progressRing(phase) }
+            .overlay { progressRing(phase, onSelected: isSelected) }
         }
         .buttonStyle(.plain)
         .disabled(!ep.playable || isQueued)
     }
 
+    /// 主屏 12 格与「查看全部」面板共用：底色表达「能不能播」，选中态红底优先。
+    /// 已下载淡绿 / 待下载中性深色 / 锁定灰 —— 两处配色必须一致，别各写一套。
     private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
         if isSelected { return DWColor.primary }
         if isDownloaded { return Color.green.opacity(0.18) }
