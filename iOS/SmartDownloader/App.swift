@@ -7,6 +7,8 @@ struct SmartDownloaderApp: App {
     @State private var selectedTab = 1
     /// 启动 splash：盖住冷启动（库扫描/本地服务预启），停留 1.2s 后淡出
     @State private var showSplash = true
+    /// 浏览页推入剧集详情时隐藏自定义 tab bar（详情页沉浸式全屏）
+    @State private var browserDetailActive = false
     /// 防止 onAppear 重复触发自动冒烟（主线程约定，GCD 版无线程标注）
     private static var autoTestStarted = false
     private static var stallProbeStarted = false
@@ -53,13 +55,22 @@ struct SmartDownloaderApp: App {
     var body: some Scene {
         WindowGroup {
             ZStack {
-                TabView(selection: $selectedTab) {
-                    BrowserView(manager: manager, selectedTab: $selectedTab)
-                        .tabItem { Label("浏览", systemImage: "safari.fill") }
-                        .tag(0)
-                    DownloadsView(manager: manager)
-                        .tabItem { Label("下载", systemImage: "arrow.down.circle") }
-                        .tag(1)
+                // 保活容器：浏览页常驻底层（WKWebView 一直在窗口内可见，不触发离屏挂起/图层回收），
+                // 下载页按需以不透明背景盖上去。切 tab 只改可见性、不藏 WKWebView → 切回零唤醒卡顿。
+                //（旧 SwiftUI TabView 会藏起非活跃 tab，WKWebView 离屏被回收，切回唤醒阻塞主线程 300ms–1s）
+                ZStack {
+                    BrowserView(manager: manager, selectedTab: $selectedTab,
+                                detailActive: $browserDetailActive)
+                        .allowsHitTesting(selectedTab == 0)
+                    if selectedTab == 1 {
+                        DownloadsView(manager: manager)
+                            .background(DWColor.background.ignoresSafeArea())
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if !browserDetailActive {
+                        mainTabBar
+                    }
                 }
                 // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App
                 if showSplash {
@@ -83,6 +94,34 @@ struct SmartDownloaderApp: App {
                 }
             }
         }
+    }
+
+    /// 自定义底部 tab bar（替代系统 TabView 的 tab bar，配合保活容器）
+    private var mainTabBar: some View {
+        HStack(spacing: 0) {
+            tabBarItem(title: "浏览", icon: "safari.fill", tag: 0)
+            tabBarItem(title: "下载", icon: "arrow.down.circle", tag: 1)
+        }
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .background(.bar)
+    }
+
+    private func tabBarItem(title: String, icon: String, tag: Int) -> some View {
+        Button {
+            selectedTab = tag
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                Text(title)
+                    .font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(selectedTab == tag ? Color.accentColor : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// 设备端自动冒烟（真机蜂窝网络下验证 WAF/下载链路，无需手工操作 UI）：

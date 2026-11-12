@@ -17,6 +17,8 @@ struct BrowserView: View {
 
     @ObservedObject var manager: DownloadManager
     @Binding var selectedTab: Int
+    /// 推入剧集详情时置 true，App 据此隐藏自定义 tab bar（保活容器下详情页沉浸式全屏）
+    @Binding var detailActive: Bool
     @StateObject private var store = WebViewStore()
     @State private var address = BrowserView.initialURLString == "about:blank" ? "" : BrowserView.initialURLString
     @State private var showPicker = false
@@ -105,7 +107,14 @@ struct BrowserView: View {
             if tab != 0 {
                 dramaPageTarget = nil
                 lastAutoDramaKey = nil
+            } else if let target = DramaTarget.parse(address) {
+                // 保活容器下浏览页常驻，onAppear 只在启动触发一次；
+                // 回到浏览页时补一次剧集页自动推入（对齐旧 TabView 每次出现的语义）
+                detectDrama(target, undoSPA: false)
             }
+        }
+        .onChange(of: dramaPageTarget) { _, target in
+            detailActive = (target != nil)
         }
         .onChange(of: address) { _, newValue in
             if let target = DramaTarget.parse(newValue) {
@@ -116,12 +125,16 @@ struct BrowserView: View {
             }
         }
         .onAppear {
-            if let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
+            // 保活容器下浏览页启动即渲染（可能仍在下载 tab）：只在浏览页活跃时自动推入
+            if selectedTab == 0, let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
         }
     }
 
     /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页
     private func detectDrama(_ target: DramaTarget, undoSPA: Bool) {
+        // 保活容器下浏览页常驻底层：非浏览 tab（如启动时在下载 tab）不自动推入，
+        // 避免详情页盖住下载页；回到浏览 tab 时由 onChange(of: selectedTab) 补推
+        guard selectedTab == 0 else { return }
         guard lastAutoDramaKey != target.id else { return }
         lastAutoDramaKey = target.id
         dramaPageTarget = target
