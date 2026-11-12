@@ -13,8 +13,9 @@ struct SmartDownloaderApp: App {
 
     private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
 
-    /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >250ms 打一条。
+    /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >100ms 打一条。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
+    /// 阈值从 250ms 调细到 100ms：可感知的切换卡顿常在 100–200ms，250ms 会漏报。
     private static func startStallProbeIfNeeded() {
         // 兼容 -perfLog / perfLog 两种写法：曾只匹配无横杠的 "perfLog"，
         // 按文档传 "-perfLog" 时探针静默不启动，tab 切换排查拿不到 mainStall
@@ -28,7 +29,7 @@ struct SmartDownloaderApp: App {
             let now = ProcessInfo.processInfo.systemUptime
             let gap = now - last.value
             last.value = now
-            if gap > 0.25 {
+            if gap > 0.1 {
                 print("PERF_DBG mainStall ms=\(Int(gap * 1000)) t=\(Int(now * 1000))")
             }
         }

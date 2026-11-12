@@ -203,9 +203,15 @@ final class DramaPageViewModel: ObservableObject {
         let token = UUID()
         toastToken = token
         toastText = text
+        print("PLAYER_DBG [VM] drama showToast text=\(text)")
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.toastToken == token else { return }
+            guard let self else { return }
+            guard self.toastToken == token else {
+                print("PLAYER_DBG [VM] drama showToast dismiss SKIP reason=staleToken")
+                return
+            }
             self.toastText = nil
+            print("PLAYER_DBG [VM] drama showToast dismiss reason=timeout3s")
         }
         toastTask = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
