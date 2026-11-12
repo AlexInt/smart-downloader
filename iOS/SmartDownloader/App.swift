@@ -16,7 +16,10 @@ struct SmartDownloaderApp: App {
     /// 主线程卡顿探针（-perfLog 启用）：100ms 心跳，单次 runloop 间隔 >250ms 打一条。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
     private static func startStallProbeIfNeeded() {
-        guard ProcessInfo.processInfo.arguments.contains("perfLog"), !stallProbeStarted else { return }
+        // 兼容 -perfLog / perfLog 两种写法：曾只匹配无横杠的 "perfLog"，
+        // 按文档传 "-perfLog" 时探针静默不启动，tab 切换排查拿不到 mainStall
+        let enabled = ProcessInfo.processInfo.arguments.contains { $0 == "-perfLog" || $0 == "perfLog" }
+        guard enabled, !stallProbeStarted else { return }
         stallProbeStarted = true
         // Timer 挂在主线程 RunLoop，回调与 last 读写同线程，无需锁
         final class LastBox { var value = ProcessInfo.processInfo.systemUptime }
