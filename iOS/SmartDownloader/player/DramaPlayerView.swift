@@ -495,6 +495,8 @@ struct DramaPlayerView: View {
             .allowsHitTesting(isProgressVisible)
         }
         .opacity(isProgressVisible ? 1 : 0)
+        // 从底部上升 + 由浅变深：隐藏态下偏 12pt，显示时归零，与透明度共用同一动画
+        .offset(y: isProgressVisible ? 0 : 12)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
     }
 }
