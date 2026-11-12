@@ -13,9 +13,10 @@ struct SmartDownloaderApp: App {
 
     private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
 
-    /// 主线程卡顿探针：100ms 心跳，单次 runloop 间隔 >100ms 打一条。
+    /// 主线程卡顿探针：20ms 心跳，单次 runloop 间隔 >100ms 打一条（真实卡顿）。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
-    /// 阈值从 250ms 调细到 100ms：可感知的切换卡顿常在 100–200ms，250ms 会漏报。
+    /// 心跳必须远小于阈值：旧版 100ms 心跳 + 100ms 阈值，正常调度抖动就超阈，
+    /// 刷屏 ms=100 假阳性；改 20ms 心跳后正常 gap≈20ms，>100ms 才是真卡顿。
     /// Debug 默认开启（真机排障无需记参数）；Release 仍需 -perfLog 显式启用。
     private static func startStallProbeIfNeeded() {
         // 曾靠 -perfLog 门控，但多次复测都没传参/没启用，拿不到 mainStall——改为 Debug 常开。
@@ -28,11 +29,11 @@ struct SmartDownloaderApp: App {
         guard enabled, !stallProbeStarted else { return }
         stallProbeStarted = true
         // 自检日志：日志开头有这行即证明探针已启用
-        print("PERF_DBG stallProbe enabled threshold=100ms")
+        print("PERF_DBG stallProbe enabled heartbeat=20ms threshold=100ms")
         // Timer 挂在主线程 RunLoop，回调与 last 读写同线程，无需锁
         final class LastBox { var value = ProcessInfo.processInfo.systemUptime }
         let last = LastBox()
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+        Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
             let now = ProcessInfo.processInfo.systemUptime
             let gap = now - last.value
             last.value = now
