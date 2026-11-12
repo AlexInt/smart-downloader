@@ -126,7 +126,7 @@ final class PlayerFeedViewModel: ObservableObject {
     func isFirst(_ sort: Int) -> Bool { slots.first?.sort == sort }
     func isLast(_ sort: Int) -> Bool { slots.last?.sort == sort }
 
-    /// 3 秒后自动消失（用户指定）。旧实现 `toastID == id` 在连续提示时可能让清除被跳过，
+    /// 2 秒后自动消失（用户指定）。旧实现 `toastID == id` 在连续提示时可能让清除被跳过，
     /// 表现为 toast 一直挂着；改用「取消旧任务 + 令牌」，且不用 `guard !Task.isCancelled` ——
     /// 即使 sleep 被取消，只要仍是当前令牌就必须把文案清掉。
     func showToast(_ text: String) {
@@ -138,10 +138,10 @@ final class PlayerFeedViewModel: ObservableObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.toastToken == token else { return }
             self.toastText = nil
-            print("PLAYER_DBG [VM] showToast dismiss reason=timeout3s")
+            print("PLAYER_DBG [VM] showToast dismiss reason=timeout2s")
         }
         toastTask = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     func stop() {

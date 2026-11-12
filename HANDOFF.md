@@ -309,7 +309,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 统一改为「取消旧任务 → 生成 UUID 令牌 → 设文案 → `Task.sleep(for: .seconds(3))` → 只要令牌仍匹配就**无条件**清文案」。去掉 `!Task.isCancelled` 的提前 return：即使 sleep 因取消抛错，只要仍是当前提示就必须清掉；旧任务因令牌不匹配不会误清新提示。`PlayerFeedViewModel.stop()` 顺手清 toast。日志保留 `showToast` 与 `showToast dismiss reason=timeout3s` 便于判读。
 
-现在播放页「已经到底了」「第N集尚未下载」、详情页收藏/下载/完成提示全部 **3 秒自动消失**。注意 `endToastShown` 仍是「同一次播放页生命周期内只提示一次」，滑离末页再回来不会重复弹 —— 若希望每次到底都提示，是另一个改动。
+现在播放页「已经到底了」「第N集尚未下载」、详情页收藏/下载/完成提示全部 **2 秒自动消失**（用户复测后从 3s 调短）。注意 `endToastShown` 仍是「同一次播放页生命周期内只提示一次」，滑离末页再回来不会重复弹 —— 若希望每次到底都提示，是另一个改动。
 
 ### 开启 targeted 严格并发检查（2026-11-12，用 swift-concurrency skill 审查后）
 
@@ -366,7 +366,7 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 
 **验证（Mac 侧全过）**：模拟器构建 BUILD SUCCEEDED；coretest --library 3×DONE；coretest Apple 流 181 切片 DONE；playtest 真实播放 PLAYING；FORCE_WEBKIT=1 coretest 181 切片 DONE（async 岛+信号量桥验证）。
 
-**待用户真机回归**（行为不变量核对）：WiFi/蜂窝下载（IP 直连/WebKit 降级日志）、秒开 `makeItem HIT`、手势仲裁（长按 2x/横滑 seek/翻页）、toast 3s/HUD 800ms/清屏闪现 1500ms、剧集页加载/刷新/tags 收割。日志过滤 `PLAYER_DBG` / `DL[`。
+**待用户真机回归**（行为不变量核对）：WiFi/蜂窝下载（IP 直连/WebKit 降级日志）、秒开 `makeItem HIT`、手势仲裁（长按 2x/横滑 seek/翻页）、toast 2s/HUD 800ms/清屏闪现 1500ms、剧集页加载/刷新/tags 收割。日志过滤 `PLAYER_DBG` / `DL[`。
 
 **注意**：迁移前工作区有一笔未提交的 Swift 6.2 `@MainActor run` 修复，已被本次重写覆盖（同段代码 GCD 化，意图保留）。
 

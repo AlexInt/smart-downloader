@@ -196,7 +196,7 @@ final class DramaPageViewModel: ObservableObject {
         coverReloadToken += 1
     }
 
-    /// 3 秒后自动消失（用户指定）。旧实现 `guard !Task.isCancelled else { return }`
+    /// 2 秒后自动消失（用户指定）。旧实现 `guard !Task.isCancelled else { return }`
     /// 会让被取消的任务跳过清除 —— 最后一条 toast 若被取消就永远挂着，这是「不消失」的根因。
     func showToast(_ text: String) {
         toastTask?.cancel()
@@ -211,10 +211,10 @@ final class DramaPageViewModel: ObservableObject {
                 return
             }
             self.toastText = nil
-            print("PLAYER_DBG [VM] drama showToast dismiss reason=timeout3s")
+            print("PLAYER_DBG [VM] drama showToast dismiss reason=timeout2s")
         }
         toastTask = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     /// 重试按钮：换 reload 版本号触发 onChange 重新加载
