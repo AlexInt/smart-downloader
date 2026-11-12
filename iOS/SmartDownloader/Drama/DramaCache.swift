@@ -340,12 +340,15 @@ enum DramaCache {
             bind(stmt, 7, ISO8601DateFormatter().string(from: Date()))
         }
     }
-}
 
-extension DramaInfo {
-    /// 从缓存行还原（集数列表为空视为无效缓存，走网络）
-    init?(entry: DramaCache.Entry) {
+    // MARK: 缓存行 → 领域模型
+
+    /// 从缓存行还原（集数列表为空视为无效缓存，走网络）。
+    /// 转换归 Service：`DramaInfo` 保持纯数据，不再挂 `init?(entry:)` 这种依赖缓存结构的行为。
+    static func dramaInfo(from entry: Entry) -> DramaInfo? {
         guard !entry.episodes.isEmpty else { return nil }
-        self.init(name: entry.name ?? "未知剧集", updateStatus: entry.updateStatus, episodes: entry.episodes)
+        return DramaInfo(name: entry.name ?? "未知剧集",
+                         updateStatus: entry.updateStatus,
+                         episodes: entry.episodes)
     }
 }

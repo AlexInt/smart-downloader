@@ -1,0 +1,49 @@
+import SwiftUI
+import WebKit
+import Combine
+
+// 浏览页 ViewModel：从 BrowserView.swift 拆出，逐字迁移不改行为。
+// WKWebView 命令通道 + 下载入口编排，独立于 View 文件（AGENTS.md 域内分层）。
+
+/// WKWebView 命令通道：让 SwiftUI 工具栏驱动网页后退/前进/刷新/加载。
+/// 页面状态与下载入口锁都是主线程状态，整体 @MainActor。
+@MainActor
+final class WebViewStore: ObservableObject {
+    weak var webView: WKWebView?
+    @Published var loadError: String?
+    @Published var pageTitle: String?
+    /// 页面元数据提取结果（JSON 字符串，原生解析后展示/落盘）
+    @Published var pageMetaJSON: String?
+    /// 下载入口连点锁（异步取标题期间置位；架构评估 P9 从 View 收纳）
+    @Published private(set) var isSubmitting = false
+
+    func goBack() { webView?.goBack() }
+    func goForward() { webView?.goForward() }
+    func reload() { webView?.reload() }
+    func load(_ raw: String) {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if !text.lowercased().hasPrefix("http") { text = "https://" + text }
+        guard let url = URL(string: text) else { return }
+        webView?.load(URLRequest(url: url))
+    }
+
+    /// 下载入口编排：取网页标题作文件名后开始下载（嗅探到的 m3u8 一般带时效签名，尽快开下）。
+    /// 取标题是异步的，这个窗口内连点会排多个任务；isSubmitting 把入口锁住；
+    /// 同 URL 已有活跃任务时直接忽略（按钮态与 Picker 行均已禁用，这里是最后防线）。
+    func beginDownload(from raw: String?, manager: DownloadManager) {
+        guard let raw, let url = URL(string: raw),
+              url.scheme == "http" || url.scheme == "https" else { return }
+        guard !isSubmitting else { return }
+        guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
+        isSubmitting = true
+        Task {
+            defer { self.isSubmitting = false }
+            var title = ""
+            if let webView = self.webView {
+                title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
+            }
+            manager.startDownload(urlString: url.absoluteString, title: title)
+        }
+    }
+}

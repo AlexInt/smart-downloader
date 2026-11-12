@@ -221,7 +221,18 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 
 工程侧零改动：folder-sync 只有一个 `PBXFileSystemSynchronizedRootGroup`（`path = SmartDownloader`），子目录递归自动参与编译，`git mv` 即可；`Info.plist` 与 `iOS/LaunchSplashView.swift` 保持原位（前者被 `INFOPLIST_FILE` 写死、后者是显式 `PBXBuildFile`）。
 
-**第二批未做**：`Downloads/`（Downloader / VM / View）、`Browser/`（BrowserView + 拆出 WebViewStore / 嗅探 JS）、`Infra/`（LocalMediaServer / WebKitFetcher）、`Shared/DownloadModels.swift`（TaskState / DownloadError）。`DramaCache.swift` 里的 `extension DramaInfo { init?(entry:) }` 是缓存行→领域模型的转换，暂留 Service 文件，记为后续清理项。
+### 第二批目录迁移完成（2026-11-12，根目录只剩 `App.swift`）
+
+| 动作 | 内容 |
+|---|---|
+| `Shared/DownloadModels.swift` | 从 `Downloads/Downloader.swift` 抽出 `TaskState` / `TaskState.isFinished` / `DownloadError`（纯数据）。**冒烟编译命令必须一起列这个文件**，否则报找不到类型 |
+| `Browser/WebViewStore.swift` | 从 `BrowserView.swift` 逐字拆出 VM（WKWebView 命令通道 + 下载入口锁），View 文件只留 `BrowserView` + `WebViewContainer` |
+| `Browser/SnifferScript.swift` | 60 行注入 JS 从 `WebViewContainer` 的 `static let` 抽成 `SnifferScript.source`，View 只负责注入 |
+| `Drama/DramaCache.swift` | `extension DramaInfo { init?(entry:) }` 收成 `DramaCache.dramaInfo(from:)` 静态工厂，VM 两处调用同步；Model 保持纯数据 |
+| `Drama/DramaFavorites.swift` | 从 `Shared/` 归位剧集域：`Shared/` 只放纯数据与设计系统，不塞 Service |
+| `git mv` | `Downloads/`（Downloader / DownloadsView / DownloadsViewModel）、`Browser/`（BrowserView）、`Infra/`（LocalMediaServer / WebKitFetcher） |
+
+`AGENTS.md` §目录、`iOS/README.md`（三条冒烟编译命令 + 文件清单）同步更新；folder-sync 零改动，pbxproj 一个字没动。验证：`swiftc -typecheck` 全 35 文件 0 错误，并按新路径真实编译一次 coretest 冒烟工具确认链路未断。**行为零变化**：纯 `git mv` + 抽类型，未改任何下载 / 播放 / 路由逻辑。
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -283,7 +294,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 6 | 「长按 2x 中途继续上滑切集」手势竞争 | 离散手势回卡片后未真机验证该组合；若出现长按后滑不动，调 maximumDistance 或该手势回 UIKit | 低（观察项） |
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
 | 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
-| 9 | 第二批目录迁移 | `Downloads/` / `Browser/` / `Infra/`，并从 `BrowserView.swift` 拆出 `WebViewStore`、从 `Downloader.swift` 抽出 `DownloadModels.swift`；按域分批 commit | 中 |
+| 9 | ~~第二批目录迁移~~ | ✅ 已完成（2026-11-12）：`Downloads/` / `Browser/` / `Infra/` 归位、`WebViewStore` / `SnifferScript` / `DownloadModels` 拆出、`DramaInfo` 构造逻辑收进 `DramaCache`；见 §2 末节 | 已完成 |
 
 ## 6. 验证与调试
 

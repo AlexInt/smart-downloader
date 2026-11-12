@@ -45,7 +45,7 @@ python3 video_auto.py "<剧集页URL>" --all        # 全剧存到 输出目录/
 
 # iOS 冒烟（Mac 上验证核心，不需手机；必须带 WebKitFetcher.swift）
 cd iOS/smoke
-swiftc -O -o coretest main.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
+swiftc -O -o coretest main.swift ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Shared/DramaModels.swift ../SmartDownloader/Downloads/Downloader.swift ../SmartDownloader/Drama/DramaCache.swift ../SmartDownloader/Infra/WebKitFetcher.swift
 SMARTDOWNLOADER_DIR="$PWD/out" ./coretest                       # Apple 测试流端到端
 SMARTDOWNLOADER_FORCE_WEBKIT=1 ./coretest "<m3u8>" ep1          # 强制走 WebKit 兜底通道
 
@@ -83,11 +83,14 @@ View → ViewModel → Service → 系统能力 / Model
 
 本节的适用范围是 `iOS/SmartDownloader/` **全部** Swift 文件，不只是 `player/`。目录按「功能域」划分，**不按 Model / Service / ViewModel / View 分**：同 target 没有 import 边界，按层分目录不产生任何依赖约束，只会把一个功能的四个文件打散到四处。按域分则「一个功能一个目录」，域内是否分层一眼可查。
 
-- `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `ApiDramaEpisode` / `DramaInfo` / `DramaError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`）。只放被 2 个以上域引用的类型，不塞业务逻辑
+- `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `ApiDramaEpisode` / `DramaInfo` / `DramaError` / `EpisodeDownloadPhase`）、`DownloadModels.swift`（`TaskState` / `DownloadError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`）。只放被 2 个以上域引用的类型，不塞 Service / 业务逻辑
 - `Drama/`：剧集域。Model（`DramaDetailData`）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`）、组装根（`DramaNativePage`）
+- `Downloads/`：下载域。`Downloader`（Service：下载核心 + 任务/队列）、`DownloadsViewModel`（VM）、`DownloadsView`（View）
+- `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）
+- `Infra/`：系统能力。`LocalMediaServer`（本地回环 HTTP）、`WebKitFetcher`（WKDownload 兜底）
 - `player/`：播放域，五层齐全。Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `PlayerPreferences` / `PlaybackPlayerService` / `PlayerGesturePolicy`）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerPagingScrollView` / `PlayerSurfaceView`）、组装根（`DramaPlayerContainer`）
 - `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定
-- 根目录只应留 `App.swift`（入口）与 `Info.plist` / `Media.xcassets`。存量 `DownloadsView` / `DownloadsViewModel` / `Downloader` / `BrowserView` / `LocalMediaServer` / `WebKitFetcher` 是第二批迁移目标（`Downloads/` / `Browser/` / `Infra/`），迁移前维持原位
+- 根目录只留 `App.swift`（入口）与 `Info.plist` / `Media.xcassets`。两批迁移均已完成（2026-11-12），**不要再往根目录新增 Swift 文件**
 
 **域内五层规则**：每个域的 Model 独立文件、纯数据无 IO；VM 不直接读写系统对象；Service 不 import SwiftUI、不用 `@Published`、不反向依赖 VM。新增类型必须归到所属域，不要再往根目录堆。判断有没有落实看三条：Model 是否独立且纯数据、VM 碰不碰系统对象、Service 删掉 UI 后是否仍成立。
 
@@ -131,7 +134,7 @@ View → ViewModel → Service → 系统能力 / Model
 
 ## iOS 工程注意（Xcode 26 folder-sync 格式）
 
-- 站点接口/选集下载逻辑在 `iOS/SmartDownloader/DramaAPI.swift`（独立文件，勿混入 Downloader.swift）；
+- 站点接口/选集下载逻辑在 `iOS/SmartDownloader/Drama/DramaAPI.swift`（独立文件，勿混入 `Downloads/Downloader.swift`）；
   账号/AES 常量来自随包 symlink `iOS/SmartDownloader/video_auto.py -> 仓库根 video_auto.py`，改常量只改仓库根一处。
 
 - 新 Swift 文件放进 `SmartDownloader/` 自动参与编译；资源目录（Media.xcassets）同理。

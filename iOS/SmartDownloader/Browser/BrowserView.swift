@@ -178,49 +178,6 @@ struct BrowserView: View {
     }
 }
 
-/// WKWebView 命令通道：让 SwiftUI 工具栏驱动网页后退/前进/刷新/加载。
-/// 页面状态与下载入口锁都是主线程状态，整体 @MainActor。
-@MainActor
-final class WebViewStore: ObservableObject {
-    weak var webView: WKWebView?
-    @Published var loadError: String?
-    @Published var pageTitle: String?
-    /// 页面元数据提取结果（JSON 字符串，原生解析后展示/落盘）
-    @Published var pageMetaJSON: String?
-    /// 下载入口连点锁（异步取标题期间置位；架构评估 P9 从 View 收纳）
-    @Published private(set) var isSubmitting = false
-
-    func goBack() { webView?.goBack() }
-    func goForward() { webView?.goForward() }
-    func reload() { webView?.reload() }
-    func load(_ raw: String) {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        if !text.lowercased().hasPrefix("http") { text = "https://" + text }
-        guard let url = URL(string: text) else { return }
-        webView?.load(URLRequest(url: url))
-    }
-
-    /// 下载入口编排：取网页标题作文件名后开始下载（嗅探到的 m3u8 一般带时效签名，尽快开下）。
-    /// 取标题是异步的，这个窗口内连点会排多个任务；isSubmitting 把入口锁住；
-    /// 同 URL 已有活跃任务时直接忽略（按钮态与 Picker 行均已禁用，这里是最后防线）。
-    func beginDownload(from raw: String?, manager: DownloadManager) {
-        guard let raw, let url = URL(string: raw),
-              url.scheme == "http" || url.scheme == "https" else { return }
-        guard !isSubmitting else { return }
-        guard !manager.hasActiveTask(forURL: url.absoluteString) else { return }
-        isSubmitting = true
-        Task {
-            defer { self.isSubmitting = false }
-            var title = ""
-            if let webView = self.webView {
-                title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
-            }
-            manager.startDownload(urlString: url.absoluteString, title: title)
-        }
-    }
-}
-
 struct WebViewContainer: UIViewRepresentable {
     @ObservedObject var manager: DownloadManager
     @ObservedObject var store: WebViewStore
@@ -241,7 +198,7 @@ struct WebViewContainer: UIViewRepresentable {
         let controller = config.userContentController
         // 与 mac_app/sniffer.js 同源逻辑：Hook XHR/fetch + performance 历史 + DOM 扫描
         controller.addUserScript(
-            WKUserScript(source: Self.snifferScript,
+            WKUserScript(source: SnifferScript.source,
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: false)
         )
@@ -422,64 +379,4 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 
-    // MARK: - 嗅探脚本（移植自 mac_app/sniffer.js，去掉悬浮工具栏，改走 messageHandlers 回传）
-
-    private static let snifferScript = #"""
-    (function () {
-      if (window.__m3u8SnifferLoaded) return;
-      window.__m3u8SnifferLoaded = true;
-
-      var seen = {};
-
-      function isM3u8(u) {
-        try { return /\.m3u8(\?|#|$)/i.test(String(u)); } catch (e) { return false; }
-      }
-
-      function record(u) {
-        if (!u) return;
-        u = String(u);
-        if (!isM3u8(u)) return;
-        if (seen[u]) return;
-        seen[u] = 1;
-        try {
-          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sniffer) {
-            window.webkit.messageHandlers.sniffer.postMessage(u);
-          }
-        } catch (e) {}
-      }
-
-      var origOpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (method, url) {
-        try { record(url); } catch (e) {}
-        return origOpen.apply(this, arguments);
-      };
-
-      if (window.fetch) {
-        var origFetch = window.fetch;
-        window.fetch = function (input) {
-          try { record(typeof input === 'string' ? input : (input && input.url)); } catch (e) {}
-          return origFetch.apply(this, arguments);
-        };
-      }
-
-      try {
-        var entries = performance.getEntriesByType('resource');
-        for (var i = 0; i < entries.length; i++) record(entries[i].name);
-      } catch (e) {}
-
-      function scanDom() {
-        try {
-          var nodes = document.querySelectorAll('video, source');
-          for (var i = 0; i < nodes.length; i++) {
-            var s = nodes[i].src || nodes[i].getAttribute('src');
-            if (s) record(s);
-          }
-        } catch (e) {}
-      }
-      scanDom();
-      try {
-        new MutationObserver(scanDom).observe(document.documentElement, { childList: true, subtree: true });
-      } catch (e) {}
-    })();
-    """#
 }

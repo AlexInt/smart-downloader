@@ -65,8 +65,12 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 ```bash
 cd iOS/smoke
 
+# 目录整理后按域拆分，冒烟工具要显式列出依赖的 Swift 文件：
+# - Shared/DownloadModels.swift（TaskState / DownloadError，三条命令都要，漏列报找不到类型）
+# - coretest 额外需要 Shared/DramaModels.swift + Drama/DramaCache.swift（--library 会测剧集缓存）
+
 # 1. 下载核心: 真实下载 Apple bipbop 测试流(BYTERANGE+多码率), 产出 out/smoke_test/ 本地 HLS 文件夹
-swiftc -O -o coretest main.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
+swiftc -O -o coretest main.swift ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Shared/DramaModels.swift ../SmartDownloader/Downloads/Downloader.swift ../SmartDownloader/Drama/DramaCache.swift ../SmartDownloader/Infra/WebKitFetcher.swift
 SMARTDOWNLOADER_DIR="$PWD/out" ./coretest
 # 期望: RESULT: DONE -> .../out/smoke_test/playlist.m3u8
 # 加 SMARTDOWNLOADER_FORCE_WEBKIT=1 强制走 WebKit 兜底通道，验证 WKDownload 链路
@@ -78,7 +82,7 @@ SMARTDOWNLOADER_DIR="$PWD/out/library_check" ./coretest --library
 #       收编后 series_eps 含 第03集(1)、downloaded=[1, 2, 3] → RESULT: DONE
 
 # 2. 播放验证: 启动内置本地服务, AVPlayer 实际播放并确认进度推进
-swiftc -O -o playtest playtest.swift ../SmartDownloader/LocalMediaServer.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
+swiftc -O -o playtest playtest.swift ../SmartDownloader/Infra/LocalMediaServer.swift ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Downloads/Downloader.swift ../SmartDownloader/Infra/WebKitFetcher.swift
 SMARTDOWNLOADER_DIR="$PWD/out" ./playtest out/smoke_test
 # 期望: RESULT: PLAYING currentTime=1.xx s
 
@@ -87,7 +91,7 @@ swiftc -O -o fetchtest fetchtest.swift
 ./fetchtest "<任意URL>" --browser
 
 # 4. 真实剧集端到端: 用 App 同款栈调站点接口取新鲜 m3u8(站点地址从剧集页 URL 解析), 再交给 coretest 下载
-swiftc -O -o videocli videocli.swift ../SmartDownloader/Downloader.swift ../SmartDownloader/WebKitFetcher.swift
+swiftc -O -o videocli videocli.swift ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Downloads/Downloader.swift ../SmartDownloader/Infra/WebKitFetcher.swift
 ./videocli "<剧集页URL>"    # 输出 M3U8: <url>
 SMARTDOWNLOADER_DIR="$PWD/out" ./coretest "<该url>" ep1
 
@@ -105,16 +109,17 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 
 | 文件 | 职责 |
 |---|---|
-| `SmartDownloader/App.swift` | 入口，启动时预启本地媒体服务 |
-| `SmartDownloader/BrowserView.swift` | 浏览页：WKWebView + 嗅探脚本注入(内嵌 JS) + 下载按钮 + 原生剧集页（内嵌 webview）+ 选集面板 |
-| `SmartDownloader/Downloader.swift` | 下载核心 + 任务/队列管理 + 两级库扫描（剧目录/散装） |
-| `SmartDownloader/DramaAPI.swift` | 站点剧集接口（独立文件）：URL 解析/登录/AES 解密 + 多集下载调度 |
+| `SmartDownloader/App.swift` | 入口，启动时预启本地媒体服务（根目录只留这一个 Swift 文件） |
+| `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`） |
+| `SmartDownloader/Drama/` | 剧集域：`DramaDetailData`（接口 DTO）、`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`（Service）、`DramaPageViewModel`（VM）、`DramaDetailView`（View）、`DramaNativePage`（组装根） |
+| `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
+| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS） |
+| `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF） |
+| `SmartDownloader/player/` | 播放域，五层齐全（详见 `HANDOFF.md` §3） |
+| `SmartDownloader/Components/` | 全局通用 UI（`ToastView`） |
 | `SmartDownloader/video_auto.py` | → 仓库根 video_auto.py 的 symlink，随包携带供 DramaAPI 解析账号/AES 常量（改动只需改仓库根一处） |
-| `SmartDownloader/WebKitFetcher.swift` | WebKit 网络栈兜底（WKDownload，过 TLS 指纹 WAF） |
-| `SmartDownloader/LocalMediaServer.swift` | 回环 HTTP 服务（Range 支持，仅 127.0.0.1） |
-| `SmartDownloader/DownloadsView.swift` | 下载列表 + AVKit 播放页 |
 | `SmartDownloader/Info.plist` | ATS 放行 / 文件共享 / 横竖屏 |
 | `SmartDownloader/Media.xcassets` | 资源目录（App Icon，sd.png 1024x1024） |
 | `smoke/` | 冒烟测试工具（coretest / playtest / videocli / fetchtest，仅 macOS） |
 
-工程文件为 Xcode 26 新格式（文件夹同步组），无需 xcodegen，添加新 Swift 文件直接放进 `SmartDownloader/` 即自动参与编译。
+工程文件为 Xcode 26 新格式（文件夹同步组），无需 xcodegen：新 Swift 文件放进**对应域目录**即自动参与编译（根目录只留 `App.swift`，规则见 `AGENTS.md`「目录」）。`Info.plist` 必须留在根（`INFOPLIST_FILE` 写死路径），`iOS/LaunchSplashView.swift` 是显式工程引用、不在同步文件夹内。

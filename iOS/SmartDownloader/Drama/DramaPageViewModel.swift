@@ -256,7 +256,7 @@ final class DramaPageViewModel: ObservableObject {
         selected = []
         // 缓存优先：同一剧集第二次打开直接读本地，不发网络请求（刷新按钮强制更新）
         if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
-           let info = DramaInfo(entry: entry) {
+           let info = DramaCache.dramaInfo(from: entry) {
             self.info = info
             fromCache = true
             await applyLibraryState(for: info)
@@ -305,7 +305,7 @@ final class DramaPageViewModel: ObservableObject {
         } catch {
             // 有缓存时网络失败不白屏：回退缓存继续用
             if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
-               let info = DramaInfo(entry: entry) {
+               let info = DramaCache.dramaInfo(from: entry) {
                 self.info = info
                 fromCache = true
                 await applyLibraryState(for: info)
