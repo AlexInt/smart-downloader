@@ -25,7 +25,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 消 deprecated 警告 | 资产加载改回 `asset.load` 包 @MainActor Task 岛（恢复迁移前写法，秒开不变） | 构建零警告 |
 | 播放页 toast 不收回 | `toastText` 按值快照入卡片，`refreshCardsIfNeeded` 未纳入 toast 变化→dismiss 后不重绘。加 `activeToast` 触发刷新 | 已修，真机确认收回 |
 | 播放器偶现「无法连接服务器」 | `LocalMediaServer.start` 未 ready 时二次调用回 port=0→拼出 `:0`。改登记等待、ready 统一回调；playbackURL 端口 0 显式失败 | 已修 |
-| tab 切换卡顿 | 探针三修（横杠兼容 / Debug 常开 / 心跳 20ms 消除假阳性）定位到 WKWebView 离屏唤醒；App 改 ZStack 保活容器 + 自定义 tab bar（AGENTS 决策 8） | 待真机回归 |
+| tab 切换卡顿 | 探针三修（横杠兼容 / Debug 常开 / 心跳 20ms 消除假阳性）定位到 WKWebView 离屏唤醒；App 改 ZStack 保活容器 + 自定义 tab bar（AGENTS 决策 9） | 待真机回归 |
 | 竖滑误暂停 | seekPan 不限方向、竖滑也 began 搅乱触摸取消→误判 TAP。加 `gestureRecognizerShouldBegin` 拒纵向主导 | 待真机回归 |
 | 点按显示进度条 | togglePlayback 触发 HUD + 3s 淡出（清屏下也可见） | 待真机验证 |
 | 进度条组合动画 | 出现时上升 12pt + 淡入，共用 0.2s easeInOut | 待真机验证 |
@@ -33,6 +33,9 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | toast 时长 | 3s→2s | 已完成 |
 | 注释清理 | 删 GCD 迁移回声注释（等价旧 Task/.task 等），保留防回归说明 | 已完成 |
 | 设置 tab 页 | 新增 `Settings/` 域（Service/VM/View）：条目 1 选启动落在哪个 tab，条目 2 浏览页快捷站点多对 key/value 增删改；浏览页 label 行改读配置 | 模拟器构建通过，待真机验证 |
+| 播放进度入库 | 新增 `Drama/EpisodeActionsStore.swift`：`episode_actions` 按 (site, drama_id, episode_id) 一集一行存点赞/收藏/上次播放位置，`local_actions` 按资源路径兜底（散装 HLS、普通文件、缓存缺失）；`PRAGMA user_version` v0→v1 建表并把 UserDefaults 里的旧 liked/saved/进度搬进库（muted/清屏仍留 Preference） | 冒烟双场景通过（有 id / 无 id），待真机回归 |
+| 续播与进度显示 | `PlaybackProgressTracker`（1Hz 攒内存，暂停/seek 收尾/切集/退出/进后台落库）接入沉浸式播放页与下载页 AVKit 播放；就绪后续播并闪现 HUD 1.5s；已下载列表行显示「播至 03:12 / 12:30」或「已看完」；删除条目连带清行为数据 | 同上 |
+| 身份链补齐 | `MediaIdentity`（Shared 纯数据）+ `PlayableEpisode.identity` + `ImmersivePlaybackRequest.target`；剧集页入口带 site/drama_id 直达，下载页按剧名反查（同名多剧打 AMBIGUOUS 日志）；`EpisodeActionsStore.identity(...)` 为唯一解析口径 | 同上 |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -45,6 +48,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | `PlaybackPlayerService.swift` | Service | 唯一常驻 `AVPlayer`、`makeItem`（预热池 HIT/MISS）、`preload`/`clear`/`teardown` |
 | `PlayerPreferences.swift` | Service | 静音/清屏/点赞/收藏/**剩余时间显示**持久化（UserDefaults 封装）|
 | `PlayerGesturePolicy.swift` | Service | 仅剩 scrub 灵敏度纯函数（命中带已废）|
+| `PlaybackProgressTracker.swift` | Service | 进度落库与续播：1Hz 攒内存 + 关键时机 flush，播完/接近片尾从头播 |
 | `DramaPlayerViewModel.swift` | ViewModel | 单集播放状态机：load（KVO 直挂 + 看门狗 + 代际令牌）、isReady/isLoadingSlow/isScrubbing、seek、倍速、时间进度 |
 | `PlayerFeedViewModel.swift` | ViewModel | 分页数据源、当前页、`schedulePageSettle` 停稳防抖 + 相邻集预热、边界 toast；组装 `DramaPlayerViewModel` |
 | `PlayerFeedView.swift` | View | 分页容器 SwiftUI 侧：onAppear/onChange 转发 `schedulePageSettle` |
@@ -54,7 +58,9 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | `DramaPlayerContainer.swift` | 组装根 | fullScreenCover 入口，onAppear configure + onDisappear stop |
 | `Components/ToastView.swift` | 全局组件 | 通用 toast，不依赖业务/坐标系 |
 
-其余域（Shared / Drama / Downloads / Browser / Infra）见 AGENTS「目录」节。
+其余域（Shared / Drama / Downloads / Browser / Infra / Settings）见 AGENTS「目录」节。
+行为数据表（`episode_actions` / `local_actions`）在 `Drama/EpisodeActionsStore.swift`，与 `drama_cache` 同一个 SQLite 文件，
+写入方是播放页与下载页 AVKit 播放，读取方是下载列表与播放页续播 —— 口径统一由 `MediaIdentity` 表达。
 
 ## 4. 关键设计决策（勿轻易推翻）
 

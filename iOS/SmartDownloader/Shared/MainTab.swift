@@ -4,7 +4,7 @@ import Foundation
 /// 全 App 只有这一处定义，新增 tab 改这里即可（底部 bar 与设置页 Picker 都遍历 allCases）。
 ///
 /// 约束：`.browser` 必须排在第一位 —— WKWebView 常驻 ZStack 底层保活，其余 tab 以不透明背景盖上去
-///（AGENTS「iOS 架构约定」第 8 条），所以 rawValue 只用作覆盖顺序，不影响命中测试。
+///（AGENTS「iOS 架构约定」第 9 条），所以 rawValue 只用作覆盖顺序，不影响命中测试。
 /// 图标以 SF Symbol 名字符串记录，本文件不 import SwiftUI（Model 层约束）。
 enum MainTab: Int, CaseIterable, Identifiable {
     case browser = 0
