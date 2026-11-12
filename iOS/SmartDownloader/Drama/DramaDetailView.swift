@@ -12,7 +12,9 @@ import SwiftUI
 //  2. 移除底部固定 CTA，选集格子恢复「直点」语义（播放 / 取消下载 / 直接下载）。
 //  3. 补设计稿缺项：「下载全部」、下载中 n/100 分数。
 //  4. 新增「为你推荐」双列瀑布流 + 「剧集档案」，数据全部来自本地 SQLite（离线可用）。
-//  保留此前真机迭代成果：海报 376、绿色进度环、查看全部 sheet、≤12 集固定栅格。
+//  保留此前真机迭代成果：海报 376、≤12 集固定栅格。
+//  5. 同日追加三项设计稿还原：右下 18×18 状态角标、进度环由绿改回金色 #F5C451、
+//     「查看全部」由 sheet 改为内联展开 13+ 集（全选/清空/下载所选进内联工具条，刷新移到选集行 ↻）。
 //
 // 本文件只渲染 + 转发用户意图；业务状态与编排在 DramaPageViewModel（AGENTS.md MVVM 约定）。
 
@@ -23,6 +25,9 @@ private enum DetailLayout {
     static let posterHeight: CGFloat = 376
     /// 内容组相对设计稿整体上移，收紧「简介 → 选集」空白
     static let sectionLift: CGFloat = 32
+    /// 「查看全部」内联展开：额外集 6 列 × 56pt 步进，末尾留一条批量工具条
+    static let inlineRowStep: CGFloat = 56
+    static let inlineToolbarHeight: CGFloat = 44
 
     // 为你推荐（设计稿 .reco / .reco-grid / .reco-card）
     static let recoTopPadding: CGFloat = 16
@@ -116,7 +121,6 @@ struct DramaDetailView: View {
         // 设计稿是沉浸式全屏，状态栏之上不叠系统导航栏；返回用屏内自带按钮
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .sheet(isPresented: $vm.showAllEpisodes) { allEpisodesSheet }
         // 整页 ScrollView 的 pan 与左缘返回并存：仍只在左缘 + 横向主导时生效
         .simultaneousGesture(edgeBackGesture)
     }
@@ -174,8 +178,15 @@ struct DramaDetailView: View {
                 + rowsTotal + DetailLayout.archiveBottomPadding + DetailLayout.archiveSlack
         }
 
-        // hint 实际底 y636（650 - sectionLift 32），再留 24pt 间距；展开态整体下移 descShift
-        let recoY: CGFloat = 660 + descShift
+        // 内容组最后一个元素的设计底 y：折叠 = hint 底 668；
+        // 展开 = 额外集(642 起、每行 56) + 批量工具条 + hint，额外集把推荐/档案一起下推。
+        // 内容组整体还有 (descShift - sectionLift) 位移，reco 必须按同一口径对齐。
+        let rows = vm.extraEpisodeRows
+        let expanded = vm.showAllEpisodesInline && rows > 0
+        let contentBottomDesignY: CGFloat = expanded
+            ? 720 + CGFloat(rows) * DetailLayout.inlineRowStep
+            : 668
+        let recoY = contentBottomDesignY + descShift - DetailLayout.sectionLift + 24
         let archiveY = recoY + recoHeight + (recoHeight > 0 ? 8 : 0)
         let totalHeight = max(DWLayout.designHeight, archiveY + archiveHeight + 40)
         return PageLayout(leftItems: left, rightItems: right,
@@ -446,94 +457,170 @@ struct DramaDetailView: View {
                 Text("下载全部")
                     .font(DWFont.cn(12, .medium))
                     .foregroundStyle(DWColor.gold)
-                    .frame(width: 84, height: 44, alignment: .leading)
+                    .frame(width: 64, height: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .designFrame(176, 481, 84, 44)
+            .designFrame(176, 481, 64, 44)
 
-            Button { vm.showAllEpisodes = true } label: {
-                Text("查看全部 ›")
-                    .font(DWFont.cn(12, .medium))
+            // 原「查看全部」sheet 里的刷新能力：sheet 移除后由选集行这个 ↻ 承接
+            Button { vm.refresh() } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(DWColor.gold)
+                    .frame(width: 28, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .designFrame(244, 481, 28, 44)
+            .accessibilityLabel("刷新剧集列表")
+
+            // 「查看全部 ›」= 内联展开（设计稿 all-open），不再是 sheet。
+            // ≤12 集没有额外集可展开：保留版面、置灰禁用，文案如实说明。
+            Button {
+                withAnimation(motion) { vm.showAllEpisodesInline.toggle() }
+            } label: {
+                Text(vm.hasExtraEpisodes
+                     ? (vm.showAllEpisodesInline ? "收起 ›" : "查看全部 ›")
+                     : "已显示全部")
+                    .font(DWFont.cn(12, .medium))
+                    .foregroundStyle(vm.hasExtraEpisodes ? DWColor.gold : DWColor.textHint)
                     .frame(width: 90, height: 44, alignment: .trailing)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(!vm.hasExtraEpisodes)
             .designFrame(280, 481, 90, 44)
 
             episodeGrid(info)
 
+            let hintY: CGFloat = vm.showAllEpisodesInline && vm.extraEpisodeRows > 0
+                ? 702 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep
+                : 650
             Text(vm.hintText)
                 .font(DWFont.cn(12))
                 .foregroundStyle(DWColor.textHint)
                 .lineLimit(1)
-                .designFrame(20, 650, 350, 18, alignment: .leading)
+                .designFrame(20, hintY, 350, 18, alignment: .leading)
         }
-        .frame(width: 390, height: 840)
+        .frame(width: 390, height: vm.showAllEpisodesInline
+               ? max(840, 720 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep + 40)
+               : 840)
         // 整体上移收紧「简介 → 选集」空白 + 展开态的 54pt 位移，两者叠加
         .offset(y: descShift - DetailLayout.sectionLift)
         .animation(motion, value: vm.isDescriptionExpanded)
     }
 
-    /// 集数展示区：≤12 集保持设计稿固定 6×2 绝对定位；>12 集把同一批格子装进
-    /// 选集区内固定高（112pt）的纵向 ScrollView，标题 / hint / 推荐区全部不动。
-    /// 两条分支共用 episodeCellButton，点击语义恒为 `vm.tapEpisodeDirect`（直点）。
+    /// 选集区：前 12 集固定 6×2（直点）；「查看全部」内联展开 13 集以后的集
+    /// （6 列 × 56pt 步进，设计稿 all-open 语义），底部接一条批量工具条，
+    /// 推荐区 / 档案区由 pageLayout 按 extraEpisodeRows 一起下推。
+    /// 展开集用 `vm.tapEpisode`（多选勾选 / 已下载直接播），主屏 12 格用 `tapEpisodeDirect`。
     @ViewBuilder
     private func episodeGrid(_ info: DramaInfo) -> some View {
-        if info.episodes.count <= 12 {
-            ForEach(Array(info.episodes.enumerated()), id: \.element.id) { index, ep in
-                let col = CGFloat(index % 6)
-                let row = CGFloat(index / 6)
-                episodeCellButton(ep)
+        ForEach(Array(info.episodes.prefix(12).enumerated()), id: \.element.id) { index, ep in
+            let col = CGFloat(index % 6)
+            let row = CGFloat(index / 6)
+            episodeCellButton(ep, multiSelect: false)
+                .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
+        }
+
+        if vm.showAllEpisodesInline && vm.hasExtraEpisodes {
+            ForEach(Array(info.episodes.dropFirst(12).enumerated()), id: \.element.id) { index, ep in
+                let slot = index + 12
+                let col = CGFloat(slot % 6)
+                let row = CGFloat(slot / 6)
+                episodeCellButton(ep, multiSelect: true)
                     .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
             }
-        } else {
-            ScrollView(.vertical) {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 6),
-                          spacing: 8) {
-                    ForEach(info.episodes) { ep in episodeCellButton(ep) }
-                }
-            }
-            .scrollIndicators(.visible)
-            .designFrame(20, 530, 350, 112)
+            inlineBatchToolbar
+                .designFrame(20, 650 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep,
+                             350, DetailLayout.inlineToolbarHeight)
         }
     }
 
-    /// 单个集格子的视觉与点击：底色 = 可播性、边缘环 = 下载进度、选中红底优先。
-    /// 下载中额外显示设计稿的 n/100 分数（配色随绿色环，保持一套语义）。
-    private func episodeCellButton(_ ep: ApiDramaEpisode) -> some View {
-        let isSelected = vm.selectedSort == ep.sort
+    /// 内联展开区的批量工具条：原 sheet 的「全选 / 清空 / 下载所选」搬到这里，
+    /// 刷新已移到选集行 ↻，所以 sheet 可以整块删掉，功能不丢。
+    private var inlineBatchToolbar: some View {
+        HStack(spacing: 8) {
+            Button { vm.selectAll() } label: {
+                Text("全选")
+                    .font(DWFont.cn(11, .medium))
+                    .frame(width: 52, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(DWColor.gold)
+            .background(DWColor.surface, in: RoundedRectangle(cornerRadius: 8))
+            .disabled(vm.selectableEpisodes.isEmpty)
+
+            Button { vm.clearSelection() } label: {
+                Text("清空")
+                    .font(DWFont.cn(11, .medium))
+                    .frame(width: 52, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(DWColor.gold)
+            .background(DWColor.surface, in: RoundedRectangle(cornerRadius: 8))
+            .disabled(vm.selected.isEmpty)
+
+            Button { vm.startDownload() } label: {
+                Text("下载所选 (\(vm.selected.count))")
+                    .font(DWFont.cn(11, .semibold))
+                    .frame(height: 36)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .background(DWColor.primary, in: RoundedRectangle(cornerRadius: 8))
+            .disabled(vm.selected.isEmpty)
+
+            Spacer(minLength: 0)
+        }
+        .frame(width: 350, height: DetailLayout.inlineToolbarHeight, alignment: .leading)
+    }
+
+    /// 单个集格子：底色 = 可播性、边缘环 = 下载进度、选中红底优先。
+    /// 右下角小角标按设计稿 `.dl-play` / `.dl-todo`：已下载金色播放三角、未下载灰色下载箭头；
+    /// 下载中让位给金色环 + n/100，当前选中集不叠加角标与环（同 `[aria-checked=true]` 规则）。
+    private func episodeCellButton(_ ep: ApiDramaEpisode, multiSelect: Bool) -> some View {
+        let isSelected = multiSelect ? vm.selected.contains(ep.id) : (vm.selectedSort == ep.sort)
         let isDownloaded = vm.downloadedSorts.contains(ep.sort)
         let phase = vm.downloadPhase(for: ep.sort)
-        return Button { vm.tapEpisodeDirect(ep) } label: {
-            VStack(spacing: 0) {
-                HStack(spacing: 2) {
+        return Button {
+            if multiSelect { vm.tapEpisode(ep) } else { vm.tapEpisodeDirect(ep) }
+        } label: {
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
                     Text("\(ep.sort)")
-                    if case .done = phase {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.green)
+                    if case .active(let progress) = phase {
+                        Text("\(Int(progress * 100))/100")
+                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(DWColor.gold)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
-                if case .active(let progress) = phase {
-                    Text("\(Int(progress * 100))/100")
-                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(Color.green)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                .font(DWFont.en(13, .medium))
+                .frame(width: 50, height: 44, alignment: .center)
+
+                if !isSelected {
+                    episodeStatusBadge(phase: phase)
+                        .designFrame(27, 23, 18, 18)
                 }
             }
-            .font(DWFont.en(13, .medium))
+            .frame(width: 50, height: 44)
             .foregroundStyle(cellForeground(isSelected: isSelected,
                                             isDownloaded: isDownloaded,
                                             playable: ep.playable))
-            .frame(width: 50, height: 44)
             .background(cellBackground(isSelected: isSelected,
                                        isDownloaded: isDownloaded,
                                        playable: ep.playable))
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay { progressRing(phase) }
+            .overlay {
+                if !isSelected { progressRing(phase) }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -541,8 +628,36 @@ struct DramaDetailView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// 剧集按钮边缘进度环：绿色从 0 逐渐闭环到 100%（用户指定），完成后保持闭环 +
-    /// 内部打勾；排队是淡绿轨道、失败红环、未下载无边。
+    /// 设计稿右下角 18×18 状态角标（left 27 / top 23 相对 50×44 格子）。
+    /// ready = 金色实心三角，todo = 灰色向下箭头 + 底线；downloading / queued / failed 不叠加。
+    @ViewBuilder
+    private func episodeStatusBadge(phase: EpisodeDownloadPhase) -> some View {
+        switch phase {
+        case .idle:
+            VStack(spacing: 1) {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 8, weight: .medium))
+                Rectangle()
+                    .frame(width: 10, height: 1)
+            }
+            .foregroundStyle(DWColor.textHint)
+        case .done:
+            Path { p in
+                p.move(to: CGPoint(x: 3, y: 2))
+                p.addLine(to: CGPoint(x: 10, y: 6))
+                p.addLine(to: CGPoint(x: 3, y: 10))
+                p.closeSubpath()
+            }
+            .fill(DWColor.gold)
+            .frame(width: 12, height: 12)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// 剧集按钮边缘进度环：设计稿 `.ring-fg` 色 `#F5C451` 金色（2026-11-12 由绿色改回金色）。
+    /// 排队淡金轨道 → 下载中金色逐渐闭环 → 完成金色闭环；失败仍是红环。
+    /// 与右下角状态角标、n/100 分数同用一套金色，不再有绿色元素。
     /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪）。
     @ViewBuilder
     private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
@@ -551,16 +666,16 @@ struct DramaDetailView: View {
             EmptyView()
         case .queued:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.green.opacity(0.30), lineWidth: 2)
+                .stroke(DWColor.gold.opacity(0.30), lineWidth: 2)
                 .padding(1)
         case .active(let progress):
             RoundedRectangle(cornerRadius: 10)
                 .trim(from: 0, to: progress)
-                .stroke(Color.green, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(DWColor.gold, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .padding(1)
         case .done:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.green, lineWidth: 2)
+                .stroke(DWColor.gold, lineWidth: 2)
                 .padding(1)
         case .failed:
             RoundedRectangle(cornerRadius: 10)
@@ -761,95 +876,15 @@ struct DramaDetailView: View {
         }
     }
 
-    // MARK: - 查看全部：保留全量选集 + 多选下载 + 刷新
+    // MARK: - 共用配色
 
-    /// 主屏只放 12 格；全量选集 + 多选下载（全选/清空/下载所选/刷新）收进这个面板。
-    /// 面板内仍是多选语义（tapEpisode），与主屏格子直点互不影响。
-    private var allEpisodesSheet: some View {
-        NavigationStack {
-            ScrollView {
-                if let info = vm.info {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
-                        ForEach(info.episodes) { ep in episodeCell(ep) }
-                    }
-                    .padding()
-                }
-            }
-            .background(DWColor.background.ignoresSafeArea())
-            .navigationTitle("选集 · \(vm.episodeCountText)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("完成") { vm.showAllEpisodes = false }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { vm.refresh() } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 12) {
-                    Button("全选") { vm.selectAll() }
-                        .buttonStyle(.bordered)
-                        .disabled(vm.selectableEpisodes.isEmpty)
-                    Button("清空") { vm.clearSelection() }
-                        .buttonStyle(.bordered)
-                        .disabled(vm.selected.isEmpty)
-                    Button { vm.startDownload() } label: {
-                        Label("下载所选 (\(vm.selected.count))", systemImage: "arrow.down.circle.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DWColor.primary)
-                    .disabled(vm.selected.isEmpty)
-                }
-                .padding()
-                .background(.bar)
-            }
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    /// 全量面板的集格子：与主屏同一套下载阶段（边缘进度环 / 完成打勾）
-    private func episodeCell(_ ep: ApiDramaEpisode) -> some View {
-        let isSelected = vm.selected.contains(ep.id)
-        let isDownloaded = vm.downloadedSorts.contains(ep.sort)
-        let isQueued = vm.queuedSorts.contains(ep.sort)
-        let phase = vm.downloadPhase(for: ep.sort)
-        return Button { vm.tapEpisode(ep) } label: {
-            Group {
-                if case .done = phase {
-                    Label("第\(ep.sort)集", systemImage: "checkmark")
-                        .labelStyle(.titleAndIcon)
-                } else if isQueued {
-                    Label("第\(ep.sort)集", systemImage: "arrow.down.circle")
-                        .labelStyle(.titleAndIcon)
-                } else {
-                    Text("第\(ep.sort)集")
-                }
-            }
-            .font(.system(.caption, design: .monospaced).weight(.semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .background(isQueued
-                ? Color(uiColor: .systemGray6)
-                : cellBackground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-            .foregroundStyle(isQueued
-                ? Color(uiColor: .tertiaryLabel)
-                : cellForeground(isSelected: isSelected, isDownloaded: isDownloaded, playable: ep.playable))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay { progressRing(phase) }
-        }
-        .buttonStyle(.plain)
-        .disabled(!ep.playable || isQueued)
-    }
-
-    /// 主屏 12 格与「查看全部」面板共用：底色表达「能不能播」，选中态红底优先。
+    /// 主屏 12 格与内联展开集共用：底色表达「能不能播」，选中态红底优先。
+    /// 原「查看全部」sheet 已按设计稿改为内联展开，全选/清空/下载所选在
+    /// `inlineBatchToolbar`，刷新在选集行 ↻，两条能力都保留。
     private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
         if isSelected { return DWColor.primary }
-        if isDownloaded { return Color.green.opacity(0.18) }
+        // 已下载淡金底：与金色进度环/角标同色系，但仍与「待下载」中性深色可区分
+        if isDownloaded { return DWColor.gold.opacity(0.16) }
         return playable ? DWColor.surface : Color(uiColor: .systemGray6)
     }
 

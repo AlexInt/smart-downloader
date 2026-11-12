@@ -41,8 +41,8 @@ final class DramaPageViewModel: ObservableObject {
     @Published private(set) var selectedSort: Int?
     @Published var isDescriptionExpanded = false
     @Published private(set) var isFavorite = false
-    /// 「查看全部 ›」展开的全量选集面板（保留多选下载 / 刷新能力）
-    @Published var showAllEpisodes = false
+    /// 「查看全部 ›」内联展开 13 集以后的额外集（设计稿 all-open 语义，不再是 sheet）
+    @Published var showAllEpisodesInline = false
     @Published private(set) var toastText: String?
     private var toastTask: DispatchWorkItem?
     /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除
@@ -132,6 +132,14 @@ final class DramaPageViewModel: ObservableObject {
     }
 
     var episodeCountText: String { "共 \(info?.episodes.count ?? 0) 集" }
+
+    /// 前 12 集固定主屏，其余每 6 集一行内联展开（设计稿 13–68 集 = 10 行 × 56pt）
+    var extraEpisodeRows: Int {
+        guard let info else { return 0 }
+        return (max(0, info.episodes.count - 12) + 5) / 6
+    }
+
+    var hasExtraEpisodes: Bool { extraEpisodeRows > 0 }
 
     /// 设计稿 hint 位：保留排版，文案改用真实数据（不编「每集约 2 分钟」这类无来源文案）
     var hintText: String {

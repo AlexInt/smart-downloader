@@ -39,9 +39,10 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 详情接口整包落库 | 此前详情响应只有 tags 被收集，其余 39 个顶层字段解码即丢。新增 `DramaCache.saveDetail`：`api_detail` 存响应体整包 + 35 个提升列（计数/规格/权限/催更/服务端观看进度）、`drama_episodes` 加 8 个每集元数据列、新表 `drama_related` 存推荐剧快照；采集改为每次进剧集页一次 | 用真实样本 3703.json 验证：整包一字不差回读、4 集元数据、10 条推荐、v1→v2 升级不丢行为数据 |
 | 数据库迁移收口 | 新增 `Drama/DramaDatabase.swift` 统一 open/建表/补列/旧数据搬迁（`user_version` 整库一个，两个 Service 各管一段会互相跳过建表）；补列逐列查 table_info，搬迁用独立标记门控；共用 bind/text/execWrite/fail/transaction | 同上 |
 | saveInfo 合并式落库 | 原「先 DELETE 全表再逐集 INSERT」使 ON CONFLICT 永不触发，刷新集列表把 `downloaded/folder` 清成 0/NULL。改为读现有 id 后只删接口已不存在的集、既有集 upsert 不动下载标记与每集元数据（v1 老库升级 + 同列表刷新 + 列表变化 + saveDetail 幂等重跑四场景冒烟通过） | 已修，冒烟通过，待真机回归 |
-| 剧集详情页对齐新设计稿 | 设计稿 `drama-detail.html` 的 `.screen` 本来就是 `overflow-y:auto`，原实现是固定 390×840 不可滚。改为可滚动画布（高度 = 840 + 推荐 + 档案）、缩放按屏宽、toast 改屏幕悬浮；**移除底部固定 CTA**，格子恢复直点（已下载→播放 / 下载中→取消 / 未下载→直接下载 / 锁定→提示）；补「下载全部」与下载中 `n/100` 分数。保留海报 376、绿色进度环、查看全部 sheet、≤12 集栅格 | 模拟器构建通过，真实样本验证通过，**待真机回归** |
+| 剧集详情页对齐新设计稿 | 设计稿 `drama-detail.html` 的 `.screen` 本来就是 `overflow-y:auto`，原实现是固定 390×840 不可滚。改为可滚动画布（高度 = 840 + 推荐 + 档案）、缩放按屏宽、toast 改屏幕悬浮；**移除底部固定 CTA**，格子恢复直点（已下载→播放 / 下载中→取消 / 未下载→直接下载 / 锁定→提示）；补「下载全部」与下载中 `n/100` 分数。保留海报 376、≤12 集固定栅格 | 模拟器构建通过，真实样本验证通过，**待真机回归** |
 | 「为你推荐」专区 | `Drama/RecommendedDrama.swift`（纯数据）+ `DramaCache.relatedDramas` 由 5 列扩到 8 列（补 `play_count_text` / `serialize_status_text` / `content_access_type`）；双列瀑布流、封面 228/184/150 三档循环、连载+VIP 角标、标题/标签/播放量；卡片点击由 `DramaNativePage` 的 `navigationDestination` 再推一层剧集页（站点从 `target.site` 推导，不硬编码） | 同上 |
 | 「剧集档案」区 | `Drama/DramaArchive.swift` 把 `api_detail` 整包解码回 `DramaDetailData` 后纯函数派生分组展示行：数据表现 / 内容规格 / 权限与付费 / 角标状态 / 催更 / 服务端观看进度 / 分享与链接 / 每集元数据 / 本地记录；0 与 nil 如实显示，不编造文案 | 真实样本 3703.json：解码 4 集 / 10 推荐，档案 9 组 70 行、VIP 角标正确；**待真机回归** |
+| 设计稿三项补齐（同日追加） | ① 格子右下 18×18 状态角标：已下载金色三角 / 未下载灰色下载箭头，下载中与选中集不叠加（同 `[aria-checked=true]` 规则）；② 进度环由绿改回设计稿金色 `#F5C451`（排队淡金轨道 / 下载中闭环 / 完成闭环 / `n/100` / 已下载淡金底同色系，失败仍红环）；③ 「查看全部 ›」由 sheet 改为**内联展开** 13 集以后（6 列 × 56pt，文案切「收起 ›」，≤12 集置灰禁用），推荐/档案按 `extraEpisodeRows` 一起下推。原 sheet 的全选/清空/下载所选搬进展开区底部工具条，刷新移到选集行 ↻，能力不丢 | 模拟器构建 0 error / 0 warning，**待真机回归** |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -78,7 +79,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 5. **集数绝不造假**：来源优先级 = 调用方 knownSorts → SQLite `DramaCache.allSorts` → 磁盘已下载兜底。没有元数据时只有 1 集就不能滑，toast「已经到底了」。
 6. **推荐算法接入点**：只改 `PlaybackQueueService.resolveNext/resolvePrevious`；`neighbors(of:)` 也走它们，预热自动跟随新序。
 7. **诊断日志**：`PLAYER_DBG` 前缀 + `[CHECK]` 断言行；失败分支必须有 log；排障后保留不清理（全文见 AGENTS）。
-8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已按用户拍板移除**，主屏格子直点；「查看全部」sheet 仍保留多选下载语义，两条路径别合并。勿改回固定高度或加回 CTA。
+8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已移除**；主屏 12 格直点（`tapEpisodeDirect`），「查看全部」是内联展开（`showAllEpisodesInline`），展开的 13+ 集走多选语义（`tapEpisode`）+ 底部工具条，两条点击路径按 `multiSelect` 分流、别合并。展开时 `pageLayout` 的 recoY 必须按 `contentBottomDesignY = 720 + extraEpisodeRows*56` 下推，否则推荐区会压住额外集。勿改回固定高度 / sheet / CTA。
 
 ## 5. 待办清单（按优先级）
 
@@ -113,7 +114,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 - 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
 - tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。
 
-**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架。
+**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效。
 
 ## 8. 维护本文档
 
