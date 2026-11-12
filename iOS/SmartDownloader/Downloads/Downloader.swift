@@ -626,12 +626,14 @@ final class DownloadEngine {
                 if sa.pointee.sa_family == sa_family_t(AF_INET) {
                     var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
                     if inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
-                        all.append(String(cString: buffer))
+                        let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                        all.append(String(decoding: bytes, as: UTF8.self))
                     }
                 } else if sa.pointee.sa_family == sa_family_t(AF_INET6) {
                     var addr = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
                     if inet_ntop(AF_INET6, &addr.sin6_addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil {
-                        all.append(String(cString: buffer))
+                        let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                        all.append(String(decoding: bytes, as: UTF8.self))
                     }
                 }
             }

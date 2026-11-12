@@ -295,7 +295,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
 | 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
 | 9 | ~~第二批目录迁移~~ | ✅ 已完成（2026-11-12）：`Downloads/` / `Browser/` / `Infra/` 归位、`WebViewStore` / `SnifferScript` / `DownloadModels` 拆出、`DramaInfo` 构造逻辑收进 `DramaCache`；见 §2 末节 | 已完成 |
-| 10 | **Swift 6 下剩余 6 条警告** | `App.swift:25,29` Timer 捕获 `last`；`Browser/BrowserView.swift:266` `decidePolicyFor` 签名不匹配（**可能是链接拦截未生效的根因，修它会改变路由行为，需用户确认**）；`BrowserView.swift:332` 未使用变量；`Downloads/Downloader.swift:629,634` `String(cString:)` 弃用。按 skill 一次只清一类 | 中 |
+| 10 | ~~Swift 6 下剩余 6 条警告~~ | ✅ 已完成（2026-11-12）：`decidePolicyFor` 补 `@MainActor @Sendable` 让协议要求真正满足；Timer 状态改 `Mutex`；未使用变量与两处 `String(cString:)` 弃用清理。Swift 6 全量 **0 error / 0 warning**，见下节 | 已完成 |
 
 ### toast 自动消失修复（2026-11-12 11:2x，用户反馈「到底了」提示不消失）
 
@@ -337,6 +337,21 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 **验证**（全部 EXIT=0）：Swift 6 + targeted 全量 `swiftc -typecheck` **0 error / 6 warning**；Swift 5 回归 0 error；冒烟 `coretest` 按 `iOS/README.md` 命令真实编译通过（确认 `Mutex` 在默认 Swift 5 模式下也可用，冒烟链路未断）。`xcodebuild` 仍被本机沙箱拦（宏插件），走等价 swiftc 验证。
 
 **剩余 6 条警告**（见 §5 #10），其中一条值得单独盯：`Browser/BrowserView.swift:266` 的 `webView(_:decidePolicyFor:decisionHandler:)` 同样缺 `@MainActor @Sendable`，编译器明确报「nearly matches optional requirement」——这意味着**该 delegate 方法可能根本没被 WebKit 识别为协议实现，链接拦截没生效**，正好解释此前「点卡片有时原生有时 web」只能靠 URL KVO 兜底。修它会让拦截真正生效（行为变化），故本轮只报告未改，等用户确认。
+
+### 清完 Swift 6 警告 + 修路由签名（2026-11-12，用户「按建议来修」）
+
+按 skill Migration Validation Loop 先修功能性、再清警告，每步全量验证：
+
+| 改动 | 内容 | 性质 |
+|---|---|---|
+| `Browser/BrowserView.swift:266-267` | `decisionHandler` 补 `@escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void`，让 `webView(_:decidePolicyFor:decisionHandler:)` 真正满足 `WKNavigationDelegate` 的 optional requirement | **行为变化**：此前编译器报「nearly matches」，链接拦截可能一直没生效；现在 `.linkActivated` 会正常回调并 `.cancel`，卡片点击应更多走原生剧集页。需真机验证「有时原生有时 web」是否消失 |
+| `App.swift` 卡顿探针 | `var last` → `Mutex(TimeInterval)` + `withLock`（Timer 回调是 `@Sendable`，局部可变状态必须显式同步） | 行为不变 |
+| `Browser/BrowserView.swift:332` | 未使用变量 `d` 改为 `result.data(using:)` + `JSONSerialization.jsonObject(...) != nil` 布尔校验 | 行为不变（仍要求返回值是合法 JSON） |
+| `Downloads/Downloader.swift:629,634` | `String(cString: buffer)` → `buffer.prefix(while: { $0 != 0 }).map(UInt8.init(bitPattern:))` + `String(decoding: as: UTF8.self)`，按编译器建议截断 NUL | 行为不变（同样取 NUL 之前的 ASCII IP） |
+
+**验证**：Swift 6 + targeted 全量 `swiftc -typecheck` **0 error / 0 warning**；Swift 5 回归 0 error（仍有 2 条 `Downloader.swift:458` 的 Sendable 捕获警告，属旧语言模式特有——Swift 6 用 region isolation 判定安全，工程已切 6.0 不受影响）；冒烟 `coretest` 真实编译 EXIT=0。
+
+**真机回归重点**：`decidePolicyFor` 生效后，浏览页点剧集卡片应稳定进入原生页；同时确认「查看全部」下载、播放入口、剧集页返回手势没被路由变化影响。
 
 ## 6. 验证与调试
 

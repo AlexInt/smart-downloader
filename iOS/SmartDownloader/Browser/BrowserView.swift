@@ -264,7 +264,7 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             if navigationAction.targetFrame?.isMainFrame == true {
                 lastMainURL = navigationAction.request.url
                 // 用户点击剧集链接：路由到原生剧集页，网页本体不加载该页
@@ -329,7 +329,8 @@ struct WebViewContainer: UIViewRepresentable {
                 """
                 guard let self,
                       let result = try? await webView.evaluateJavaScript(js) as? String,
-                      let d = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else { return }
+                      let data = result.data(using: .utf8),
+                      (try? JSONSerialization.jsonObject(with: data)) != nil else { return }
                 self.parent.store.pageMetaJSON = result
                 // 调查收敛（2026-11-11）：DRAMAMETA-DOM 逐 key 的 NSLog 双份输出删除——
                 // 动态串被统一日志 <private> 脱敏看不到内容，纯噪音；字段内容看落盘文件

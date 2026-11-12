@@ -1,4 +1,5 @@
 import SwiftUI
+import Synchronization
 
 @main
 struct SmartDownloaderApp: App {
@@ -19,14 +20,18 @@ struct SmartDownloaderApp: App {
     private static func startStallProbeIfNeeded() {
         guard ProcessInfo.processInfo.arguments.contains("perfLog"), !stallProbeStarted else { return }
         stallProbeStarted = true
-        var last = ProcessInfo.processInfo.systemUptime
+        // Timer 回调是 @Sendable，局部可变状态必须显式同步；用 Mutex 表达所有权
+        let last = Mutex(ProcessInfo.processInfo.systemUptime)
         Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             let now = ProcessInfo.processInfo.systemUptime
-            let gap = now - last
+            let gap = last.withLock { previous -> TimeInterval in
+                let delta = now - previous
+                previous = now
+                return delta
+            }
             if gap > 0.25 {
                 print("PERF_DBG mainStall ms=\(Int(gap * 1000)) t=\(Int(now * 1000))")
             }
-            last = now
         }
     }
 
