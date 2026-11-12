@@ -10,13 +10,11 @@ struct BrowserView: View {
         UserDefaults.standard.string(forKey: lastPageKey) ?? "about:blank"
     }
 
-    /// 快捷站点标签：点击直达；地址栏仍可输入任意 URL
-    static let quickLinks: [(name: String, url: String)] = [
-        ("🍎", "https://www.yeguodj.com/"),
-    ]
+    /// 快捷站点：地址与显示名都在设置页配置（`QuickLinkStore` 存 key/value 多条），
+    /// 站点地址不再写死在代码里；列表超出屏宽可左右滑
 
     @ObservedObject var manager: DownloadManager
-    @Binding var selectedTab: Int
+    @Binding var selectedTab: MainTab
     /// 推入剧集详情时置 true，App 据此隐藏自定义 tab bar（保活容器下详情页沉浸式全屏）
     @Binding var detailActive: Bool
     @StateObject private var store = WebViewStore()
@@ -42,10 +40,10 @@ struct BrowserView: View {
             .padding(.horizontal, 10)
             .padding(.top, 6)
 
-            // 快捷站点标签行
+            // 快捷站点标签行（横向滑动，条目由设置页配置）
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(Self.quickLinks, id: \.name) { link in
+                    ForEach(store.quickLinks) { link in
                         Button {
                             address = link.url
                             store.load(link.url)
@@ -104,13 +102,17 @@ struct BrowserView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             // 切到其它 Tab 时退回首页：回来不再停留在剧集页（下载任务不受影响）
-            if tab != 0 {
+            if tab != .browser {
                 dramaPageTarget = nil
                 lastAutoDramaKey = nil
-            } else if let target = DramaTarget.parse(address) {
+            } else {
+                // 设置页可能改过快捷站点，回浏览页时重读
+                store.refreshQuickLinks()
                 // 保活容器下浏览页常驻，onAppear 只在启动触发一次；
                 // 回到浏览页时补一次剧集页自动推入（保持每次进入浏览页都推入）
-                detectDrama(target, undoSPA: false)
+                if let target = DramaTarget.parse(address) {
+                    detectDrama(target, undoSPA: false)
+                }
             }
         }
         .onChange(of: dramaPageTarget) { _, target in
@@ -125,16 +127,17 @@ struct BrowserView: View {
             }
         }
         .onAppear {
-            // 保活容器下浏览页启动即渲染（可能仍在下载 tab）：只在浏览页活跃时自动推入
-            if selectedTab == 0, let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
+            store.refreshQuickLinks()
+            // 保活容器下浏览页启动即渲染（可能仍在其它 tab）：只在浏览页活跃时自动推入
+            if selectedTab == .browser, let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
         }
     }
 
     /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页
     private func detectDrama(_ target: DramaTarget, undoSPA: Bool) {
-        // 保活容器下浏览页常驻底层：非浏览 tab（如启动时在下载 tab）不自动推入，
-        // 避免详情页盖住下载页；回到浏览 tab 时由 onChange(of: selectedTab) 补推
-        guard selectedTab == 0 else { return }
+        // 保活容器下浏览页常驻底层：非浏览 tab（如启动时在下载/设置 tab）不自动推入，
+        // 避免详情页盖住其它页；回到浏览 tab 时由 onChange(of: selectedTab) 补推
+        guard selectedTab == .browser else { return }
         guard lastAutoDramaKey != target.id else { return }
         lastAutoDramaKey = target.id
         dramaPageTarget = target

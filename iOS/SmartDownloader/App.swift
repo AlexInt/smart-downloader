@@ -3,8 +3,9 @@ import SwiftUI
 @main
 struct SmartDownloaderApp: App {
     @StateObject private var manager = DownloadManager()
-    /// 启动默认落在「下载」tab（tag=1）；浏览页为 tag=0
-    @State private var selectedTab = 1
+    /// 启动落在哪个 tab 由设置页配置（`AppLaunchPreferences`），Service 内部默认「下载」；
+    /// 浏览页必须保持 tag 最小（.browser = 0），它是保活容器的底层
+    @State private var selectedTab: MainTab = AppLaunchPreferences().launchTab
     /// 启动 splash：盖住冷启动（库扫描/本地服务预启），停留 1.2s 后淡出
     @State private var showSplash = true
     /// 浏览页推入剧集详情时隐藏自定义 tab bar（详情页沉浸式全屏）
@@ -61,9 +62,14 @@ struct SmartDownloaderApp: App {
                 ZStack {
                     BrowserView(manager: manager, selectedTab: $selectedTab,
                                 detailActive: $browserDetailActive)
-                        .allowsHitTesting(selectedTab == 0)
-                    if selectedTab == 1 {
+                        .allowsHitTesting(selectedTab == .browser)
+                    if selectedTab == .downloads {
                         DownloadsView(manager: manager)
+                            .background(DWColor.background.ignoresSafeArea())
+                    }
+                    if selectedTab == .settings {
+                        // 设置页改了快捷站点 / 启动 tab，都在下次切回浏览页或冷启动时生效
+                        SettingsView()
                             .background(DWColor.background.ignoresSafeArea())
                     }
                 }
@@ -97,28 +103,30 @@ struct SmartDownloaderApp: App {
     }
 
     /// 自定义底部 tab bar（替代系统 TabView 的 tab bar，配合保活容器）
+    /// 条目与顺序取自 `MainTab.allCases`，新增 tab 只改 MainTab 定义
     private var mainTabBar: some View {
         HStack(spacing: 0) {
-            tabBarItem(title: "浏览", icon: "safari.fill", tag: 0)
-            tabBarItem(title: "下载", icon: "arrow.down.circle", tag: 1)
+            ForEach(MainTab.allCases) { tab in
+                tabBarItem(tab)
+            }
         }
         .padding(.top, 6)
         .padding(.bottom, 2)
         .background(.bar)
     }
 
-    private func tabBarItem(title: String, icon: String, tag: Int) -> some View {
+    private func tabBarItem(_ tab: MainTab) -> some View {
         Button {
-            selectedTab = tag
+            selectedTab = tab
         } label: {
             VStack(spacing: 2) {
-                Image(systemName: icon)
+                Image(systemName: tab.icon)
                     .font(.system(size: 20))
-                Text(title)
+                Text(tab.title)
                     .font(.caption2)
             }
             .frame(maxWidth: .infinity)
-            .foregroundStyle(selectedTab == tag ? Color.accentColor : Color.secondary)
+            .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

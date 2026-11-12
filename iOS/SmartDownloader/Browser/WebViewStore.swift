@@ -13,6 +13,18 @@ final class WebViewStore: ObservableObject {
     @Published var pageTitle: String?
     /// 页面元数据提取结果（JSON 字符串，原生解析后展示/落盘）
     @Published var pageMetaJSON: String?
+    /// 网址栏下方的快捷站点标签（设置页可配置多对 key/value）。
+    /// 不在 init 一次性读死：设置页改了之后要能跟上，故由浏览页在 onAppear / 切回时调 `refreshQuickLinks()`。
+    @Published private(set) var quickLinks: [QuickLink] = []
+    /// 快捷站点读取通道（Service，本 VM 不碰 UserDefaults）
+    private let quickLinkStore = QuickLinkStore()
+
+    /// 读取快捷站点配置（启动 + 每次回到浏览 tab 都重读，与设置页保持一致）
+    func refreshQuickLinks() {
+        let links = quickLinkStore.load()
+        if links != quickLinks { quickLinks = links }
+    }
+
     /// 下载入口连点锁（异步取标题期间置位；架构评估 P9 从 View 收纳）
     @Published private(set) var isSubmitting = false
 
