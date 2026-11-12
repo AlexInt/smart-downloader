@@ -295,6 +295,7 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
 | 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
 | 9 | ~~第二批目录迁移~~ | ✅ 已完成（2026-11-12）：`Downloads/` / `Browser/` / `Infra/` 归位、`WebViewStore` / `SnifferScript` / `DownloadModels` 拆出、`DramaInfo` 构造逻辑收进 `DramaCache`；见 §2 末节 | 已完成 |
+| 10 | **Targeted 档 4 条 Sendable 捕获警告** | `App.swift:25,29`（Timer 闭包捕获可变 `last`）与 `Downloads/Downloader.swift:458`（`MainActor.run` 捕获非 Sendable 的 `mutate` / `task`）；按 skill 一次只清一类，清完再考虑升 Complete | 中 |
 
 ### toast 自动消失修复（2026-11-12 11:2x，用户反馈「到底了」提示不消失）
 
@@ -308,6 +309,21 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 统一改为「取消旧任务 → 生成 UUID 令牌 → 设文案 → `Task.sleep(for: .seconds(3))` → 只要令牌仍匹配就**无条件**清文案」。去掉 `!Task.isCancelled` 的提前 return：即使 sleep 因取消抛错，只要仍是当前提示就必须清掉；旧任务因令牌不匹配不会误清新提示。`PlayerFeedViewModel.stop()` 顺手清 toast。日志保留 `showToast` 与 `showToast dismiss reason=timeout3s` 便于判读。
 
 现在播放页「已经到底了」「第N集尚未下载」、详情页收藏/下载/完成提示全部 **3 秒自动消失**。注意 `endToastShown` 仍是「同一次播放页生命周期内只提示一次」，滑离末页再回来不会重复弹 —— 若希望每次到底都提示，是另一个改动。
+
+### 开启 targeted 严格并发检查（2026-11-12，用 swift-concurrency skill 审查后）
+
+`project.pbxproj` 的 **Debug / Release 两个配置**均加 `SWIFT_STRICT_CONCURRENCY = targeted;`（`SWIFT_VERSION` 仍 5.0，不动语言模式）。按 skill `migration.md` 的三档策略 Minimal → Targeted → Complete 逐级升，不跳级。
+
+用编译器对应开关 `swiftc -typecheck -strict-concurrency=targeted` 实测：**EXIT=0，4 条并发警告**（另有 1 条既有的 `BrowserView.swift:332` 未使用变量）：
+
+| 位置 | 诊断 | 成因 |
+|---|---|---|
+| `App.swift:25, 29` | `reference/mutation of captured var 'last' in concurrently-executing code` | `@MainActor` 方法里的 `Timer.scheduledTimer` 闭包是 `@Sendable`，捕获并改写局部 `var last`。Timer 实际在主线程 RunLoop 回调、运行时安全，但编译器无法证明 |
+| `Downloads/Downloader.swift:458` ×2 | `capture of 'mutate'/'task' with non-Sendable type in a @Sendable closure` | `await MainActor.run { mutate(task) }` 里，`@MainActor (DownloadTask) -> Void` 闭包与 `DownloadTask` 类都不是 Sendable |
+
+**重要**：先前审查中的 #1（三个 `nonisolated(unsafe)` 可变全局状态 `preferWebKit` / `ipDirectHosts` / `dnsCache` 的并发读写）以及 10 处 `MainActor.assumeIsolated`，**Targeted 档一条都不报**——前者被 `nonisolated(unsafe)` 显式豁免，后者是编译期接受的断言。也就是说开档只解决「编译器能证明的问题」，真实数据竞争仍须手动修（见 §5 #10 与前述审查清单）。
+
+Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 6.0` 或升 Complete 才会变成必须清完的编译错误。Xcode 工程级 `xcodebuild` 仍被本机沙箱拦（`PreviewsMacros` 宏插件），本次验证走等价的 `swiftc -typecheck`。
 
 ## 6. 验证与调试
 
