@@ -25,7 +25,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 消 deprecated 警告 | 资产加载改回 `asset.load` 包 @MainActor Task 岛（恢复迁移前写法，秒开不变） | 构建零警告 |
 | 播放页 toast 不收回 | `toastText` 按值快照入卡片，`refreshCardsIfNeeded` 未纳入 toast 变化→dismiss 后不重绘。加 `activeToast` 触发刷新 | 已修，真机确认收回 |
 | 播放器偶现「无法连接服务器」 | `LocalMediaServer.start` 未 ready 时二次调用回 port=0→拼出 `:0`。改登记等待、ready 统一回调；playbackURL 端口 0 显式失败 | 已修 |
-| tab 切换卡顿 | 探针三修（横杠兼容 / Debug 常开 / 心跳 20ms 消除假阳性）定位到 WKWebView 离屏唤醒；App 改 ZStack 保活容器 + 自定义 tab bar（AGENTS 决策 9） | 待真机回归 |
+| tab 切换卡顿 | 探针三修（横杠兼容 / Debug 常开 / 心跳 20ms 消除假阳性）定位到 WKWebView 离屏唤醒；App 改 ZStack 保活容器 + 自定义 tab bar（AGENTS 决策 11） | 待真机回归 |
 | 竖滑误暂停 | seekPan 不限方向、竖滑也 began 搅乱触摸取消→误判 TAP。加 `gestureRecognizerShouldBegin` 拒纵向主导 | 待真机回归 |
 | 点按显示进度条 | togglePlayback 触发 HUD + 3s 淡出（清屏下也可见） | 待真机验证 |
 | 进度条组合动画 | 出现时上升 12pt + 淡入，共用 0.2s easeInOut | 待真机验证 |
@@ -36,6 +36,8 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 播放进度入库 | 新增 `Drama/EpisodeActionsStore.swift`：`episode_actions` 按 (site, drama_id, episode_id) 一集一行存点赞/收藏/上次播放位置，`local_actions` 按资源路径兜底（散装 HLS、普通文件、缓存缺失）；`PRAGMA user_version` v0→v1 建表并把 UserDefaults 里的旧 liked/saved/进度搬进库（muted/清屏仍留 Preference） | 冒烟双场景通过（有 id / 无 id），待真机回归 |
 | 续播与进度显示 | `PlaybackProgressTracker`（1Hz 攒内存，暂停/seek 收尾/切集/退出/进后台落库）接入沉浸式播放页与下载页 AVKit 播放；就绪后续播并闪现 HUD 1.5s；已下载列表行显示「播至 03:12 / 12:30」或「已看完」；删除条目连带清行为数据 | 同上 |
 | 身份链补齐 | `MediaIdentity`（Shared 纯数据）+ `PlayableEpisode.identity` + `ImmersivePlaybackRequest.target`；剧集页入口带 site/drama_id 直达，下载页按剧名反查（同名多剧打 AMBIGUOUS 日志）；`EpisodeActionsStore.identity(...)` 为唯一解析口径 | 同上 |
+| 详情接口整包落库 | 此前详情响应只有 tags 被收集，其余 39 个顶层字段解码即丢。新增 `DramaCache.saveDetail`：`api_detail` 存响应体整包 + 35 个提升列（计数/规格/权限/催更/服务端观看进度）、`drama_episodes` 加 8 个每集元数据列、新表 `drama_related` 存推荐剧快照；采集改为每次进剧集页一次 | 用真实样本 3703.json 验证：整包一字不差回读、4 集元数据、10 条推荐、v1→v2 升级不丢行为数据 |
+| 数据库迁移收口 | 新增 `Drama/DramaDatabase.swift` 统一 open/建表/补列/旧数据搬迁（`user_version` 整库一个，两个 Service 各管一段会互相跳过建表）；补列逐列查 table_info，搬迁用独立标记门控；共用 bind/text/execWrite/fail/transaction | 同上 |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -59,7 +61,8 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | `Components/ToastView.swift` | 全局组件 | 通用 toast，不依赖业务/坐标系 |
 
 其余域（Shared / Drama / Downloads / Browser / Infra / Settings）见 AGENTS「目录」节。
-行为数据表（`episode_actions` / `local_actions`）在 `Drama/EpisodeActionsStore.swift`，与 `drama_cache` 同一个 SQLite 文件，
+行为数据表（`episode_actions` / `local_actions`）在 `Drama/EpisodeActionsStore.swift`，详情整包与推荐剧在 `DramaCache.saveDetail` / `drama_related`，
+建表与迁移统一在 `Drama/DramaDatabase.swift`（schema v2），与 `drama_cache` 同一个 SQLite 文件，
 写入方是播放页与下载页 AVKit 播放，读取方是下载列表与播放页续播 —— 口径统一由 `MediaIdentity` 表达。
 
 ## 4. 关键设计决策（勿轻易推翻）

@@ -66,13 +66,13 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
 
 <header class="hero">
   <h1>SmartDownloader · iOS 数据库设计</h1>
-  <p>一个 SQLite 文件、四张表：剧集元数据 + 集清单 + 集级行为数据（含播放进度）</p>
+  <p>一个 SQLite 文件、五张表：剧集元数据 + 集清单 + 集级行为数据（含播放进度）+ 详情接口整包与推荐剧</p>
   <div class="facts">
     <div class="fact"><b>库文件</b><span>Documents/drama_cache.sqlite3</span></div>
-    <div class="fact"><b>表数量</b><span>4（drama_cache / drama_episodes / episode_actions / local_actions）</span></div>
-    <div class="fact"><b>schema 版本</b><span>PRAGMA user_version = 1</span></div>
+    <div class="fact"><b>表数量</b><span>5（drama_cache / drama_episodes / episode_actions / local_actions / drama_related）</span></div>
+    <div class="fact"><b>schema 版本</b><span>PRAGMA user_version = 2</span></div>
     <div class="fact"><b>驱动</b><span>系统 libsqlite3，无第三方依赖</span></div>
-    <div class="fact"><b>连接策略</b><span>每次调用 open → 用 → close（无常驻连接、无连接池）</span></div>
+    <div class="fact"><b>连接策略</b><span>每次调用 open → 用 → close；详情落库包在一个事务里</span></div>
     <div class="fact"><b>线程</b><span>主线程约定（与 DramaCache 一致）</span></div>
   </div>
 </header>
@@ -85,6 +85,8 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
     <li><a href="#t2">表 2 · drama_episodes（集清单）</a></li>
     <li><a href="#t3">表 3 · episode_actions（集级行为数据）</a></li>
     <li><a href="#t4">表 4 · local_actions（本地资源兜底）</a></li>
+    <li><a href="#t5">表 5 · drama_related（推荐剧）</a></li>
+    <li><a href="#detailcols">详情接口整包与提升列（v2）</a></li>
     <li><a href="#pagemeta">page_meta JSON 内部字段</a></li>
     <li><a href="#identity">键规则与身份解析</a></li>
     <li><a href="#migration">建表与迁移历史</a></li>
@@ -101,7 +103,14 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
     四张表住在同一个文件里。<code>drama_cache</code> 与 <code>drama_episodes</code> 由 <code>DramaCache</code> 维护（站点元数据镜像）；
     <code>episode_actions</code> 与 <code>local_actions</code> 由 <code>EpisodeActionsStore</code> 维护（用户行为数据）。
     两组表<strong>没有外键约束</strong>，关联靠「同一套主键字段 + 代码约定」，删除时的联动由代码显式执行。
+    建表与版本迁移统一在 <code>Drama/DramaDatabase.swift</code>：整库只有一个 <code>user_version</code>，
+    两个 Service 各管一段会互相跳过对方的建表，所以谁开库都走同一个入口。
   </p>
+  <div class="note ok">
+    <b>v2 新增（详情接口整包落库）：</b><code>drama_cache</code> 加 <code>api_detail</code>（原始响应体整包）+ 34 个提升列，
+    <code>drama_episodes</code> 加 8 个每集元数据列，新增 <code>drama_related</code> 存推荐剧快照。
+    此前详情接口只有 <code>tags</code> 被收集，其余 39 个顶层字段解码后即丢弃 —— 现在整包留存，提升列只为查询方便。
+  </div>
 
   <div class="er">
     <div class="erbox">
@@ -254,6 +263,57 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
 );
 -- tags 列为后续追加（旧式做法：列已存在时 ALTER 报错被忽略，不参与 user_version）
 ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
+
+  <h3>2.1 v2 追加列：详情接口整包 + 提升列</h3>
+  <p class="lead">
+    由 <code>DramaCache.saveDetail(site:dramaID:rawJSON:detail:)</code> 写入，一个事务里完成。
+    <strong>不动</strong> <code>name / update_status / fetched_at / page_meta / tags</code>（分别由下载接口与 DOM 收割维护）；
+    详情接口的标题另存 <code>api_title</code>，两个来源互不覆盖。
+  </p>
+  <table>
+    <tr><th>字段</th><th>类型</th><th>来源 JSON 键</th><th>含义</th></tr>
+    <tr><td class="name">api_detail</td><td class="type">TEXT</td><td>（整个响应体）</td><td><b>整包原文</b>。明文详情直接用响应体；加密信封用解密后的 JSON；Nuxt payload 用结构化回写。任何字段都不会因为「没提升」而丢失，站点以后加字段也无需迁移</td></tr>
+    <tr><td class="name">detail_fetched_at</td><td class="type">TEXT</td><td>—</td><td>这份详情是什么时候抓的（ISO8601）</td></tr>
+    <tr><td class="name">api_title</td><td class="type">TEXT</td><td>title</td><td>详情接口标题（与下载接口的 name 分开存）</td></tr>
+    <tr><td class="name">score</td><td class="type">REAL</td><td>score</td><td>评分</td></tr>
+    <tr><td class="name">social_cover</td><td class="type">TEXT</td><td>social_cover</td><td>分享用封面</td></tr>
+    <tr><td class="name">actor_list</td><td class="type">TEXT</td><td>actor_list</td><td>演员列表（JSON 数组原文，样本里为空数组）</td></tr>
+    <tr><td class="name">original</td><td class="type">INTEGER</td><td>original</td><td>是否原创</td></tr>
+    <tr><td class="name">serialize_status</td><td class="type">INTEGER</td><td>serialize_status</td><td>连载状态码</td></tr>
+    <tr><td class="name">serialize_status_text</td><td class="type">TEXT</td><td>serialize_status_text</td><td>连载状态文案（如「连载中」）</td></tr>
+    <tr><td class="name">episode_count</td><td class="type">INTEGER</td><td>episode_count</td><td>接口给的总集数</td></tr>
+    <tr><td class="name">play_count</td><td class="type">INTEGER</td><td>play_count</td><td>播放量（样本 161321）</td></tr>
+    <tr><td class="name">play_count_text</td><td class="type">TEXT</td><td>play_count_text</td><td>播放量文案（「16W」）</td></tr>
+    <tr><td class="name">like_count</td><td class="type">INTEGER</td><td>like_count</td><td>点赞数</td></tr>
+    <tr><td class="name">chase_count</td><td class="type">INTEGER</td><td>chase_count</td><td>追剧数</td></tr>
+    <tr><td class="name">comment_count</td><td class="type">INTEGER</td><td>comment_count</td><td>评论数</td></tr>
+    <tr><td class="name">collect_count</td><td class="type">INTEGER</td><td>collect_count</td><td>收藏数</td></tr>
+    <tr><td class="name">current_episode_id</td><td class="type">INTEGER</td><td>current_episode_id</td><td><b>服务端记的「当前集」</b>（样本 188394）</td></tr>
+    <tr><td class="name">continue_episode_id</td><td class="type">INTEGER</td><td>continue_episode_id</td><td><b>服务端记的「续播集」</b>。目前只存不用，续播仍走本地 episode_actions</td></tr>
+    <tr><td class="name">play_duration</td><td class="type">INTEGER</td><td>play_duration</td><td><b>服务端记的观看时长</b>。同上，只存不用</td></tr>
+    <tr><td class="name">resolution</td><td class="type">TEXT</td><td>resolution</td><td>分辨率（「1080x1920」）</td></tr>
+    <tr><td class="name">video_width</td><td class="type">INTEGER</td><td>video_width</td><td>宽</td></tr>
+    <tr><td class="name">video_height</td><td class="type">INTEGER</td><td>video_height</td><td>高</td></tr>
+    <tr><td class="name">video_orientation</td><td class="type">TEXT</td><td>video_orientation</td><td>画面方向（portrait / landscape）</td></tr>
+    <tr><td class="name">is_collected</td><td class="type">INTEGER</td><td>is_collected</td><td><b>服务端</b>收藏状态（与本地 episode_actions.saved 是两个维度）</td></tr>
+    <tr><td class="name">is_chased</td><td class="type">INTEGER</td><td>is_chased</td><td><b>服务端</b>追剧状态</td></tr>
+    <tr><td class="name">content_access_type</td><td class="type">TEXT</td><td>content_access_type</td><td>内容权限类型（free / vip …）</td></tr>
+    <tr><td class="name">coin_price</td><td class="type">INTEGER</td><td>coin_price</td><td>解锁所需金币</td></tr>
+    <tr><td class="name">share_url</td><td class="type">TEXT</td><td>share_url</td><td>分享链接</td></tr>
+    <tr><td class="name">share_title</td><td class="type">TEXT</td><td>share_title</td><td>分享标题</td></tr>
+    <tr><td class="name">share_cover</td><td class="type">TEXT</td><td>share_cover</td><td>分享封面</td></tr>
+    <tr><td class="name">show_hot_badge</td><td class="type">INTEGER</td><td>show_hot_badge</td><td>是否显示热门角标</td></tr>
+    <tr><td class="name">show_new</td><td class="type">INTEGER</td><td>show_new</td><td>是否显示新剧角标</td></tr>
+    <tr><td class="name">show_completed</td><td class="type">INTEGER</td><td>show_completed</td><td>是否显示完结角标</td></tr>
+    <tr><td class="name">show_hot</td><td class="type">INTEGER</td><td>show_hot</td><td>是否热门</td></tr>
+    <tr><td class="name">access_json</td><td class="type">TEXT</td><td>access</td><td>权限/付费判定整块 JSON：content_type、state、can_play、can_unlock、reason、next_action、trial_episode_count、coin_price、is_purchased、valid_until</td></tr>
+    <tr><td class="name">urge_json</td><td class="type">TEXT</td><td>urge</td><td>催更整块 JSON：video_id、urge_date、urged_today、urge_enabled、can_urge、urge_count</td></tr>
+  </table>
+  <div class="note">
+    <b>封面/简介的优先级：</b>详情接口的 <code>cover</code> / <code>description</code> 比 DOM 的 og:image / meta description 干净
+    （简介是完整剧情），所以收割器在拿到详情后以接口值为准写 <code>cover</code> / <code>intro</code>，
+    DOM 原值仍留在 <code>page_meta</code> 里备查；没拿到详情时才用 DOM 兜底。
+  </div>
 </section>
 
 <section id="t2">
@@ -314,6 +374,23 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
     folder TEXT, updated_at TEXT,
     PRIMARY KEY (site, drama_id, episode_id)
 );</code></pre>
+
+  <h3>3.1 v2 追加列：每集元数据（来自详情接口 episodes[]）</h3>
+  <p class="lead">
+    同样由 <code>saveDetail</code> 写入（upsert，行不存在时补建）。
+    <strong>不动 downloaded / folder / playable</strong>：下载状态与目录仍由下载接口和磁盘对账维护。
+  </p>
+  <table>
+    <tr><th>字段</th><th>类型</th><th>来源 JSON 键</th><th>含义</th></tr>
+    <tr><td class="name">title</td><td class="type">TEXT</td><td>episodes[].title</td><td>每集标题（样本里三种写法混用：「女人上位 男人下跪 1」「… 第2集」「…第4集」）</td></tr>
+    <tr><td class="name">duration</td><td class="type">INTEGER</td><td>episodes[].duration</td><td>站点给的时长（秒）。<b>样本里全为 0</b>，即站点未提供，播放时长仍靠 AVPlayer 实测</td></tr>
+    <tr><td class="name">resolution</td><td class="type">TEXT</td><td>episodes[].resolution</td><td>该集分辨率</td></tr>
+    <tr><td class="name">is_new</td><td class="type">INTEGER</td><td>episodes[].is_new</td><td>是否新集</td></tr>
+    <tr><td class="name">access_state</td><td class="type">TEXT</td><td>episodes[].access.state</td><td>权限状态（free / vip …）</td></tr>
+    <tr><td class="name">can_play</td><td class="type">INTEGER</td><td>episodes[].access.can_play</td><td>详情接口的可播判定。<b>与 playable 并存</b>：playable 来自下载接口，两者来源不同不互相覆盖</td></tr>
+    <tr><td class="name">content_type</td><td class="type">TEXT</td><td>episodes[].access.content_type</td><td>内容类型（free / paid …）</td></tr>
+    <tr><td class="name">is_trial</td><td class="type">INTEGER</td><td>episodes[].access.is_trial</td><td>是否试看集</td></tr>
+  </table>
   <div class="note warn">
     <b>实现与注释不一致（读代码时别被注释误导）：</b>
     <code>saveInfo</code> 的注释写「既有集的 downloaded/folder 保留不动」，但实现是
@@ -469,6 +546,63 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
   </div>
 </section>
 
+<section id="t5">
+  <h2><span class="no">05b</span>表 5 · <span class="mono">drama_related</span>（推荐剧快照）</h2>
+  <p class="lead">
+    详情接口 <code>related_list</code> 的整份快照，一部剧 N 行（样本 10 行）。
+    每次 <code>saveDetail</code> 先删该剧旧快照再整份写入，<code>position</code> 保留接口给的顺序。
+    这是本地推荐算法（<code>PlaybackQueueService.resolveNext/resolvePrevious</code>）可直接用的数据源。
+  </p>
+  <table>
+    <tr><th>字段</th><th>类型</th><th>约束</th><th>来源 JSON 键</th><th>含义</th></tr>
+    <tr><td class="name">site</td><td class="type">TEXT</td><td><span class="badge b-pk">PK 1</span> <span class="badge b-notnull">NOT NULL</span></td><td>—</td><td>主剧的站点</td></tr>
+    <tr><td class="name">drama_id</td><td class="type">TEXT</td><td><span class="badge b-pk">PK 2</span> <span class="badge b-notnull">NOT NULL</span></td><td>—</td><td>主剧 id</td></tr>
+    <tr><td class="name">related_video_id</td><td class="type">INTEGER</td><td><span class="badge b-pk">PK 3</span> <span class="badge b-notnull">NOT NULL</span></td><td>related_list[].video_id</td><td>被推荐剧的 id</td></tr>
+    <tr><td class="name">title</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>title</td><td>剧名</td></tr>
+    <tr><td class="name">cover</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>cover</td><td>封面 URL</td></tr>
+    <tr><td class="name">tags</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>tags</td><td>标签，<b>空格分隔</b>（与 drama_cache.tags 同口径）</td></tr>
+    <tr><td class="name">play_count</td><td class="type">INTEGER</td><td><span class="badge b-null">可空</span></td><td>play_count</td><td>播放量</td></tr>
+    <tr><td class="name">play_count_text</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>play_count_text</td><td>播放量文案（「130W」）</td></tr>
+    <tr><td class="name">serialize_status_text</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>serialize_status_text</td><td>连载状态文案</td></tr>
+    <tr><td class="name">content_access_type</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>content_access_type</td><td>权限类型</td></tr>
+    <tr><td class="name">position</td><td class="type">INTEGER</td><td><span class="badge b-null">可空</span></td><td>（数组下标）</td><td>接口给的推荐次序，读回时 ORDER BY position</td></tr>
+    <tr><td class="name">updated_at</td><td class="type">TEXT</td><td><span class="badge b-null">可空</span></td><td>—</td><td>快照写入时间</td></tr>
+  </table>
+  <pre><code>CREATE TABLE IF NOT EXISTS drama_related (
+    site TEXT NOT NULL,
+    drama_id TEXT NOT NULL,
+    related_video_id INTEGER NOT NULL,
+    title TEXT, cover TEXT, tags TEXT,
+    play_count INTEGER, play_count_text TEXT,
+    serialize_status_text TEXT, content_access_type TEXT,
+    position INTEGER, updated_at TEXT,
+    PRIMARY KEY (site, drama_id, related_video_id)
+);</code></pre>
+  <p>读回接口：<code>DramaCache.relatedDramas(site:dramaID:)</code> → 按 position 排序的 (videoID, title, cover, tags, playCount)。</p>
+</section>
+
+<section id="detailcols">
+  <h2><span class="no">05c</span>详情接口整包落库：采集时机与三种响应形态</h2>
+  <p class="lead">
+    采集方 <code>Drama/DramaMetaHarvester.swift</code>：隐藏 webview 加载剧集页，注入响应捕获脚本，
+    命中详情响应即调 <code>DramaCache.saveDetail</code>。
+  </p>
+  <table>
+    <tr><th>项</th><th>现状</th></tr>
+    <tr><td>采集时机</td><td><b>每次进剧集页都抓一次</b>（此前只在缺封面/简介时抓）。VM init 清掉进程内去重标记，同一次访问内由 <code>hasHarvestedThisVisit</code> 挡住重复触发</td></tr>
+    <tr><td>响应形态 1 · plain</td><td>明文详情 JSON → 直接解码，<code>api_detail</code> 存响应体原文</td></tr>
+    <tr><td>响应形态 2 · envelope</td><td>api.php 加密信封（errcode=0 + data base64）→ <code>DramaSession.decryptCapturedBody</code> 解密后解码，<code>api_detail</code> 存<b>解密后的 JSON</b></td></tr>
+    <tr><td>响应形态 3 · payload</td><td>Nuxt <code>_payload.json</code>（槽位数组）→ <code>DramaDetailData.fromNuxtPayload</code> 解引用后解码，<code>api_detail</code> 存<b>结构化回写</b>（字段以模型为准）</td></tr>
+    <tr><td>校验</td><td>解码出的 <code>video_id</code> 必须等于目标剧 id，否则丢弃并打 <code>videoIdMismatch</code> 日志</td></tr>
+    <tr><td>事务</td><td>剧级 upsert + N 集 upsert + 推荐快照替换包在<b>一个事务</b>里（<code>DramaDatabase.transaction</code>）</td></tr>
+    <tr><td>调查落盘</td><td>捕获数组仍写 <code>Documents/DramaMeta/api_&lt;site&gt;_&lt;dramaID&gt;.json</code>，DOM 结果写 harvest_*.json，页面 HTML 写 html_*.html</td></tr>
+  </table>
+  <div class="note">
+    <b>为什么整包 + 提升列两条腿：</b>整包保证「站点加字段不用改代码也不丢数据」，
+    提升列保证「能按播放量排序、能 JOIN、能直接展示」。只存整包就无法按字段查询，只拆列则站点一变就要迁移。
+  </div>
+</section>
+
 <section id="pagemeta">
   <h2><span class="no">06</span><span class="mono">drama_cache.page_meta</span> 的 JSON 内部字段</h2>
   <p class="lead">
@@ -561,21 +695,23 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
 
 <section id="migration">
   <h2><span class="no">08</span>建表与迁移历史</h2>
-  <h3>8.1 两套建表入口（同一个文件）</h3>
+  <h3>8.1 统一迁移入口（v2 起）</h3>
+  <p class="lead">
+    <code>user_version</code> 是<b>整库一个</b>计数器。此前 DramaCache 与 EpisodeActionsStore 各自建表，
+    谁先开库谁先抬版本号，就会跳过对方的建表/搬迁 —— 所以 v2 起把建表与迁移集中到
+    <code>Drama/DramaDatabase.swift</code>，两个 Service 的 <code>openDB()</code> 都只调 <code>DramaDatabase.open()</code>。
+  </p>
   <table>
-    <tr><th>入口</th><th>触发</th><th>做什么</th><th>版本管理</th></tr>
-    <tr>
-      <td><code>DramaCache.openDB()</code></td>
-      <td>每进程首次打开</td>
-      <td><code>CREATE TABLE IF NOT EXISTS</code> 建 drama_cache / drama_episodes；再试一次 <code>ALTER TABLE drama_cache ADD COLUMN tags</code></td>
-      <td>无版本号；tags 靠「列已存在则 ALTER 报错被忽略」<b>（旧式做法，新表不要沿用）</b></td>
-    </tr>
-    <tr>
-      <td><code>EpisodeActionsStore.openDB()</code></td>
-      <td>每进程首次打开</td>
-      <td>读 <code>PRAGMA user_version</code>；&lt; 1 则建 episode_actions / local_actions + 搬旧 UserDefaults 记录 + 写 <code>user_version = 1</code></td>
-      <td><code>PRAGMA user_version</code>，当前 <b>1</b></td>
-    </tr>
+    <tr><th>步骤</th><th>做什么</th><th>幂等策略</th></tr>
+    <tr><td>1 建表</td><td><code>CREATE TABLE IF NOT EXISTS</code> 五张表 + tags 列 ALTER</td><td>天然幂等</td></tr>
+    <tr><td>2 补列</td><td>逐列查 <code>PRAGMA table_info</code>，缺哪列 ALTER 哪列（drama_cache 35 列、drama_episodes 8 列）</td><td><b>不靠版本号判断列是否存在</b>：即使版本号被别的入口提前抬高，缺的列也补得上</td></tr>
+    <tr><td>3 搬旧数据</td><td>把 UserDefaults 里的点赞/收藏/进度搬进库（见 8.2）</td><td>用独立标记 <code>EpisodeActions.legacyMigrated</code> 门控，<b>与 schema 版本解耦</b>，避免「版本已抬高 → 搬迁被跳过」丢用户数据</td></tr>
+    <tr><td>4 记版本</td><td><code>PRAGMA user_version = 2</code></td><td>只在低于当前版本时写</td></tr>
+  </table>
+  <table>
+    <tr><th>版本</th><th>内容</th></tr>
+    <tr><td>v1</td><td>episode_actions / local_actions 两张行为表 + 旧 UserDefaults 行为数据搬迁</td></tr>
+    <tr><td>v2</td><td>详情接口整包落库：drama_cache 加 api_detail 与 34 个提升列、drama_episodes 加 8 个每集元数据列、新增 drama_related</td></tr>
   </table>
 
   <h3>8.2 v0 → v1：把散在 UserDefaults 的行为数据搬进库</h3>
@@ -603,14 +739,13 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
   </div>
 
   <h3>8.3 以后加字段怎么做</h3>
-  <pre><code>// 例：给每集加「观看次数」
-private static let schemaVersion = 2        // 1 → 2
-if version < 2 {
-    sqlite3_exec(db, "ALTER TABLE episode_actions ADD COLUMN watch_count INTEGER NOT NULL DEFAULT 0;", ...)
-    sqlite3_exec(db, "ALTER TABLE local_actions   ADD COLUMN watch_count INTEGER NOT NULL DEFAULT 0;", ...)
-    // 需要回填历史数据就在这里做
-}
-sqlite3_exec(db, "PRAGMA user_version = 2;", ...)</code></pre>
+  <pre><code>// 例：给每集加「观看次数」——在 DramaDatabase.addMissingColumns 的清单里加一行即可
+("watch_count", "INTEGER")     // 逐列查 table_info，缺则 ALTER，天然幂等
+// 需要回填历史数据就在 migrate 里加一段，并把 schemaVersion 抬到 3</code></pre>
+  <div class="note ok">
+    <b>详情接口新增字段不用改代码</b>：<code>api_detail</code> 存整包，站点加字段自动留存；
+    只有当你要「按这个字段查询/展示」时，才需要提升为列。
+  </div>
   <p>约定见 AGENTS.md「iOS 架构约定」第 6 条：集级行为数据只进 <code>episode_actions</code>，变更走版本号迁移，不再用「ALTER 报错就忽略」。</p>
 </section>
 
@@ -694,13 +829,41 @@ ORDER BY a.updated_at DESC;</code></pre>
 FROM local_actions
 WHERE position_total &gt; 0 AND position_seconds &lt; position_total - 5;</code></pre>
 
-  <h3>10.6 库体检</h3>
+  <h3>10.6 按播放量给看过的剧排序（v2 提升列）</h3>
+  <pre><code>SELECT c.name, c.play_count, c.play_count_text, c.like_count, c.collect_count,
+       c.serialize_status_text, c.video_orientation
+FROM drama_cache c
+WHERE c.play_count IS NOT NULL
+ORDER BY c.play_count DESC;</code></pre>
+
+  <h3>10.7 某剧的推荐剧（本地推荐算法数据源）</h3>
+  <pre><code>SELECT position, related_video_id, title, tags, play_count
+FROM drama_related
+WHERE site = ? AND drama_id = ?
+ORDER BY position;</code></pre>
+
+  <h3>10.8 服务端记的观看进度（只存不用，备查）</h3>
+  <pre><code>SELECT name, current_episode_id, continue_episode_id, play_duration, detail_fetched_at
+FROM drama_cache
+WHERE continue_episode_id &gt; 0 OR play_duration &gt; 0;</code></pre>
+
+  <h3>10.9 每集元数据 + 本地播放进度一起看</h3>
+  <pre><code>SELECT e.sort, e.title, e.duration AS site_duration, e.access_state, e.is_trial,
+       a.position_seconds, a.position_total
+FROM drama_episodes e
+LEFT JOIN episode_actions a
+       ON a.site = e.site AND a.drama_id = e.drama_id AND a.episode_id = e.episode_id
+WHERE e.site = ? AND e.drama_id = ?
+ORDER BY e.sort;</code></pre>
+
+  <h3>10.10 库体检</h3>
   <pre><code>PRAGMA user_version;                 -- 期望 1
 PRAGMA table_info(drama_cache);      -- 逐列看类型/约束/默认
 SELECT 'drama_cache'     AS t, COUNT(*) FROM drama_cache
 UNION ALL SELECT 'drama_episodes',  COUNT(*) FROM drama_episodes
 UNION ALL SELECT 'episode_actions', COUNT(*) FROM episode_actions
-UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions;</code></pre>
+UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions
+UNION ALL SELECT 'drama_related',   COUNT(*) FROM drama_related;</code></pre>
 </section>
 
 <section id="caveats">
@@ -733,9 +896,9 @@ UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions;</code></pre>
       <td>剧数量级小，暂不加；量大时 <code>CREATE INDEX idx_drama_name ON drama_cache(name)</code></td>
     </tr>
     <tr>
-      <td>6</td><td>无显式事务、未开 WAL</td>
+      <td>6</td><td>未开 WAL；部分批量写仍无事务</td>
       <td><code>reconcileDownloaded</code> 逐集 UPDATE = N 次 autocommit，集数多时偏慢</td>
-      <td>可把批量写包进 <code>BEGIN/COMMIT</code>；读多写少场景可评估 WAL</td>
+      <td><code>saveDetail</code> 已包在一个事务里；reconcile 可同样处理，读多写少场景可评估 WAL</td>
     </tr>
     <tr>
       <td>7</td><td>路径键脆弱</td>
@@ -753,7 +916,17 @@ UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions;</code></pre>
       <td>刻意设计：避免把「未知」当成 0% 或 100%</td>
     </tr>
     <tr>
-      <td>10</td><td>剧级聚合未落列</td>
+      <td>10</td><td>提升列与整包可能不同步</td>
+      <td>提升列是写入时的快照，整包才是权威</td>
+      <td>两者同事务写入，正常路径一致；手工改库时以 <code>api_detail</code> 为准</td>
+    </tr>
+    <tr>
+      <td>11</td><td>payload 形态的整包是结构化回写</td>
+      <td>Nuxt <code>_payload.json</code> 是槽位数组，回写后只含模型声明的字段</td>
+      <td>明文/信封形态存的是真原文；payload 形态若出现模型未声明的新字段会丢，需要时补模型</td>
+    </tr>
+    <tr>
+      <td>12</td><td>剧级聚合未落列</td>
       <td>「看到第几集」目前只能实时 JOIN 算</td>
       <td>表已支持（见 10.2）；要做剧行展示或最近观看列表时再决定要不要冗余列</td>
     </tr>
@@ -764,7 +937,8 @@ UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions;</code></pre>
   <h2><span class="no">12</span>代码落点索引</h2>
   <table>
     <tr><th>文件</th><th>职责</th><th>涉及表 / 存储</th></tr>
-    <tr><td class="name">Drama/DramaCache.swift</td><td>元数据缓存：建表、load、saveInfo、markDownloaded、reconcileDownloaded、savePageMeta、allSorts、seriesIdentity</td><td>drama_cache、drama_episodes</td></tr>
+    <tr><td class="name">Drama/DramaDatabase.swift</td><td><b>统一连接与迁移入口</b>：open()、五张表建表、逐列补列、旧 UserDefaults 搬迁、共用 bind/text/execWrite/fail/transaction</td><td>全部五张表</td></tr>
+    <tr><td class="name">Drama/DramaCache.swift</td><td>元数据缓存：load、saveInfo、markDownloaded、reconcileDownloaded、savePageMeta、allSorts、seriesIdentity；<b>saveDetail / rawDetail / relatedDramas</b>（详情整包与推荐剧）</td><td>drama_cache、drama_episodes、drama_related</td></tr>
     <tr><td class="name">Drama/EpisodeActionsStore.swift</td><td>行为数据：建表 + user_version 迁移 + 旧数据搬迁、actions / episodeActions / allLocalActions、setLiked / setSaved / savePosition / removeActions、identity 解析</td><td>episode_actions、local_actions</td></tr>
     <tr><td class="name">Shared/DramaModels.swift</td><td><code>MediaIdentity</code>、<code>DramaTarget</code>、<code>ApiDramaEpisode</code>（纯数据）</td><td>—（身份与行模型）</td></tr>
     <tr><td class="name">Shared/PlaybackProgress.swift</td><td>进度纯数据：fraction / isFinished / 时间文案</td><td>position_seconds、position_total 的派生口径</td></tr>
@@ -773,14 +947,16 @@ UNION ALL SELECT 'local_actions',   COUNT(*) FROM local_actions;</code></pre>
     <tr><td class="name">player/PlaybackQueueService.swift</td><td>构槽位时解析 identity（target 直达 / 剧名反查 / 路径兜底）</td><td>读 drama_episodes（经 DramaCache）</td></tr>
     <tr><td class="name">Downloads/PlaybackProgressViewModel.swift</td><td>列表侧只读行为数据，按剧缓存身份、批量读</td><td>读两张行为表</td></tr>
     <tr><td class="name">Downloads/Downloader.swift</td><td>删除任务 / 删整剧 / 批量删除时清行为数据；磁盘扫描收编历史条目</td><td>删 episode_actions / local_actions 行</td></tr>
-    <tr><td class="name">Drama/DramaMetaHarvester.swift</td><td>DOM 收割 + 接口拦截取 tags，落 page_meta 与调查文件</td><td>drama_cache.page_meta / tags；Documents/DramaMeta/*</td></tr>
+    <tr><td class="name">Drama/DramaMetaHarvester.swift</td><td>每次进剧集页抓一次：捕获详情响应 → saveDetail 整包落库；DOM 收割兜底封面/简介；调查文件落盘</td><td>drama_cache（含 api_detail）、drama_episodes、drama_related；Documents/DramaMeta/*</td></tr>
+    <tr><td class="name">Drama/DramaDetailData.swift</td><td>详情接口完整模型（40+ 字段）+ Nuxt payload 解引用</td><td>saveDetail 的输入</td></tr>
     <tr><td class="name">player/PlayerPreferences.swift</td><td>播放器全局开关（静音 / 清屏 / 时长 label）</td><td>UserDefaults（不在库里）</td></tr>
     <tr><td class="name">Drama/DramaFavorites.swift</td><td>剧级收藏</td><td>UserDefaults（不在库里）</td></tr>
   </table>
 </section>
 
 <footer>
-  字段与约束逐条取自源码（DramaCache.swift / EpisodeActionsStore.swift / PlayerPreferences.swift 等），基准提交 3525da7 · 2026-11-12。<br>
+  字段与约束逐条取自源码（DramaDatabase.swift / DramaCache.swift / EpisodeActionsStore.swift / DramaDetailData.swift 等），schema v2 · 2026-11-12。<br>
+  v2 落库已用真实样本 api_https___yeguodj.com_3703.json 验证：整包原文一字不差回读、35 个提升列、4 集元数据、10 条推荐剧、v1→v2 升级不丢行为数据。<br>
   如与代码不一致，以代码为准；改表结构请同步更新本文档与 AGENTS.md 架构约定第 6 条。
 </footer>
 
