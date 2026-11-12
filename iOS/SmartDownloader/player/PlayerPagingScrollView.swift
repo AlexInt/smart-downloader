@@ -121,6 +121,17 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                 || gestureRecognizer === edgePan || other === edgePan
         }
 
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            // seekPan 只认横向/斜向滑动：纵向主导的翻页滑动直接拒绝，交给分页滚动。
+            // 旧实现 seekPan 不限方向，竖滑也 began（cancelsTouchesInView=false）→ 搅乱滚动
+            // 对触摸的取消 → 卡片点按手势未被干净取消 → 抬手误判 TAP → 暂停（真机日志实证）。
+            // 横向/45° 斜向仍立即 begin，保住「拖动先起」的长按仲裁闸门（斜起手转水平不受影响）。
+            guard gestureRecognizer === seekPan,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+            let t = pan.translation(in: pan.view)
+            return abs(t.x) >= abs(t.y)
+        }
+
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
             guard let view = pan.view as? UIScrollView else { return }
             switch pan.state {
