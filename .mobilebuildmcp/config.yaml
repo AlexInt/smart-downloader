@@ -1,0 +1,8 @@
+schemaVersion: 1
+sessionDefaults:
+  projectPath: /Users/firefish/workspace/smart-downloader/iOS/SmartDownloader.xcodeproj
+  scheme: SmartDownloader
+  simulatorName: iPhone 17 Pro
+  bundleId: com.firefish.smartdownloader
+  simulatorId: 38BDCBC1-6E40-4DAA-8BF8-3D6C7FF4C759
+  simulatorPlatform: iOS Simulator
