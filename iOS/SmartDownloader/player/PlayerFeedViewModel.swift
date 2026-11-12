@@ -15,7 +15,9 @@ final class PlayerFeedViewModel: ObservableObject {
     let playback: DramaPlayerViewModel
     private let playerService = PlaybackPlayerService()
     private var queue: PlaybackQueueService?
-    private var toastID = 0
+    /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除，避免旧任务误清新提示
+    private var toastToken = UUID()
+    private var toastTask: Task<Void, Never>?
     private var configured = false
     private var endToastShown = false
 
@@ -103,22 +105,28 @@ final class PlayerFeedViewModel: ObservableObject {
     func isFirst(_ sort: Int) -> Bool { slots.first?.sort == sort }
     func isLast(_ sort: Int) -> Bool { slots.last?.sort == sort }
 
+    /// 3 秒后自动消失（用户指定）。旧实现 `toastID == id` 在连续提示时可能让清除被跳过，
+    /// 表现为 toast 一直挂着；改用「取消旧任务 + 令牌」，且不用 `guard !Task.isCancelled` ——
+    /// 即使 sleep 被取消，只要仍是当前令牌就必须把文案清掉。
     func showToast(_ text: String) {
-        toastID += 1
-        let id = toastID
+        toastTask?.cancel()
+        let token = UUID()
+        toastToken = token
         toastText = text
-        print("PLAYER_DBG [VM] showToast id=\(id) text=\(text) current=\(currentSort.map(String.init) ?? "nil")")
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_600_000_000)
-            if toastID == id {
-                toastText = nil
-                print("PLAYER_DBG [VM] showToast dismiss id=\(id)")
-            }
+        print("PLAYER_DBG [VM] showToast text=\(text) current=\(currentSort.map(String.init) ?? "nil")")
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.toastToken == token else { return }
+            self.toastText = nil
+            print("PLAYER_DBG [VM] showToast dismiss reason=timeout3s")
         }
     }
 
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
+        // 退出播放页顺手清掉挂着的提示，避免下个页面复用时残留
+        toastTask?.cancel()
+        toastText = nil
         playback.stop()
         playerService.teardown()
     }

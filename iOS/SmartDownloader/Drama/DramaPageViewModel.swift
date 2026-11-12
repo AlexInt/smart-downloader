@@ -43,6 +43,8 @@ final class DramaPageViewModel: ObservableObject {
     @Published var showAllEpisodes = false
     @Published private(set) var toastText: String?
     private var toastTask: Task<Void, Never>?
+    /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除
+    private var toastToken = UUID()
     /// 封面重试令牌：换值让 AsyncImage 换 id 重建，重新发起一次图片请求
     @Published private(set) var coverReloadToken = 0
     /// 首次库对账完成前不报「下载完成」，避免进页把已有文件误报成刚下完
@@ -195,13 +197,17 @@ final class DramaPageViewModel: ObservableObject {
         coverReloadToken += 1
     }
 
+    /// 3 秒后自动消失（用户指定）。旧实现 `guard !Task.isCancelled else { return }`
+    /// 会让被取消的任务跳过清除 —— 最后一条 toast 若被取消就永远挂着，这是「不消失」的根因。
     func showToast(_ text: String) {
         toastTask?.cancel()
+        let token = UUID()
+        toastToken = token
         toastText = text
         toastTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_800_000_000)
-            guard !Task.isCancelled else { return }
-            self?.toastText = nil
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.toastToken == token else { return }
+            self.toastText = nil
         }
     }
 

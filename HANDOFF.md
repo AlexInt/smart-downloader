@@ -296,6 +296,19 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
 | 9 | ~~第二批目录迁移~~ | ✅ 已完成（2026-11-12）：`Downloads/` / `Browser/` / `Infra/` 归位、`WebViewStore` / `SnifferScript` / `DownloadModels` 拆出、`DramaInfo` 构造逻辑收进 `DramaCache`；见 §2 末节 | 已完成 |
 
+### toast 自动消失修复（2026-11-12 11:2x，用户反馈「到底了」提示不消失）
+
+两处 `showToast` 实现不同，但都可能在任务被取消时**跳过清除**，导致最后一条提示永久挂着：
+
+| 位置 | 旧实现 | 问题 |
+|---|---|---|
+| `player/PlayerFeedViewModel` | 1.6s + `if toastID == id` 才清 | 连续提示时旧任务不清除；新任务若被取消，没人清 |
+| `Drama/DramaPageViewModel` | 1.8s + `guard !Task.isCancelled else { return }` | **主要根因**：任务一被取消就 return，`toastText = nil` 根本不执行 |
+
+统一改为「取消旧任务 → 生成 UUID 令牌 → 设文案 → `Task.sleep(for: .seconds(3))` → 只要令牌仍匹配就**无条件**清文案」。去掉 `!Task.isCancelled` 的提前 return：即使 sleep 因取消抛错，只要仍是当前提示就必须清掉；旧任务因令牌不匹配不会误清新提示。`PlayerFeedViewModel.stop()` 顺手清 toast。日志保留 `showToast` 与 `showToast dismiss reason=timeout3s` 便于判读。
+
+现在播放页「已经到底了」「第N集尚未下载」、详情页收藏/下载/完成提示全部 **3 秒自动消失**。注意 `endToastShown` 仍是「同一次播放页生命周期内只提示一次」，滑离末页再回来不会重复弹 —— 若希望每次到底都提示，是另一个改动。
+
 ## 6. 验证与调试
 
 ```bash
