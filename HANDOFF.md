@@ -2,7 +2,7 @@
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络约定，最高优先级），本文档讲「已经做了什么、还剩什么、怎么继续」。两份都读再动手。
 >
-> 最后更新：2026-11-11 · 分支 `main` · 基准提交见 `git log -1`
+> 最后更新：2026-11-12 · 分支 `feat/drama-detail-page` · 基准提交见 `git log -1`
 
 ## 1. 项目一览
 
@@ -295,7 +295,8 @@ iOS App 形态：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + �
 | 7 | ~~tags 定向提取（请求拦截）~~ | ✅ 已完成：detail 接口明文 tags + DramaDetailData 解码落库（source=api），锚点法删除；待真机回归 | 已完成 |
 | 8 | **剧集详情页真机回归** | 三态 / 展开动画 / 封面重试 / CTA 四态 / 查看全部下载面板 / 收藏；外加 2026-11-12 四项修复（tab bar 隐藏、边缘返回、背景图 -20%、下载进度环与完成提示），见 §2 对应小节 | 高（验证） |
 | 9 | ~~第二批目录迁移~~ | ✅ 已完成（2026-11-12）：`Downloads/` / `Browser/` / `Infra/` 归位、`WebViewStore` / `SnifferScript` / `DownloadModels` 拆出、`DramaInfo` 构造逻辑收进 `DramaCache`；见 §2 末节 | 已完成 |
-| 10 | ~~Swift 6 下剩余 6 条警告~~ | ✅ 已完成（2026-11-12）：`decidePolicyFor` 补 `@MainActor @Sendable` 让协议要求真正满足；Timer 状态改 `Mutex`；未使用变量与两处 `String(cString:)` 弃用清理。Swift 6 全量 **0 error / 0 warning**，见下节 | 已完成 |
+| 10 | ~~Swift 6 下剩余 6 条警告~~ | ✅ 已完成（2026-11-12）：`decidePolicyFor` 补 `@MainActor @Sendable` 让协议要求真正满足；Timer 状态改 `Mutex`；未使用变量与两处 `String(cString:)` 弃用清理。Swift 6 全量 **0 error / 0 warning**，见下节（注：同日已全量 GCD 化并降回 Swift 5，该节为历史记录） | 已完成 |
+| 11 | **GCD 迁移真机回归** | 全量移除 Swift concurrency 改 GCD（2026-11-12），Mac 侧构建+冒烟全过；需真机核对下载降级链/秒开/手势/定时提示，清单见「全量 GCD 迁移」小节 | 高（验证） |
 
 ### toast 自动消失修复（2026-11-12 11:2x，用户反馈「到底了」提示不消失）
 
@@ -352,6 +353,22 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 **验证**：Swift 6 + targeted 全量 `swiftc -typecheck` **0 error / 0 warning**；Swift 5 回归 0 error（仍有 2 条 `Downloader.swift:458` 的 Sendable 捕获警告，属旧语言模式特有——Swift 6 用 region isolation 判定安全，工程已切 6.0 不受影响）；冒烟 `coretest` 真实编译 EXIT=0。
 
 **真机回归重点**：`decidePolicyFor` 生效后，浏览页点剧集卡片应稳定进入原生页；同时确认「查看全部」下载、播放入口、剧集页返回手势没被路由变化影响。
+
+### 全量 GCD 迁移（2026-11-12，用户拍板「移除 Swift concurrency 尽快推进功能」）
+
+背景：Swift 6 严格并发检查的隔离/Sendable 摩擦拖慢功能开发。用户拍板全量移除 Swift concurrency 改 GCD，两个岔路已定：① WebKit 通道保留唯一 async 岛（`startDownload(using:)` 无同步 API）；② 下载核心用「工作线程+信号量」保持线性管线。约定全文见 AGENTS.md「并发与线程」节。
+
+**改动**（4 笔提交）：
+- `d1b4ed2` 构建设置降 Swift 5 + minimal（Debug/Release，与 project.yml 对齐）。
+- `b2f5320` App 全量 GCD 化（18 文件）：下载管线信号量同步 + DispatchGroup 6 并发；WebKitFetcher 对外同步 fetch（三表握手保留）；LocalMediaServer/DramaSession/Coordinator/MetaHarvester completion 化；播放链路 KVO 直挂 + 看门狗 WorkItem + 代际令牌，预热池改在飞标记；UI 定时全 DispatchWorkItem，`.task` 全改 onAppear/onChange；删尽 @MainActor/nonisolated(unsafe)/assumeIsolated/@unchecked Sendable/Mutex。
+- `c1c7b22` smoke 五工具同步化（信号量/RunLoop）。
+- 本笔 docs。
+
+**验证（Mac 侧全过）**：模拟器构建 BUILD SUCCEEDED（仅 1 条 `loadValuesAsynchronously` deprecated 警告，GCD 路线预期内）；coretest --library 3×DONE；coretest Apple 流 181 切片 DONE；playtest 真实播放 PLAYING；FORCE_WEBKIT=1 coretest 181 切片 DONE（async 岛+信号量桥验证）。
+
+**待用户真机回归**（行为不变量核对）：WiFi/蜂窝下载（IP 直连/WebKit 降级日志）、秒开 `makeItem HIT`、手势仲裁（长按 2x/横滑 seek/翻页）、toast 3s/HUD 800ms/清屏闪现 1500ms、剧集页加载/刷新/tags 收割。日志过滤 `PLAYER_DBG` / `DL[`。
+
+**注意**：迁移前工作区有一笔未提交的 Swift 6.2 `@MainActor run` 修复，已被本次重写覆盖（同段代码 GCD 化，意图保留）。
 
 ## 6. 验证与调试
 

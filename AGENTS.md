@@ -105,11 +105,22 @@ View → ViewModel → Service → 系统能力 / Model
    - **长按 2x ↔ 水平 seek 冲突仲裁 = 「先起者独占本次触摸」**（真机日志实证后定的规则，改手势前先读 HANDOFF 对应条目）：拖动先起 → seek 独占（**seekPan .began 起手即置 `isSeekGestureActive`**——判定点勿放首个有效 .changed「水平主导+dx>6」：清屏下带外起点的横滑、斜起手转水平的快滑，都会让长按 0.15s 的 perform 插进空窗闪 2x，2026-11-11 修；卡片 perform 起手前查 `playback.isSeekGestureActive`，拖动中长按被识别也不得起 2x）；长按先起 → 2x 独占（`VM.seek` guard `isFastForwarding`，按住 2x 期间漂移不 seek；`maximumDistance` 放开到 10_000，**不靠位移距离掐 2x**——原 40pt 让按住 2x 的手一漂就掉回 1x）。短按 2x 快速松手会被同时认成长按+单击（误暂停），卡片用 250ms 抑制窗吞掉；seekPan **抬手不补 seek**（防「松手清 2x 后 .ended 的 seek 穿过闸门」的竞态跳变）。**2x 只能在 perform（按满 0.15s）里起，勿放 pressing(true)**——pressing 在触摸落下瞬间即回调（先于任何位移判定），放那里每次快速滑动（含翻页/清屏后的轻扫）都误触 2x（2026-11-11 修）。
    - 手势几何已无命中带（2026-11-11 全屏化，`PlayerGesturePolicy` 仅剩 scrub 灵敏度纯函数）；进度条 HUD 的视觉坐标仍在 `DramaPlayerView` 的 designFrame（20,744,350），移动进度条时同步 HUD 与相关注释即可，不再有手势几何与它耦合。边界提示由 ViewModel 在停到末页时给出。
    - 曾使用 SwiftUI `ScrollView + .scrollTargetBehavior(.paging) + .scrollPosition(id:)`，因与卡片内 `GeometryReader` / 子视图手势 / 尺寸计算冲突导致**完全滑不动**（多轮排障无效），已弃用，勿改回。
-3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `asset.load(.isPlayable)` 完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT；**wanted 名单必须含当前集+两侧邻居**——只报邻居会被自己的淘汰逻辑打穿，曾全 MISS；刚离开的集作为邻居重暖是回滑 HIT 保险，勿加「跳过正在播的集」过滤，曾因 playingSort 过滤致回滑必 MISS）+ `DramaPlayerViewModel` 的 **KVO 事件流就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 800ms 延迟显示**（`isLoadingSlow`；阈值依真机实测定——HIT 就绪 642–871ms，300ms 每滑必闪）。
+3. 播放器采用**单播放器常驻 + 滚动停稳防抖后切 item**（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer；暂不引入多 player pool。秒开链路由三件事共同保证，改切集加载行为时需一起评估：`PlaybackPlayerService` 的**相邻集资产预热池**（停稳播当前集时提前 `loadValuesAsynchronously(["playable"])` 完成相邻集 m3u8 拉取解析，`makeItem` 命中即 HIT；**wanted 名单必须含当前集+两侧邻居**——只报邻居会被自己的淘汰逻辑打穿，曾全 MISS；刚离开的集作为邻居重暖是回滑 HIT 保险，勿加「跳过正在播的集」过滤，曾因 playingSort 过滤致回滑必 MISS）+ `DramaPlayerViewModel` 的 **KVO 直挂就绪判定**（status 一变立刻翻转 isReady，4s 看门狗兜底，勿改回轮询）+ **spinner 800ms 延迟显示**（`isLoadingSlow`；阈值依真机实测定——HIT 就绪 642–871ms，300ms 每滑必闪）。
 4. 全屏横向拖动 = 相对 scrub（拖动位移/屏宽换算进度，一屏宽≈全片时长），左缘 30pt 起手除外（保留给返回手势）；垂直滑动只切集，不碰进度。清屏下 seek 照常生效且全屏可用，进度条+时间瞬态淡入（`VM.isScrubbing`，松手停留 800ms 淡出；开启清屏闪现 1.5s 作空间参照）；**勿复用 `isSeekGestureActive` 驱动该 UI**——那是非渲染的手势仲裁闸门，两者语义不同（一个管仲裁、一个管显示）。
 5. **所有持久化统一走 Service，ViewModel 里不得出现 `UserDefaults.standard` / `FileManager`**：播放页偏好走 `PlayerPreferences`，剧集页收藏走 `DramaFavorites`，登录 token 由 `DramaSession` 自行读写（Service 内部允许）。Service 只做读写，不含业务判断。判据：删掉 UI 后这个读写仍然成立。
 6. 不为了分层而分层：不硬造协议、不搬 Coordinator/Router、不给三行代码加一层；等一个类型出现第二个变更理由再拆。`struct` 做 Service 可以。
 7. 已知低优先级待办：有全剧集数但只下载 1 集时，上滑仍会切到「尚未下载」占位页（见 `PlaybackQueueService` 的 resolve 注释）。
+
+### 并发与线程（GCD 约定，2026-11-12 全量迁移）
+
+**全代码库已移除 Swift concurrency（async/await / Task / Actor 隔离 / Continuation / AsyncStream），统一 GCD。** 工程锁定 Swift 5 语言模式 + minimal 并发检查（`SWIFT_VERSION = 5.0`），勿再升 Swift 6 / 开严格检查——迁移就是为了消除编译期隔离/Sendable 摩擦。唯一例外：`WebKitFetcher` 内 `WKWebView.startDownload(using:)` 只有 async API，保留全库唯一 async 岛（用户拍板），勿扩散。
+
+1. **主线程约定**：Manager / ViewModel / Store / WebKitFetcher 的可变状态只在主线程访问；后台回调入口一律 `DispatchQueue.main.async` 回主线程再碰状态。不再用 `@MainActor` 标注（编译器不强制，靠约定 + review）。
+2. **死锁规则**：`DispatchSemaphore.wait` 只允许出现在后台工作线程（下载管线 / CLI 冒烟）；**主线程永不 wait**。主线程等异步结果用 RunLoop 让出（smoke）或 completion 回调（App）。
+3. **下载核心**（`DownloadEngine`）：工作线程 + 信号量同步网络，管线保持线性（与 Python core 同构）；6 并发切片用 `DispatchGroup` + `NSLock` 收首错；重试退避 `Thread.sleep`。线程账：2 集 × (1 管线 + 6 切片) = 14 条峰值，勿再放大并发。
+4. **UI 定时**（toast / spinner / HUD / 停稳防抖）：`DispatchWorkItem` + `asyncAfter`，新事件 cancel 旧 WorkItem；取消语义用**代际令牌**（loadGeneration / settleGeneration）或在飞标记，迟到回调按代际/标记丢弃。
+5. **资产加载**：`loadValuesAsynchronously(forKeys:)` + `status(of: .isPlayable/.duration)`（同步查询，非 async）；`loadValuesAsynchronously` 在 iOS 16 SDK 标 deprecated 属预期（Apple 只推 async API），GCD 路线接受该警告，勿为消警告改回 async。
+6. View 层不用 `.task`：生命周期加载用 `onAppear` / `onChange`，防抖收进 ViewModel（View 不持业务定时器）。
 
 ## 诊断日志约定
 
@@ -137,6 +148,7 @@ View → ViewModel → Service → 系统能力 / Model
 - 站点接口/选集下载逻辑在 `iOS/SmartDownloader/Drama/DramaAPI.swift`（独立文件，勿混入 `Downloads/Downloader.swift`）；
   账号/AES 常量来自随包 symlink `iOS/SmartDownloader/video_auto.py -> 仓库根 video_auto.py`，改常量只改仓库根一处。
 
+- **语言模式锁定 Swift 5**（`SWIFT_VERSION = 5.0` + `SWIFT_STRICT_CONCURRENCY = minimal`，与 project.yml 一致）：全库 GCD 化后勿升 Swift 6 / 开严格并发检查，详见「并发与线程」节。
 - 新 Swift 文件放进 `SmartDownloader/` 自动参与编译；资源目录（Media.xcassets）同理。
 - **Info.plist 在同步文件夹内**：pbxproj 已用 `PBXFileSystemSynchronizedBuildFileExceptionSet` 排除它，否则与 `INFOPLIST_FILE` 冲突报 "Multiple commands produce Info.plist"。
 - App 图标：`ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`，AppIcon.appiconset 三个外观槽位（universal/dark/tinted）都要填 filename。
