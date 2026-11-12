@@ -386,6 +386,19 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 
 **验证**：模拟器构建 BUILD SUCCEEDED；playtest 重编零警告、PLAYING（LocalMediaServer 重构后服务正常）。toast/服务器修复待用户真机复测。
 
+### tab 切换卡顿：定位与保活修复（2026-11-12）
+
+**探针排障历程**（几轮复测拿不到数据的教训）：
+1. 探针开关原只匹配无横杠 `perfLog`，传 `-perfLog` 静默不启动→`48bf1ab` 兼容两种写法。
+2. 多次复测仍未传参/未启用→`119237d` 改 **Debug 默认开启**（Release 仍需 -perfLog），并加 `stallProbe enabled` 自检行。
+3. 阈值 100ms 恰等于心跳间隔，正常调度抖动刷屏 `ms=100` 假阳性→`54c38b6` 心跳改 **20ms**（远小于阈值），正常 gap≈20ms 不触发。
+
+**根因（干净日志确认）**：切回浏览页（tabSwitch 1->0）阻塞主线程 300ms–1s（实测 999/347/311ms），切去下载页几乎不卡。我们的代码在该路径几乎不做事（WebViewContainer.updateUIView 为空）——开销全在 **WKWebView 被唤醒**：SwiftUI TabView 藏起非活跃 tab→WKWebView 离屏被挂起/图层回收（日志 `markAllLayersVolatile`）→切回主线程恢复进程+重新光栅化+更新下载列表（`DownloadFailed` 是站点触发的伴生噪音，嗅探脚本只读不写不背锅）。
+
+**修复（`074530a`，用户拍板 SwiftUI 保活而非 UIKit）**：App.swift 用 **ZStack 常驻容器**替代 TabView——浏览页底层常驻可见（WKWebView 一直在窗口内、不被判隐藏→不挂起不回收），下载页以不透明背景盖上去；切 tab 只改可见性。自定义底部 tab bar（safeAreaInset）替代系统 tab bar；BrowserView 增 `detailActive` 绑定，推入剧集详情时隐藏 tab bar；适配常驻后 onAppear 只启动触发一次、回到浏览 tab 由 onChange 补推剧集页。曾讨论 UIKit 方案：WKWebView 离屏唤醒是框架无关行为，UITabBarController 一样卡，保活才是解药，故选改动最小的 SwiftUI ZStack。
+
+**待用户真机复测**：① 来回切 tab 看 `mainStall` 是否消失/大幅减少（探针 Debug 常开）；② 浏览↔下载切换正常；③ 点剧集→详情页全屏（tab bar 隐藏）→返回；④ 详情页→播放页→返回；⑤ 下载页编辑模式底部栏与 tab bar 共存；⑥ 启动落在下载 tab、浏览页后台保活。
+
 ## 6. 验证与调试
 
 ```bash
