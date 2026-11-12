@@ -399,6 +399,14 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 
 **待用户真机复测**：① 来回切 tab 看 `mainStall` 是否消失/大幅减少（探针 Debug 常开）；② 浏览↔下载切换正常；③ 点剧集→详情页全屏（tab bar 隐藏）→返回；④ 详情页→播放页→返回；⑤ 下载页编辑模式底部栏与 tab bar 共存；⑥ 启动落在下载 tab、浏览页后台保活。
 
+### 竖滑误暂停修复（2026-11-12，迁移前老 bug）
+
+用户报「上下/左右滑动大概率暂停视频」。真机日志根因：`seekPan` 是不限方向的 UIPanGestureRecognizer，**每次纵向翻页滑动都触发 `seekPan began`**；它 `cancelsTouchesInView=false`，竖滑时介入搅乱了分页滚动对触摸的取消→卡片 `.onTapGesture` 未被干净取消→抬手误判 `TAP → togglePlayback`→暂停。斜滑还会同时触发 seek+翻页（日志 `seek SKIP badDuration`）。修复（`14306c6`）：Coordinator 加 `gestureRecognizerShouldBegin`，seekPan 起步时 `abs(t.x) >= abs(t.y)` 才认（纵向主导拒绝、交给滚动），横向/45° 斜向仍立即 begin 保住长按仲裁闸门。手势仲裁代码本身未动。
+
+「点击暂停不出进度条」是清屏模式设计（用户 cleanScreen=true）：`isProgressVisible = isActive && (!isCleanScreen || isScrubbing)`，清屏下进度 HUD 仅 seek 拖动时瞬态出现，点按暂停不触发——非 bug。
+
+**待真机复测**：竖滑翻页不再误暂停；横滑 seek 正常；斜滑 seek 正常；长按 2x 与横滑仲裁仍生效；左缘返回正常。
+
 ## 6. 验证与调试
 
 ```bash
