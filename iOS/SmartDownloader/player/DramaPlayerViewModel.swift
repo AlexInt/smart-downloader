@@ -56,16 +56,22 @@ final class DramaPlayerViewModel: ObservableObject {
             }
         }
     }
+    /// 点赞 / 收藏：按当前集的服务端 id 落库（EpisodeActionsStore），不再按目录路径记
     @Published var liked = false {
-        didSet { preferences.setLiked(liked, for: currentKey) }
+        didSet { writeAction(column: "liked", value: liked) }
     }
     @Published var saved = false {
-        didSet { preferences.setSaved(saved, for: currentKey) }
+        didSet { writeAction(column: "saved", value: saved) }
     }
 
     private let preferences = PlayerPreferences()
+    /// 当前集的播放进度跟踪（落盘 + 下次续播）：随 load 换人，stop 时摘掉
+    private var progressTracker: PlaybackProgressTracker?
     private var timeObserver: Any?
-    private var currentKey = ""
+    /// 当前集的行为数据归属；load 成功后才有值（未下载占位卡为 nil）
+    private var currentIdentity: MediaIdentity?
+    /// 回填本集已存状态期间置位： didSet 不能把刚读出来的值再写回库
+    private var isRestoringActions = false
     private var lastLoggedSeek: Double = -1
     private var lastLoggedSecond = -1
     private var spinnerDelayWork: DispatchWorkItem?
@@ -93,6 +99,9 @@ final class DramaPlayerViewModel: ObservableObject {
     /// completion 在加载落地（就绪/失败/超时/取消）后于主线程回调。
     func load(episode: PlayableEpisode, completion: (() -> Void)? = nil) {
         print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable)")
+        // 先把上一集的位置落盘再换 item：detach 后旧跟踪器不再碰播放器
+        progressTracker?.detach()
+        progressTracker = nil
         loadGeneration += 1
         let generation = loadGeneration
         statusWatch?.invalidate()
@@ -105,7 +114,7 @@ final class DramaPlayerViewModel: ObservableObject {
         resetTimes()
         lastLoggedSecond = -1
 
-        guard let playlist = episode.playlistURL else {
+        guard episode.playlistURL != nil else {
             print("PLAYER_DBG [Playback] load ABORT reason=episodeNotDownloaded sort=\(episode.sort)")
             playerService.clear()
             completion?()
@@ -113,10 +122,21 @@ final class DramaPlayerViewModel: ObservableObject {
         }
         ensureObserver()
 
-        currentKey = PlayerPreferences.key(for: playlist)
-        liked = preferences.liked(for: currentKey)
-        saved = preferences.saved(for: currentKey)
-        print("PLAYER_DBG [Playback] load prefs key=\(currentKey) liked=\(liked) saved=\(saved)")
+        currentIdentity = episode.identity
+        isRestoringActions = true
+        let stored = EpisodeActionsStore.actions(for: episode.identity)
+        liked = stored.liked
+        saved = stored.saved
+        isRestoringActions = false
+        let storedPosition = stored.position.map { "\(Int($0.seconds))s/\(Int($0.total))s" } ?? "nil"
+        print("PLAYER_DBG [Playback] load actions id=\(episode.identity.label) liked=\(liked) saved=\(saved) position=\(storedPosition)")
+
+        // 进度跟踪：归属直接用槽位算好的 identity（有服务端 id 走 id，没有走本地路径），
+        // 挂在常驻 player 上，切集时随 load 开头 detach
+        let tracker = PlaybackProgressTracker(identity: episode.identity)
+        tracker.onResumed = { [weak self] value in self?.handleResumed(value) }
+        tracker.attach(to: player)
+        progressTracker = tracker
 
         playerService.makeItem(for: episode) { [weak self] item in
             guard let self, generation == self.loadGeneration else {
@@ -148,6 +168,8 @@ final class DramaPlayerViewModel: ObservableObject {
         scheduleScrubLinger(ms: 3000)
         if wasPlaying {
             player.pause()
+            // 暂停点就是用户看到的位置，不等 5 秒边界立即落盘
+            progressTracker?.flush()
             return
         }
         if let duration = player.currentItem?.duration,
@@ -156,6 +178,13 @@ final class DramaPlayerViewModel: ObservableObject {
             player.seek(to: .zero)
         }
         player.play()
+    }
+
+    /// 关键时机之一：App 进后台时由视图层转发调用，把内存里攒的位置先落库
+    func flushProgress() {
+        guard let progressTracker else { return }
+        progressTracker.flush()
+        print("PLAYER_DBG [Playback] progressFlush reason=external")
     }
 
     /// 点按右侧时长 label：总时长 ↔ 剩余时间（负值）切换，本地持久化（PlayerPreferences）
@@ -210,11 +239,16 @@ final class DramaPlayerViewModel: ObservableObject {
         guard isSeekGestureActive else { return }
         isSeekGestureActive = false
         scheduleScrubLinger()
+        // 拖完就落盘：拖到片尾直接退出也应当记住位置（未起手势时为空操作）
+        progressTracker?.flush()
         print("PLAYER_DBG [Playback] seekGesture end")
     }
 
     func stop() {
         print("PLAYER_DBG [Playback] stop")
+        // 退出前把本集位置落盘（趁 item 还在），再拆观察器与播放器
+        progressTracker?.detach()
+        progressTracker = nil
         loadGeneration += 1
         statusWatch?.invalidate()
         statusWatch = nil
@@ -301,6 +335,8 @@ final class DramaPlayerViewModel: ObservableObject {
             case .ready:
                 self.isReady = true
                 self.cancelSpinnerDelay()
+                // 就绪即尝试续播（时长未稳时跟踪器会在首个 tick 再试一次）
+                _ = self.progressTracker?.resumeIfNeeded()
                 let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
                 print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(self.player.rate) control=\(self.player.timeControlStatus.rawValue)")
             case .failed(let message):
@@ -385,6 +421,24 @@ final class DramaPlayerViewModel: ObservableObject {
         scrubLingerWork?.cancel()
         scrubLingerWork = nil
         isScrubbing = false
+    }
+
+    /// 点赞 / 收藏写库：回填期间与还没有身份（未下载占位卡）时都不写
+    private func writeAction(column: String, value: Bool) {
+        guard !isRestoringActions, let currentIdentity else { return }
+        if column == "liked" {
+            EpisodeActionsStore.setLiked(value, for: currentIdentity)
+        } else {
+            EpisodeActionsStore.setSaved(value, for: currentIdentity)
+        }
+        print("PLAYER_DBG [Playback] action \(column)=\(value) id=\(currentIdentity.label) → persist")
+    }
+
+    /// 续播落地：立即刷新时间文案，并闪现进度 HUD 1.5s 让用户看到「从哪继续」
+    private func handleResumed(_ value: PlaybackProgress) {
+        syncTime(CMTime(seconds: value.seconds, preferredTimescale: 600))
+        showScrubHud(reason: "resume")
+        scheduleScrubLinger(ms: 1500)
     }
 
     private func ensureObserver() {

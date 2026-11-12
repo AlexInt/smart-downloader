@@ -41,6 +41,10 @@ struct PlayerFeedView: View {
             }
         }
         .background(DWColor.background.ignoresSafeArea())
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            // 进后台是落库的关键时机之一：用户可能直接划掉 App，内存值不落盘就丢
+            vm.flushProgress()
+        }
     }
 
     @ViewBuilder

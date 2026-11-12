@@ -391,7 +391,8 @@ final class DramaPageViewModel: ObservableObject {
             intro: intro,
             tags: tags,
             startSort: ep.sort,
-            knownSorts: info.episodes.map(\.sort)   // 剧集页已持有全剧集数，直接同步给调度 service
+            knownSorts: info.episodes.map(\.sort),   // 剧集页已持有全剧集数，直接同步给调度 service
+            target: target                            // 站点/剧 id 直达，行为数据不靠剧名猜
         )
     }
 }

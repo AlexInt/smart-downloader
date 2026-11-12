@@ -240,7 +240,7 @@ struct DramaPlayerView: View {
                         .designFrame(326, 458, 48, 48)
                         .allowsHitTesting(false)
 
-                    // 点赞/收藏按集记忆（PlayerPreferences.key）：邻卡读到的都是当前集的状态，
+                    // 点赞/收藏按集的服务端 id 记忆（EpisodeActionsStore）：邻卡读到的都是当前集的状态，
                     // 显示会错标 —— 邻卡强制未点亮态、动作不落账（待办 #3 状态显示隔离）
                     Button {
                         guard isActive else { return }

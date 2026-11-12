@@ -6,6 +6,9 @@ import Foundation
 struct PlayableEpisode: Identifiable, Equatable {
     let sort: Int
     let playlistURL: URL?
+    /// 行为数据（进度/点赞/收藏）归属：队列服务构槽位时一次性解析好，
+    /// 播放侧不再自己拼键，避免两处规则漂移
+    let identity: MediaIdentity
     var id: String { "\(sort)" }
     var isAvailable: Bool { playlistURL != nil }
 }
@@ -21,6 +24,9 @@ struct ImmersivePlaybackRequest: Identifiable {
     var tags: String? = nil
     let startSort: Int
     var knownSorts: [Int] = []
+    /// 剧集页入口带上的站点/剧 id（行为数据走 episode_id）；
+    /// 下载页入口只有剧名，为 nil 时由队列服务按剧名反查
+    var target: DramaTarget? = nil
 }
 
 /// 滑动方向

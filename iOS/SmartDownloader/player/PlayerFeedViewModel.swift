@@ -143,6 +143,11 @@ final class PlayerFeedViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
+    /// 关键时机落库（View 在 App 进后台时转发）：内存里攒的位置写进行为数据表
+    func flushProgress() {
+        playback.flushProgress()
+    }
+
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
         // 停稳防抖与在飞加载一并作废

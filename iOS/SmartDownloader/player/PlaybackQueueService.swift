@@ -39,7 +39,7 @@ struct PlaybackQueueService {
         self.seriesName = request.seriesName
         self.intro = request.intro
         self.tags = request.tags
-        slots = Self.buildSlots(forSeries: request.seriesName, knownSorts: request.knownSorts)
+        slots = Self.buildSlots(forSeries: request.seriesName, knownSorts: request.knownSorts, target: request.target)
         current = slots.first { $0.sort == request.startSort }
             ?? slots.first { $0.isAvailable }
             ?? slots.first
@@ -104,6 +104,14 @@ struct PlaybackQueueService {
         slots.last { $0.sort < from.sort }
     }
 
+    /// 行为数据身份：target 直达优先，没有才按剧名反查（同名多剧会有歧义日志）
+    private static func resolveIdentity(name: String, target: DramaTarget?) -> DramaCache.SeriesIdentity? {
+        if let target, let byTarget = DramaCache.seriesIdentity(site: target.site, dramaID: target.dramaID) {
+            return byTarget
+        }
+        return DramaCache.seriesIdentity(forSeriesName: name)
+    }
+
     // MARK: - 候选池构建（离线，不联网，不编造集号）
 
     /// 集号来源优先级：调用方已知的全剧集数 → 本地 SQLite 缓存反查 → 真实已下载的集。
@@ -124,7 +132,10 @@ struct PlaybackQueueService {
     }
 
     /// 文件系统是「是否已下载」的账本，集号来自调用方 / DramaCache。
-    private static func buildSlots(forSeries name: String, knownSorts: [Int]) -> [PlayableEpisode] {
+    /// 行为数据身份（进度/点赞/收藏）在这里一次算清：剧集页入口带 target 直达 (site, drama_id)，
+    /// 下载页入口只有剧名则按名反查；集号查不到服务端 id 的（散装、缓存缺失）退化成本地路径，
+    /// 宁可退回路径键也不猜一个 id 把数据挂到别的集上。
+    private static func buildSlots(forSeries name: String, knownSorts: [Int], target: DramaTarget?) -> [PlayableEpisode] {
         let fm = FileManager.default
         let dir = DownloadEngine.seriesDirectory(for: name)
         let subs = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
@@ -137,9 +148,16 @@ struct PlaybackQueueService {
         }
         let sorts = allSorts(forSeries: name, known: knownSorts, downloaded: Array(downloaded.keys))
         let available = sorts.filter { downloaded[$0] != nil }
-        print("PLAYER_DBG [Service] buildSlots series=\(name) slots=\(sorts.count) available=\(available) diskFolders=\(Array(downloaded.keys).sorted())")
+        let series = resolveIdentity(name: name, target: target)
+        let idsBySort = series?.episodeIDsBySort ?? [:]
+        print("PLAYER_DBG [Service] buildSlots series=\(name) slots=\(sorts.count) available=\(available) diskFolders=\(Array(downloaded.keys).sorted()) identity=\(series.map { "\($0.site)#\($0.dramaID)" } ?? "nil") idMatched=\(idsBySort.count)")
         return sorts
-            .map { PlayableEpisode(sort: $0, playlistURL: downloaded[$0]) }
+            .map { sort in
+                let playlist = downloaded[sort]
+                return PlayableEpisode(sort: sort, playlistURL: playlist,
+                                       identity: EpisodeActionsStore.identity(series: series, sort: sort,
+                                                                              playlistURL: playlist))
+            }
             .sorted { $0.sort < $1.sort }
     }
 }
