@@ -55,27 +55,46 @@ struct SettingsView: View {
         } header: {
             Text("浏览页快捷站点")
         } footer: {
-            Text("key 显示在网址栏下方，value 是点它要访问的网址；标签行超出屏宽可左右滑动。")
+            Text("key 显示在网址栏下方，value 是点它要访问的网址；标签行超出屏宽可左右滑动。\n点右侧圆圈设为默认：下次启动浏览区直接加载该网址，优先于「恢复上次访问页」；再点一次可取消。")
         }
     }
 
-    /// 单行：左显 key、右显 value，点行进编辑器，左滑删除
+    /// 单行：左显 key + 默认标记、右显 value，点行进编辑器；右侧圆圈单选「默认加载」，左滑删除。
+    /// 两个 Button 平级放在 HStack 里（不嵌套），避免 List 行点击被外层 Button 整行吞掉。
     private func quickLinkRow(_ link: QuickLink) -> some View {
-        Button {
-            viewModel.beginEdit(link)
-        } label: {
-            HStack(spacing: 10) {
-                Text(link.name)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(link.url)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        HStack(spacing: 8) {
+            Button { viewModel.beginEdit(link) } label: {
+                HStack(spacing: 8) {
+                    Text(link.name)
+                        .lineLimit(1)
+                    if viewModel.isDefault(link) {
+                        Text("默认")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(DWColor.gold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(DWColor.gold.opacity(0.16), in: Capsule())
+                    }
+                    Spacer(minLength: 8)
+                    Text(link.url)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button { viewModel.toggleDefault(link) } label: {
+                Image(systemName: viewModel.isDefault(link) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(viewModel.isDefault(link) ? DWColor.gold : .secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(viewModel.isDefault(link) ? "取消默认加载" : "设为默认加载")
         }
-        .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 viewModel.remove(link)

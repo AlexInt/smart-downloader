@@ -3,12 +3,10 @@ import WebKit
 
 /// 浏览页：WKWebView 加载视频资源网页 + 注入 m3u8 嗅探脚本 + 一键下载按钮
 struct BrowserView: View {
-    /// 站点地址不写入代码：记住上次访问页面，启动时直接恢复
-    static let lastPageKey = "BrowserView.lastPageURL"
+    /// 起始页统一由 Browser 域 Service 决策：设置页选中的默认快捷站点 > 上次访问页 > 空白页
+    ///（见 Browser/BrowserStartPage.swift，View 层不再碰 UserDefaults）。
     /// 冒烟测试时临时把默认起始页改为 "http://127.0.0.1:8899/test.html"（见 iOS/smoke/ 目录）
-    static var initialURLString: String {
-        UserDefaults.standard.string(forKey: lastPageKey) ?? "about:blank"
-    }
+    static var initialURLString: String { BrowserStartPage().startURLString }
 
     /// 快捷站点：地址与显示名都在设置页配置（`QuickLinkStore` 存 key/value 多条），
     /// 站点地址不再写死在代码里；列表超出屏宽可左右滑
@@ -262,8 +260,8 @@ struct WebViewContainer: UIViewRepresentable {
         private var provisionalRetries = 0
         /// 主帧 URL KVO（SPA pushState 换页不触发 didCommit，靠它同步地址栏/剧集页检测）
         var urlObservation: NSKeyValueObservation?
-        /// 启动时恢复的“上次页面”尚未成功 commit 过；首次加载失败则重置起始页，避免冷启动反复卡在同一坏地址
-        private var isInitialRestoreLoad = true
+        /// 起始页（默认站点或上次访问页）尚未成功 commit 过；首次加载失败则清掉上次访问页记录
+        private var isInitialLoad = true
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         // JS -> 原生：嗅探到 m3u8（消息回调固定在主线程）
@@ -293,12 +291,12 @@ struct WebViewContainer: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             provisionalRetries = 0
-            isInitialRestoreLoad = false
+            isInitialLoad = false
             parent.store.loadError = nil
             print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
             if let current = webView.url?.absoluteString {
                 if parent.isPrimaryBrowser {
-                    UserDefaults.standard.set(current, forKey: BrowserView.lastPageKey)
+                    BrowserStartPage().lastVisitedURL = current
                 }
                 parent.address = current
             }
@@ -373,12 +371,13 @@ struct WebViewContainer: UIViewRepresentable {
                 }
                 return
             }
-            // 启动恢复的页面首次加载就失败：清掉保存的起始页，下次冷启动不再卡在同一地址
-            if isInitialRestoreLoad && parent.isPrimaryBrowser {
-                isInitialRestoreLoad = false
-                UserDefaults.standard.removeObject(forKey: BrowserView.lastPageKey)
-                parent.store.loadError = "\(error.localizedDescription)（上次页面无法打开，已重置起始页，请重新访问）"
-                print("BROWSER: 初始恢复页加载失败，已重置保存的起始页")
+            // 起始页首次加载就失败：清掉「上次访问页」记录，避免回落路径反复卡在同一坏地址。
+            // 默认站点是用户在设置里显式选的，不自动取消（静默改设置更糟），只在提示里让用户去检查。
+            if isInitialLoad && parent.isPrimaryBrowser {
+                isInitialLoad = false
+                BrowserStartPage().lastVisitedURL = nil
+                parent.store.loadError = "\(error.localizedDescription)（起始页无法打开，请到设置检查默认站点或直接输入网址）"
+                print("BROWSER: 起始页加载失败，已重置上次访问页记录")
                 return
             }
             parent.store.loadError = error.localizedDescription

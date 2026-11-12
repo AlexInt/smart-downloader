@@ -86,8 +86,8 @@ View → ViewModel → Service → 系统能力 / Model
 - `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `MediaIdentity` / `ApiDramaEpisode` / `DramaInfo` / `DramaError` / `EpisodeDownloadPhase`）、`DownloadModels.swift`（`TaskState` / `DownloadError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`）。只放被 2 个以上域引用的类型，不塞 Service / 业务逻辑
 - `Drama/`：剧集域。Model（`DramaDetailData` 详情 DTO / `RecommendedDrama` 推荐卡片纯数据 / `DramaArchive` 档案展示行与派生纯函数）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites` / `EpisodeActionsStore` 集级行为数据表 / `DramaDatabase` 统一连接与迁移）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`）、组装根（`DramaNativePage`）
 - `Downloads/`：下载域。`Downloader`（Service：下载核心 + 任务/队列）、`DownloadsViewModel`（VM）、`DownloadsView`（View）
-- `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）
-- `Settings/`：设置域。Service（`QuickLinkStore` 快捷站点 key/value 持久化 / `AppLaunchPreferences` 启动 tab 持久化）、ViewModel（`SettingsViewModel`）、View（`SettingsView` + `QuickLinkEditorSheet`）
+- `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）、`BrowserStartPage`（Service：起始页优先级决策 + 上次访问页持久化；View 层不再碰 UserDefaults）
+- `Settings/`：设置域。Service（`QuickLinkStore` 快捷站点 key/value 与「默认加载站点 id」持久化 / `AppLaunchPreferences` 启动 tab 持久化）、ViewModel（`SettingsViewModel`）、View（`SettingsView` + `QuickLinkEditorSheet`）
 - `Infra/`：系统能力。`LocalMediaServer`（本地回环 HTTP）、`WebKitFetcher`（WKDownload 兜底）
 - `player/`：播放域，五层齐全。Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `PlayerPreferences` / `PlaybackPlayerService` / `PlayerGesturePolicy` / `PlaybackProgressTracker` 进度落库与续播）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerPagingScrollView` / `PlayerSurfaceView`）、组装根（`DramaPlayerContainer`）
 - `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定

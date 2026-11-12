@@ -43,6 +43,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 「为你推荐」专区 | `Drama/RecommendedDrama.swift`（纯数据）+ `DramaCache.relatedDramas` 由 5 列扩到 8 列（补 `play_count_text` / `serialize_status_text` / `content_access_type`）；双列瀑布流、封面 228/184/150 三档循环、连载+VIP 角标、标题/标签/播放量；卡片点击由 `DramaNativePage` 的 `navigationDestination` 再推一层剧集页（站点从 `target.site` 推导，不硬编码） | 同上 |
 | 「剧集档案」区 | `Drama/DramaArchive.swift` 把 `api_detail` 整包解码回 `DramaDetailData` 后纯函数派生分组展示行：数据表现 / 内容规格 / 权限与付费 / 角标状态 / 催更 / 服务端观看进度 / 分享与链接 / 每集元数据 / 本地记录；0 与 nil 如实显示，不编造文案 | 真实样本 3703.json：解码 4 集 / 10 推荐，档案 9 组 70 行、VIP 角标正确；**待真机回归** |
 | 设计稿三项补齐（同日追加） | ① 格子右下 18×18 状态角标：已下载金色三角 / 未下载灰色下载箭头，下载中与选中集不叠加（同 `[aria-checked=true]` 规则）；② 进度环由绿改回设计稿金色 `#F5C451`（排队淡金轨道 / 下载中闭环 / 完成闭环 / `n/100` / 已下载淡金底同色系，失败仍红环）；③ 「查看全部 ›」由 sheet 改为**内联展开** 13 集以后（6 列 × 56pt，文案切「收起 ›」，≤12 集置灰禁用），推荐/档案按 `extraEpisodeRows` 一起下推。原 sheet 的全选/清空/下载所选搬进展开区底部工具条，刷新移到选集行 ↻，能力不丢 | 模拟器构建 0 error / 0 warning，**待真机回归** |
+| 快捷站点默认加载 | 设置页快捷站点行右侧圆圈单选「默认」（再点取消，默认行带金色标记）；`QuickLinkStore.defaultLinkID` 单独存 UUID（不改 `[QuickLink]` JSON、无需迁移），按 id 查当前列表取 URL，编辑网址自动跟随、条目被删自动回落。新增 `Browser/BrowserStartPage.swift` 统一决策「默认站点 > 上次访问页 > 空白页」，顺手把 View 层的 `UserDefaults.standard` 收进 Service | 模拟器构建 0 error / 0 warning；起始页 8 场景冒烟全过，**待真机验证** |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 

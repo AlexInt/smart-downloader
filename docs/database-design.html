@@ -763,12 +763,13 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
     <tr><th>键</th><th>值类型</th><th>内容</th><th>维护方</th></tr>
     <tr><td class="name">Settings.launchTab</td><td class="type">Int</td><td>启动落在哪个 tab（MainTab.rawValue：0 浏览 / 1 下载 / 2 设置），缺省 = 下载</td><td>AppLaunchPreferences</td></tr>
     <tr><td class="name">Settings.quickLinks</td><td class="type">Data(JSON)</td><td>浏览页快捷站点数组 <code>[{id: UUID, name: key, url: value}]</code>；从未配置时回落内置默认一项，删空则保持空</td><td>QuickLinkStore</td></tr>
+    <tr><td class="name">Settings.defaultQuickLinkID</td><td class="type">String</td><td>被选为「浏览区默认加载」的快捷站点 UUID 字符串；缺省 / 删除 = 未设默认，回落恢复上次访问页。单独存 id 而非往列表 JSON 塞布尔值：编辑网址不改 id、删条目自动失效、旧数据无需迁移</td><td>QuickLinkStore</td></tr>
     <tr><td class="name">DramaPlayer.muted</td><td class="type">Bool</td><td>播放器静音（全局开关）</td><td>PlayerPreferences</td></tr>
     <tr><td class="name">DramaPlayer.cleanScreen</td><td class="type">Bool</td><td>清屏模式（全局开关）</td><td>PlayerPreferences</td></tr>
     <tr><td class="name">DramaPlayer.showRemainingTime</td><td class="type">Bool</td><td>进度条右侧显示剩余时间还是总时长（全局开关）</td><td>PlayerPreferences</td></tr>
     <tr><td class="name">DramaDetail.favorite.&lt;site&gt;#&lt;dramaID&gt;</td><td class="type">Bool</td><td><b>剧级</b>收藏（与集级 saved 不同维度）</td><td>DramaFavorites</td></tr>
     <tr><td class="name">DramaAPI.token.&lt;site&gt;</td><td class="type">String</td><td>站点登录 token（失效时删除重登）</td><td>DramaSession</td></tr>
-    <tr><td class="name">BrowserView.lastPageURL</td><td class="type">String</td><td>浏览页上次访问地址，冷启动恢复；首启加载失败会被清掉</td><td>BrowserView / WebViewContainer</td></tr>
+    <tr><td class="name">BrowserView.lastPageURL</td><td class="type">String</td><td>浏览页上次访问地址；<b>仅在未设默认站点时</b>冷启动恢复（优先级见 <code>BrowserStartPage.startURLString</code>）；起始页首启加载失败会被清掉</td><td>BrowserStartPage</td></tr>
     <tr><td class="name">DownloadsView.sortOrder</td><td class="type">String</td><td>下载列表排序（newestFirst / oldestFirst），剧详情页共用同一键</td><td>DownloadsViewModel / SeriesDetailView</td></tr>
     <tr style="background:#fdf6e7"><td class="name">DramaPlayer.liked.* / saved.* / PlaybackProgress.*</td><td class="type">—</td><td><b>已废弃</b>：v1 迁移搬进库后删除，代码里不再读写</td><td>（历史）</td></tr>
   </table>

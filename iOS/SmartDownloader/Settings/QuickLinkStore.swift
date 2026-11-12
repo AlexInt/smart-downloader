@@ -8,6 +8,8 @@ import Foundation
 struct QuickLinkStore {
     private let defaults: UserDefaults
     private static let storageKey = "Settings.quickLinks"
+    /// 「浏览区默认加载」选中的站点 id，独立于列表 JSON 存
+    private static let defaultIDKey = "Settings.defaultQuickLinkID"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -24,6 +26,32 @@ struct QuickLinkStore {
     func save(_ links: [QuickLink]) {
         guard let data = try? JSONEncoder().encode(links) else { return }
         defaults.set(data, forKey: Self.storageKey)
+    }
+
+    /// 被选为「浏览区默认加载」的快捷站点 id；nil = 未设默认（回落恢复上次访问页）。
+    /// 单独存 id 而不是往 `[QuickLink]` 里塞 isDefault：删条目 / 恢复默认列表时不必维护
+    /// 布尔标记，旧版已存的 JSON 也天然兼容、不需要迁移；编辑网址不改 id，下次启动自动跟随新地址。
+    var defaultLinkID: UUID? {
+        get {
+            guard let raw = defaults.string(forKey: Self.defaultIDKey),
+                  let id = UUID(uuidString: raw) else { return nil }
+            return id
+        }
+        // defaults 是引用类型，nonmutating set 允许从 `let` 实例写入（同 AppLaunchPreferences）
+        nonmutating set {
+            if let id = newValue {
+                defaults.set(id.uuidString, forKey: Self.defaultIDKey)
+            } else {
+                defaults.removeObject(forKey: Self.defaultIDKey)
+            }
+        }
+    }
+
+    /// 按 id 在当前列表里解析默认站点的网址（纯查找，无 IO）。
+    /// 找不到（条目被删 / 恢复默认列表换了 id）返回 nil，由起始页链路回落，不留悬空地址。
+    func defaultURL(in links: [QuickLink]) -> String? {
+        guard let id = defaultLinkID else { return nil }
+        return links.first { $0.id == id }?.url
     }
 
     /// 内置默认：仅在用户从未配置时兜底（原 `BrowserView.quickLinks` 硬编码数组搬到这里），

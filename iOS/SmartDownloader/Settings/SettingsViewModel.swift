@@ -13,6 +13,9 @@ final class SettingsViewModel: ObservableObject {
     /// 浏览页网址栏下方的快捷站点，数组顺序即 label 显示顺序；改完由浏览页切回时重新读取
     @Published private(set) var links: [QuickLink]
 
+    /// 被选为「浏览区默认加载」的站点 id（单选；nil = 未设默认，回落恢复上次访问页）
+    @Published private(set) var defaultLinkID: UUID?
+
     /// 编辑器草稿：非 nil 即弹出新增/编辑 sheet，取消或完成都置回 nil
     @Published var draft: QuickLink?
     /// 草稿来源是否为「新增」：决定编辑器标题和是否给删除入口
@@ -25,6 +28,26 @@ final class SettingsViewModel: ObservableObject {
         // init 内的赋值不触发 didSet，不会把刚读出来的值再写回去
         self.launchTab = launchPreferences.launchTab
         self.links = linkStore.load()
+        self.defaultLinkID = linkStore.defaultLinkID
+    }
+
+    // MARK: - 默认加载站点
+
+    func isDefault(_ link: QuickLink) -> Bool { defaultLinkID == link.id }
+
+    /// 单选：点别的直接覆盖，点已默认的那条则取消（回落恢复上次访问页）。
+    /// 选中的条目就是下次浏览区加载的网页页面（见 Browser/BrowserStartPage.swift）。
+    func toggleDefault(_ link: QuickLink) {
+        let next: UUID? = defaultLinkID == link.id ? nil : link.id
+        defaultLinkID = next
+        linkStore.defaultLinkID = next
+    }
+
+    /// 默认条目被删 / 列表被重置后清掉悬空 id，避免下次启动静默回落到旧页面
+    private func clearStaleDefaultIfNeeded() {
+        guard let id = defaultLinkID, !links.contains(where: { $0.id == id }) else { return }
+        defaultLinkID = nil
+        linkStore.defaultLinkID = nil
     }
 
     // MARK: - 意图
@@ -66,12 +89,15 @@ final class SettingsViewModel: ObservableObject {
     func remove(_ link: QuickLink) {
         links.removeAll { $0.id == link.id }
         persistLinks()
+        clearStaleDefaultIfNeeded()
     }
 
-    /// 恢复内置默认列表（用户删空/改乱后的一键回退入口）
+    /// 恢复内置默认列表（用户删空/改乱后的一键回退入口）。
+    /// 注意 defaultLinks 每次构造都是新 UUID，恢复后旧的默认 id 必然失效。
     func restoreDefaults() {
         links = QuickLinkStore.defaultLinks
         persistLinks()
+        clearStaleDefaultIfNeeded()
     }
 
     // MARK: - 私有
