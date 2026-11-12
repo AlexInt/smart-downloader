@@ -5,6 +5,8 @@ struct PlayerItem: Identifiable {
     let id = UUID()
     let url: URL
     let isHLSFolder: Bool
+    /// 行为数据归属：由列表侧解析后带入，AVKit 播放记的位置才能和列表读的是同一条
+    let identity: MediaIdentity
 }
 
 /// 下载页排列顺序（偏好跨页面共享并持久化）
@@ -57,6 +59,8 @@ enum DownloadPage: Int, Hashable {
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
     @StateObject private var vm: DownloadsViewModel
+    /// 「播到哪」只读状态：进入页面 / 任务变化 / 播放入口关闭时刷新
+    @StateObject private var progressVM = PlaybackProgressViewModel()
 
     init(manager: DownloadManager) {
         self.manager = manager
@@ -136,9 +140,11 @@ struct DownloadsView: View {
                 Button("取消", role: .cancel) { vm.cancelDeleteSeries() }
             }
         }
-        .sheet(item: $vm.playerRequest) { item in
+        .sheet(item: $vm.playerRequest, onDismiss: { progressVM.refresh(manager.tasks) }) { item in
             PlayerView(item: item)
         }
+        .onAppear { progressVM.refresh(manager.tasks) }
+        .onChange(of: manager.tasks.count) { _, _ in progressVM.refresh(manager.tasks) }
     }
 
     /// 左页：进行中（等待/解析/下载/保存/失败），左滑删除任务
@@ -242,15 +248,15 @@ struct DownloadsView: View {
                 HStack(spacing: 12) {
                     Image(systemName: vm.selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
                         .foregroundColor(vm.selected.contains(task.id) ? .blue : .secondary)
-                    TaskRow(task: task)
+                    TaskRow(task: task, progress: progressVM.progress(for: task))
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else {
-            TaskRow(task: task)
+            TaskRow(task: task, progress: progressVM.progress(for: task))
                 .contentShape(Rectangle())
-                .onTapGesture { vm.handleTap(task) }
+                .onTapGesture { vm.handleTap(task, identity: progressVM.identity(for: task)) }
         }
     }
 
@@ -279,6 +285,8 @@ struct SeriesDetailView: View {
     /// 剧集点播走沉浸式播放页；playerItem 仅作非 HLS 文件夹的 AVKit 回退
     @State private var immersivePlayback: ImmersivePlaybackRequest?
     @State private var confirmDelete = false
+    /// 「播到哪」只读状态：进入本页 / 播放入口关闭时刷新
+    @StateObject private var progressVM = PlaybackProgressViewModel()
     /// 与下载页共用同一个排序偏好，两个页面的先后顺序一致
     @AppStorage("DownloadsView.sortOrder") private var sortOrder: DownloadSortOrder = .newestFirst
 
@@ -289,7 +297,7 @@ struct SeriesDetailView: View {
     var body: some View {
         List {
             ForEach(episodes) { task in
-                TaskRow(task: task, showSeries: false)
+                TaskRow(task: task, showSeries: false, progress: progressVM.progress(for: task))
                     .contentShape(Rectangle())
                     .onTapGesture { playIfDone(task) }
             }
@@ -312,12 +320,18 @@ struct SeriesDetailView: View {
             isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("删除全剧", role: .destructive) { manager.deleteSeries(seriesName) }
         }
-        .sheet(item: $playerItem) { item in
+        .sheet(item: $playerItem, onDismiss: { refreshProgress() }) { item in
             PlayerView(item: item)
         }
-        .fullScreenCover(item: $immersivePlayback) { request in
+        .fullScreenCover(item: $immersivePlayback, onDismiss: { refreshProgress() }) { request in
             DramaPlayerContainer(request: request, onClose: { immersivePlayback = nil })
         }
+        .onAppear { refreshProgress() }
+    }
+
+    /// 播放进度由播放页落盘，本页只在进入与播放入口关闭时重新读取
+    private func refreshProgress() {
+        progressVM.refresh(episodes)
     }
 
     /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
@@ -329,7 +343,7 @@ struct SeriesDetailView: View {
         }
         guard task.isHLSFolder else {
             print("PLAYER_DBG [Entry] playIfDone → AVKit fallback (non-HLS) title=\(task.title)")
-            playerItem = PlayerItem(url: url, isHLSFolder: false)
+            playerItem = PlayerItem(url: url, isHLSFolder: false, identity: progressVM.identity(for: task))
             return
         }
         let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 1
@@ -346,6 +360,8 @@ struct TaskRow: View {
     @ObservedObject var task: DownloadTask
     /// 队列行是否附剧名前缀（剧详情页内不需要）
     var showSeries = true
+    /// 播放到哪儿（播放域写入，列表只读展示）；nil = 从未播放
+    var progress: PlaybackProgress? = nil
 
     private var rowTitle: String {
         if showSeries, let series = task.seriesName { return "\(series) · \(task.title)" }
@@ -396,8 +412,26 @@ struct TaskRow: View {
             let base = task.isFromLibrary ? "本地文件" : "已保存到 \(task.displayName)"
             Text("\(base) · \(task.createdAt.downloadsListText)")
                 .font(.caption).foregroundColor(.secondary)
+            if let progress { playbackLine(progress) }
         case .failed(let message):
             Text("失败: \(message)").font(.caption).foregroundColor(.red)
+        }
+    }
+
+    /// 已完成条目的播放进度：薄进度条 + 时间（看完只给文字）
+    @ViewBuilder
+    private func playbackLine(_ progress: PlaybackProgress) -> some View {
+        if progress.isFinished {
+            Label("已看完", systemImage: "checkmark.seal")
+                .font(.caption2).foregroundColor(.secondary)
+        } else {
+            HStack(spacing: 6) {
+                ProgressView(value: progress.fraction)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 110)
+                Text("播至 \(progress.text)")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -407,6 +441,8 @@ struct PlayerView: View {
     let item: PlayerItem
     @State private var player: AVPlayer?
     @State private var loadError: String?
+    /// 进度跟踪：AVKit 播放入口也要记住位置，否则从下载页播的条目永远显示「未播放」
+    @State private var progressTracker: PlaybackProgressTracker?
 
     var body: some View {
         Group {
@@ -430,6 +466,10 @@ struct PlayerView: View {
         .onAppear {
             let start: (URL) -> Void = { url in
                 let avPlayer = AVPlayer(url: url)
+                // key 用本地文件路径（HLS 实际播放走回环 http 地址，两者不能混用）
+                let tracker = PlaybackProgressTracker(identity: item.identity)
+                tracker.attach(to: avPlayer)
+                progressTracker = tracker
                 player = avPlayer
                 avPlayer.play()
             }
@@ -445,6 +485,10 @@ struct PlayerView: View {
             } else {
                 start(item.url)
             }
+        }
+        .onDisappear {
+            progressTracker?.detach()
+            progressTracker = nil
         }
     }
 }

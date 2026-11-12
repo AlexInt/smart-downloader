@@ -111,9 +111,11 @@ final class DownloadsViewModel: ObservableObject {
         if ids.isSubset(of: selected) { selected.subtract(ids) } else { selected.formUnion(ids) }
     }
 
-    /// 普通模式点击任务行：已完成 → 播放（AVKit sheet，散装/进行中沿用旧行为）
-    func handleTap(_ task: DownloadTask) {
+    /// 普通模式点击任务行：已完成 → 播放（AVKit sheet，散装/进行中沿用旧行为）。
+    /// identity 由调用方从列表侧解析带入（View → 自己的 VM → Service），
+    /// 这样「AVKit 播的位置」与「列表显示的位置」必然落在同一条记录上。
+    func handleTap(_ task: DownloadTask, identity: MediaIdentity) {
         guard task.state == .done, let url = task.outputURL else { return }
-        playerRequest = PlayerItem(url: url, isHLSFolder: task.isHLSFolder)
+        playerRequest = PlayerItem(url: url, isHLSFolder: task.isHLSFolder, identity: identity)
     }
 }

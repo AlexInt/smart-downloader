@@ -112,6 +112,19 @@ final class DownloadManager: ObservableObject {
             .compactMap { DownloadManager.episodeSort(fromFolderName: $0.title) })
     }
 
+    /// 文件删掉后清掉它的行为数据（进度/点赞/收藏）：库里留着永远读不到的死行，
+    /// 后续做统计（看到第几集、收藏数）会被这些脏数据污染。身份解析与播放/列表侧同一函数。
+    private func removeActions(for tasks: [DownloadTask]) {
+        for task in tasks {
+            guard let url = task.outputURL else { continue }
+            let identity = EpisodeActionsStore.identity(
+                seriesName: task.seriesName,
+                sort: DownloadManager.episodeSort(fromFolderName: task.title),
+                playlistURL: url)
+            EpisodeActionsStore.removeActions(for: identity)
+        }
+    }
+
     /// 多集调度用：登记一个等待中的集任务（不启动，由 SeriesDownloadCoordinator 统一调度）。
     /// 幂等：同剧同集已有活跃任务时直接复用，不重复插入列表。
     func registerEpisode(title: String, seriesName: String) -> DownloadTask {
@@ -125,8 +138,8 @@ final class DownloadManager: ObservableObject {
     }
 
     func delete(at offsets: IndexSet) {
-        for index in offsets {
-            let task = tasks[index]
+        let doomed = offsets.map { tasks[$0] }
+        for task in doomed {
             if task.state != .done { task.isCancelled = true }
             if let url = task.outputURL {
                 // HLS 条目删除整个文件夹，文件条目删除文件
@@ -134,6 +147,7 @@ final class DownloadManager: ObservableObject {
                 try? FileManager.default.removeItem(at: target)
             }
         }
+        removeActions(for: doomed)
         for index in offsets.sorted(by: >) where index < tasks.count {
             tasks.remove(at: index)
         }
@@ -155,6 +169,7 @@ final class DownloadManager: ObservableObject {
             return playlist.deletingLastPathComponent().deletingLastPathComponent()
         })
         for dir in dirs { try? FileManager.default.removeItem(at: dir) }
+        removeActions(for: members)
         tasks.removeAll { $0.seriesName == seriesName }
     }
 
@@ -169,6 +184,7 @@ final class DownloadManager: ObservableObject {
                 try? FileManager.default.removeItem(at: target)
             }
         }
+        removeActions(for: targets)
         let affectedSeries = Set(targets.compactMap(\.seriesName))
         tasks.removeAll { ids.contains($0.id) }
         let fm = FileManager.default
