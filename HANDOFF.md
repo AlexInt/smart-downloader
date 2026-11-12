@@ -364,11 +364,13 @@ Swift 5 语言模式下这些诊断为警告而非错误；切 `SWIFT_VERSION = 
 - `c1c7b22` smoke 五工具同步化（信号量/RunLoop）。
 - 本笔 docs。
 
-**验证（Mac 侧全过）**：模拟器构建 BUILD SUCCEEDED（仅 1 条 `loadValuesAsynchronously` deprecated 警告，GCD 路线预期内）；coretest --library 3×DONE；coretest Apple 流 181 切片 DONE；playtest 真实播放 PLAYING；FORCE_WEBKIT=1 coretest 181 切片 DONE（async 岛+信号量桥验证）。
+**验证（Mac 侧全过）**：模拟器构建 BUILD SUCCEEDED；coretest --library 3×DONE；coretest Apple 流 181 切片 DONE；playtest 真实播放 PLAYING；FORCE_WEBKIT=1 coretest 181 切片 DONE（async 岛+信号量桥验证）。
 
 **待用户真机回归**（行为不变量核对）：WiFi/蜂窝下载（IP 直连/WebKit 降级日志）、秒开 `makeItem HIT`、手势仲裁（长按 2x/横滑 seek/翻页）、toast 3s/HUD 800ms/清屏闪现 1500ms、剧集页加载/刷新/tags 收割。日志过滤 `PLAYER_DBG` / `DL[`。
 
 **注意**：迁移前工作区有一笔未提交的 Swift 6.2 `@MainActor run` 修复，已被本次重写覆盖（同段代码 GCD 化，意图保留）。
+
+**补充（同日，用户拍板消 deprecated 警告）**：`loadValuesAsynchronously` 的 iOS 16 deprecated 警告按「Apple 无同步/非废弃 API 的边界可留岛」原则消除——`PlaybackPlayerService.preloadOne` 与 smoke `playtest` 改回 `asset.load(.isPlayable/.duration)` 包 Task 岛（恢复迁移前真机验证过的写法，秒开行为不变），加载完成回主线程碰预热池状态。async 岛由一处增为两处（WebKit `startDownload` + 资产加载），AGENTS.md「并发与线程」节已同步。构建零警告。
 
 ## 6. 验证与调试
 
