@@ -13,7 +13,7 @@ final class PlaybackPlayerService {
     /// 预热完成的资产：集号 → 已解析过播放清单的 AVURLAsset
     private var preloadedAssets: [Int: AVURLAsset] = [:]
     /// 正在预热的集号（在飞标记）：淘汰/teardown 时移除，回调落地发现已移除即丢弃资产
-    ///（asset.load 不响应中途取消，与旧 Task.cancel + isCancelled 语义一致）
+    ///（asset.load 不响应中途取消，只能靠标记淘汰后丢弃）
     private var preloadingSorts: Set<Int> = []
 
     init() {
@@ -60,7 +60,7 @@ final class PlaybackPlayerService {
         let wanted = episodes.filter { $0.isAvailable }
         let wantedSorts = Set(wanted.map(\.sort))
 
-        // 淘汰在飞标记：迟到的预热回调发现标记没了就丢弃资产（等价旧 task.cancel）
+        // 淘汰在飞标记：迟到的预热回调发现标记没了就自行丢弃
         preloadingSorts.subtract(wantedSorts)
         let evictedAssets = preloadedAssets.keys.filter { !wantedSorts.contains($0) }
         for sort in evictedAssets {
@@ -117,7 +117,7 @@ final class PlaybackPlayerService {
                 } catch {
                     result = .failure(error)
                 }
-                // 在飞标记已被淘汰（teardown / 滑走）→ 丢弃，等价旧 Task.isCancelled 检查
+                // 在飞标记已被淘汰（teardown / 滑走）→ 丢弃本资产
                 guard let self, self.preloadingSorts.contains(episode.sort) else { return }
                 self.preloadingSorts.remove(episode.sort)
                 switch result {

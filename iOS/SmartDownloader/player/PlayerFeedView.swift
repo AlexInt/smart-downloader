@@ -25,7 +25,7 @@ struct PlayerFeedView: View {
                 )
                 .ignoresSafeArea()
                 // 停稳防抖收在 VM（schedulePageSettle）：快滑时旧 WorkItem 取消，
-                // 只在最后一页切换播放源（替代旧 .task(id:) 的自动取消）
+                // 只在最后一页切换播放源
                 .onAppear { vm.schedulePageSettle(sort: scrollID) }
                 .onChange(of: scrollID) { _, new in vm.schedulePageSettle(sort: new) }
                 // slots 就绪后把 UIKit 分页定位到用户点的那一集（只做一次）

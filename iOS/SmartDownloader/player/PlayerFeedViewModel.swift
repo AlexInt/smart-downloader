@@ -56,7 +56,7 @@ final class PlayerFeedViewModel: ObservableObject {
         print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil")")
     }
 
-    /// 滚动停稳防抖入口（View 的 onAppear/onChange 转发，替代旧 .task(id:) 自动取消）：
+    /// 滚动停稳防抖入口（View 的 onAppear/onChange 转发）：
     /// 150ms 内新滑动取消旧 WorkItem，只在最后一页切换播放源
     func schedulePageSettle(sort: Int?) {
         print("PLAYER_DBG [CHECK] feedTask start scrollID=\(sort.map(String.init) ?? "nil") vmBefore=\(currentSort.map(String.init) ?? "nil")")
@@ -126,9 +126,8 @@ final class PlayerFeedViewModel: ObservableObject {
     func isFirst(_ sort: Int) -> Bool { slots.first?.sort == sort }
     func isLast(_ sort: Int) -> Bool { slots.last?.sort == sort }
 
-    /// 2 秒后自动消失（用户指定）。旧实现 `toastID == id` 在连续提示时可能让清除被跳过，
-    /// 表现为 toast 一直挂着；改用「取消旧任务 + 令牌」，且不用 `guard !Task.isCancelled` ——
-    /// 即使 sleep 被取消，只要仍是当前令牌就必须把文案清掉。
+    /// 2 秒后自动消失（用户指定）。取消旧 WorkItem + UUID 令牌：连续提示时旧任务
+    /// 因令牌不匹配不会误清新提示，最后一条只要令牌仍匹配就必须无条件清掉（不留永久挂着的 toast）。
     func showToast(_ text: String) {
         toastTask?.cancel()
         let token = UUID()
@@ -146,7 +145,7 @@ final class PlayerFeedViewModel: ObservableObject {
 
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
-        // 停稳防抖与在飞加载一并作废（等价旧 .task 随视图消失自动取消）
+        // 停稳防抖与在飞加载一并作废
         settleWork?.cancel()
         settleWork = nil
         settleGeneration += 1

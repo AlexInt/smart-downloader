@@ -71,7 +71,7 @@ final class DramaPlayerViewModel: ObservableObject {
     private var spinnerDelayWork: DispatchWorkItem?
     private var scrubLingerWork: DispatchWorkItem?
     /// 加载代际：每次 load/stop 递增；KVO/看门狗/makeItem 回调捕获代际，
-    /// 过期一律丢弃（等价旧 Task 取消，防快滑/退出后迟到事件翻转状态）
+    /// 过期一律丢弃（防快滑/退出后迟到事件翻转状态）
     private var loadGeneration = 0
     private var statusWatch: StatusWatch?
     /// 清屏位置参照闪现进行中：闪现与 seek 残影是两种瞬态——切集的 load() 清残影时
