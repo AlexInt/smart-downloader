@@ -146,7 +146,7 @@ enum DramaCache {
         defer { sqlite3_close(db) }
         let infoSQL = "SELECT name, update_status, cover, intro, tags, fetched_at, page_meta FROM drama_cache WHERE site=? AND drama_id=?;"
         let epSQL = """
-        SELECT episode_id, sort, playable, downloaded, folder
+        SELECT episode_id, sort, playable, downloaded, folder, can_play, access_state
         FROM drama_episodes WHERE site=? AND drama_id=? ORDER BY sort;
         """
         var name: String?, status: String?, cover: String?, intro: String?, tags: String?, fetchedAt: String?
@@ -177,16 +177,26 @@ enum DramaCache {
         }
         DramaDatabase.bind(stmt, 1, site)
         DramaDatabase.bind(stmt, 2, dramaID)
+        var accessNotes: [String] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = Int(sqlite3_column_int64(stmt, 0))
             let sort = Int(sqlite3_column_int(stmt, 1))
             let playable = sqlite3_column_int(stmt, 2) != 0
             let downloaded = sqlite3_column_int(stmt, 3) != 0
             let folder = DramaDatabase.text(stmt, 4)
+            // 详情接口侧的可播判定（saveDetail 落库）：与下载接口侧 playable 对照，
+            // 两个源不一致时一眼定位是站点权限差异还是解析问题
+            let detailCanPlay = sqlite3_column_type(stmt, 5) == SQLITE_NULL
+                ? "?" : (sqlite3_column_int(stmt, 5) != 0 ? "1" : "0")
+            let detailState = DramaDatabase.text(stmt, 6) ?? ""
+            accessNotes.append("s\(sort):api=\(playable ? 1 : 0),dtl=\(detailCanPlay)/\(detailState.isEmpty ? "nil" : detailState)")
             episodes.append(ApiDramaEpisode(id: id, sort: sort, playable: playable,
                                          downloaded: downloaded, folder: folder))
         }
         sqlite3_finalize(stmt)
+        if !episodes.isEmpty {
+            print("PLAYER_DBG [CHECK] cacheLoad \(site)#\(dramaID) [\(accessNotes.joined(separator: " "))]")
+        }
         return Entry(name: name, updateStatus: status, cover: cover, intro: intro, tags: tags,
                      tagsSource: tagsSource, episodes: episodes, fetchedAt: fetchedAt)
     }
