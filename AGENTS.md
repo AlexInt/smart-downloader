@@ -139,6 +139,7 @@ View → ViewModel → Service → 系统能力 / Model
 5. **降噪**：连续事件（didScroll、seekFraction）按阈值节流；同一原因的 PENDING 只打一次。
 6. 排障结束后**保留**这些日志，不要清理；定位问题靠日志，不要靠猜测反复改代码。
 7. 取日志：Xcode Console 过滤 `PLAYER_DBG`；真机 `xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader`。本项目只禁浏览页截图，不禁 build/run/console。
+8. **开发即埋日志（用户要求 2026-11-13，能加尽加）**：写新代码 / 改现有代码时，能加日志的点全部顺手加上，不等排障再回头补——入口（触发源 + 关键参数）、分支判定（每个 guard/if 走了哪条、依据什么值）、状态变更（旧值 → 新值）、异步回调（完成 / 取消 / 迟到按代际丢弃）、提前 return 与失败分支。开发期加日志是零成本的，出了问题再补要多轮真机往返；第 5 条降噪只管高频事件节流，不是「少加」的理由。
 
 ## 网络与 WAF（重要背景）
 
