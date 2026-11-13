@@ -29,10 +29,12 @@ final class DownloadsViewModel: ObservableObject {
     @Published private(set) var seriesTotalBytes: Int64 = 0
     /// 上次已计算的全局输入指纹：done 任务 id 集 + 总数没变 → 连 work item 都不排（进度 tick 零成本）
     private var lastSizeSignature = ""
-    /// 每剧占用缓存：键 = 剧名，值 = (该剧 done 集 id 指纹, 字节)。
-    /// 全局指纹变了也只重扫「有增删的剧」，没动的剧直接复用缓存字节（用户要求 2026-11-13）。
-    /// 主线程约定：只在主线程读写（后台只负责扫盘）
-    private var seriesSizeCache: [String: (signature: String, bytes: Int64)] = [:]
+    /// 每集占用缓存（用户拍板 2026-11-13：按剧 id + 每集 id 键控，不用剧名/任务 UUID）。
+    /// 外层键 = 剧 cacheKey（`DramaCache.seriesIdentity` 命中 → "site#dramaID"；无身份退化 "name:<剧名>"），
+    /// 内层键 = 每集键（identity 的 episodeIDsBySort 命中 → "ep:<服务端集id>"；无身份退化 "uuid:<任务id>"）。
+    /// 集目录/文件下载完成后不可变 → 每集字节永久稳定：新增/删除一集只扫那一个新集，其余全复用。
+    /// 主线程约定：只在主线程读写（后台只负责扫盘）；删空的剧条目一并清除
+    private var episodeSizeCache: [String: (seriesName: String, episodes: [String: Int64])] = [:]
     private var sizeRecomputeWork: DispatchWorkItem?
     private var managerObservation: AnyCancellable?
 
@@ -75,36 +77,62 @@ final class DownloadsViewModel: ObservableObject {
         lastSizeSignature = signature
         let groups = Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
                                 by: { $0.seriesName! })
-        // 主线程决策：每剧自己的指纹（该集 done 集 id 集）对比缓存——
-        // 没增删的剧直接复用缓存字节，只把变了的剧交给后台扫盘
-        var reuse: [String: Int64] = [:]
-        var toScan: [(name: String, signature: String)] = []
-        for (name, eps) in groups {
-            let sig = eps.map(\.id.uuidString).sorted().joined(separator: ",")
-            if let cached = seriesSizeCache[name], cached.signature == sig {
-                reuse[name] = cached.bytes
-            } else {
-                toScan.append((name, sig))
-            }
+        // 主线程决策：剧身份 → cacheKey → 每集键对比缓存，只有缓存里没有的集才扫盘。
+        // 身份解析（SQLite 主线程读）每剧一次，失败退化剧名键控 + 任务 UUID 集键
+        struct SeriesPlan {
+            let cacheKey: String
+            let name: String
+            var reuse: [String: Int64]                                  // 每集键 → 缓存字节
+            var toScan: [(key: String, url: URL, isFolder: Bool)]       // 缓存没有的集
         }
-        // 被删空的剧：缓存条目一并清掉
-        seriesSizeCache = seriesSizeCache.filter { groups[$0.key] != nil }
+        var plans: [SeriesPlan] = []
+        for (name, eps) in groups {
+            let identity = DramaCache.seriesIdentity(forSeriesName: name)
+            let cacheKey = identity.map { "\($0.site)#\($0.dramaID)" } ?? "name:\(name)"
+            let cached = episodeSizeCache[cacheKey]?.episodes ?? [:]
+            var reuse: [String: Int64] = [:]
+            var toScan: [(key: String, url: URL, isFolder: Bool)] = []
+            for task in eps {
+                let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 0
+                let episodeKey = identity?.episodeIDsBySort[sort].map { "ep:\($0)" } ?? "uuid:\(task.id.uuidString)"
+                if let bytes = cached[episodeKey] {
+                    reuse[episodeKey] = bytes
+                } else if let out = task.outputURL {
+                    toScan.append((episodeKey, task.isHLSFolder ? out.deletingLastPathComponent() : out, task.isHLSFolder))
+                }
+            }
+            plans.append(SeriesPlan(cacheKey: cacheKey, name: name, reuse: reuse, toScan: toScan))
+        }
+        // 被删空的剧：缓存条目一并清除（按 seriesName 对位）
+        episodeSizeCache = episodeSizeCache.filter { groups[$0.value.seriesName] != nil }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let scanned: [(String, String, Int64)] = toScan.map {
-                ($0.name, $0.signature, DiskUsageService.directorySize(DownloadEngine.seriesDirectory(for: $0.name)))
+            let scanned: [(cacheKey: String, episodeKey: String, bytes: Int64)] = plans.flatMap { plan in
+                plan.toScan.map { item in
+                    (plan.cacheKey, item.key,
+                     item.isFolder ? DiskUsageService.directorySize(item.url) : DiskUsageService.fileSize(item.url))
+                }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                var sizes = reuse                    // 未变的剧用缓存
-                var total = reuse.values.reduce(0, +)
-                for (name, sig, bytes) in scanned {
-                    sizes[name] = bytes
-                    total += bytes
-                    self.seriesSizeCache[name] = (signature: sig, bytes: bytes)
+                var sizesBySeries: [String: Int64] = [:]
+                var total: Int64 = 0
+                var reusedCount = 0
+                var scannedCount = 0
+                for plan in plans {
+                    var episodes = plan.reuse
+                    reusedCount += episodes.count
+                    for item in scanned where item.cacheKey == plan.cacheKey {
+                        episodes[item.episodeKey] = item.bytes
+                        scannedCount += 1
+                    }
+                    self.episodeSizeCache[plan.cacheKey] = (seriesName: plan.name, episodes: episodes)
+                    let seriesTotal = episodes.values.reduce(0, +)
+                    sizesBySeries[plan.name] = seriesTotal
+                    total += seriesTotal
                 }
-                self.seriesSizes = sizes
+                self.seriesSizes = sizesBySeries
                 self.seriesTotalBytes = total
-                print("PLAYER_DBG [Service] diskUsage series=\(sizes.count) total=\(DiskUsageService.formatted(total)) reused=\(reuse.count) scanned=\(scanned.count)")
+                print("PLAYER_DBG [Service] diskUsage series=\(sizesBySeries.count) total=\(DiskUsageService.formatted(total)) episodesReused=\(reusedCount) episodesScanned=\(scannedCount)")
             }
         }
     }

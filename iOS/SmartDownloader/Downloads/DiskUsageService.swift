@@ -25,6 +25,13 @@ enum DiskUsageService {
         return total
     }
 
+    /// 单文件字节占用（不存在 = 0；散装非 HLS 条目用）
+    static func fileSize(_ url: URL) -> Int64 {
+        let values = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey])
+        guard values?.isRegularFile == true, let size = values?.totalFileAllocatedSize else { return 0 }
+        return Int64(size)
+    }
+
     /// 人读格式（file 计数风格：KB/MB/GB 自适应，固定一位小数由系统格式化）
     static func formatted(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
