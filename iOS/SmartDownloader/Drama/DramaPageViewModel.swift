@@ -64,6 +64,8 @@ final class DramaPageViewModel: ObservableObject {
     private var tagsSource: String?
     /// 本次访问是否已触发过详情采集（缓存分支与网络分支都会调 harvestIfNeeded）
     private var hasHarvestedThisVisit = false
+    /// 上次后台对账时间：同一页面实例 60s 内不重复打下载接口（SWR 节流）
+    private var lastRevalidatedAt: Date?
     /// 封面拉取在飞行中标志：三个赋值点先后走到 applyCover，不重复发同一请求
     private var coverFetchInFlight = false
     /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
@@ -365,17 +367,72 @@ final class DramaPageViewModel: ObservableObject {
         loading = true
         loadError = nil
         selected = []
-        // 缓存优先：同一剧集第二次打开直接读本地，不发网络请求（刷新按钮强制更新）
+        // 缓存优先（SWR，用户拍板 2026-11-13）：同一剧集第二次打开直接读本地展示，
+        // 同时后台拉下载接口对账（revalidateIfNeeded），不再「不点 ↻ 就永远旧」
         if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID),
            let info = DramaCache.dramaInfo(from: entry) {
             self.info = info
             fromCache = true
             applyLibraryState(for: info)
             harvestIfNeeded()
+            revalidateIfNeeded()
             loading = false
             return
         }
         fetchAndCache()
+    }
+
+    /// SWR 后台对账：进页即用缓存展示，同时拉下载接口（集列表/可播标记/剧名）——
+    /// 失败静默保留缓存；成功与内存 info 归一化对比，**有 diff 才落库+刷新**
+    /// （无 diff 不写库不重绘）。60s 内存节流防快速进出页打爆接口；↻ 刷新按钮
+    /// 走 fetchAndCache(forceHarvest:) 强制路径，不经这里。
+    private func revalidateIfNeeded() {
+        if let last = lastRevalidatedAt, Date().timeIntervalSince(last) < 60 {
+            print("PLAYER_DBG [Entry] revalidate SKIP reason=ttl \(Int(Date().timeIntervalSince(last)))s<60s")
+            return
+        }
+        lastRevalidatedAt = Date()
+        print("PLAYER_DBG [Entry] revalidate begin cachedEpisodes=\(info?.episodes.count ?? 0)")
+        let session = self.session ?? DramaSession(target: target)
+        self.session = session
+        session.fetchInfo { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let fresh):
+                // 归一化：把本地下载状态并进 fresh，对比才是「远端是否真的有变化」
+                //（fresh 自接口来，downloaded/folder 恒为空，不并集则每次都假 diff）
+                let merged = self.mergedWithLocalState(fresh)
+                guard merged != self.info else {
+                    print("PLAYER_DBG [Entry] revalidate NO-DIFF episodes=\(fresh.episodes.count)")
+                    return
+                }
+                let oldSorts = self.info?.episodes.map(\.sort) ?? []
+                let newSorts = Set(fresh.episodes.map(\.sort))
+                let added = newSorts.subtracting(oldSorts).sorted()
+                let removed = Set(oldSorts).subtracting(newSorts).sorted()
+                DramaCache.saveInfo(site: self.target.site, dramaID: self.target.dramaID, info: merged)
+                self.info = merged
+                self.fromCache = false
+                self.applyLibraryState(for: merged)
+                self.refreshRecommendations()
+                print("PLAYER_DBG [CHECK] revalidate UPDATED episodes=\(fresh.episodes.count) added=\(added) removed=\(removed)")
+            case .failure(let error):
+                print("PLAYER_DBG [Entry] revalidate FAIL keep-cache err=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 把当前内存 info 的下载状态（downloaded/folder，按集 id）并进接口 fresh 数据：
+    /// 接口不携本地下载态，直接对比/赋值会把已下载集抹成未下载
+    private func mergedWithLocalState(_ fresh: DramaInfo) -> DramaInfo {
+        let oldByID = Dictionary(self.info?.episodes.map { ($0.id, $0) } ?? [],
+                                 uniquingKeysWith: { a, _ in a })
+        let episodes = fresh.episodes.map { ep -> ApiDramaEpisode in
+            guard let old = oldByID[ep.id] else { return ep }
+            return ApiDramaEpisode(id: ep.id, sort: ep.sort, playable: ep.playable,
+                                downloaded: old.downloaded, folder: old.folder)
+        }
+        return DramaInfo(name: fresh.name, updateStatus: fresh.updateStatus, episodes: episodes)
     }
 
     /// 缓存里已有的封面/简介/标签先上头部（无网络也能显示）
@@ -414,6 +471,7 @@ final class DramaPageViewModel: ObservableObject {
             case .success(let info):
                 self.info = info
                 self.fromCache = false
+                self.lastRevalidatedAt = Date()   // 刚与服务器对过账，同实例 60s 内不再重复拉
                 DramaCache.saveInfo(site: self.target.site, dramaID: self.target.dramaID, info: info)
                 self.applyLibraryState(for: info)
                 self.refreshRecommendations()
