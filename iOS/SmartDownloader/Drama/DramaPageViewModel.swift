@@ -457,7 +457,9 @@ final class DramaPageViewModel: ObservableObject {
     /// 过期或从未抓过才触发；↻ 刷新按钮 force 绕过闸门强制更新。
     /// 同一次访问内只抓一次（缓存分支与网络分支都会调到这里）。
     private func harvestIfNeeded(force: Bool = false) {
-        guard !hasHarvestedThisVisit else {
+        // force（↻ 刷新）先于访问去重判定：force 的语义是绕过全部闸门强制重抓，
+        // 曾把 guard 放在 force 判断之前导致 ↻ 的强制采集被 alreadyThisVisit 吞掉（真机日志实证）
+        guard !hasHarvestedThisVisit || force else {
             print("PLAYER_DBG [Entry] harvest SKIP reason=alreadyThisVisit")
             return
         }
