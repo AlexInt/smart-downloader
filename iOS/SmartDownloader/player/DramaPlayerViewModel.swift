@@ -32,6 +32,11 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var remainingTimeText = "-00:00"
     @Published private(set) var progress: Double = 0
     @Published private(set) var loadError: String?
+    /// 首帧等待：item ready 后等 timeControlStatus == .playing（首帧合成中）才翻 isReady，
+    /// 让卡片加载渐变淡出时直接交叉到已渲染画面（无黑屏空档/「由大到小」观感）
+    private var isAwaitingFirstFrame = false
+    /// 首帧兑底：ready 后 3s 仍未 playing 强制翻转（看门狗在 settle 时已取消，不再保护这段）
+    private var firstFrameGuard: DispatchWorkItem?
     /// spinner 延迟显示：加载超过 800ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
     /// （800ms 依真机实测定：HIT 就绪 642–871ms、入口 MISS 1008–1177ms，原 300ms 每滑必闪）
     @Published private(set) var isLoadingSlow = false
@@ -392,18 +397,36 @@ final class DramaPlayerViewModel: ObservableObject {
             }
             switch event {
             case .ready:
-                self.isReady = true
+                // 不直接翻 isReady：等首帧真正开始合成（timeControlStatus == .playing，
+                // 周期 tick 里检测）才翻——否则卡片加载渐变在 isReady 淡出时，续播 seek
+                // 还没完成，底下是黑的，随后小条带「啪」地出现 =「由大到小」的观感
+                //（11-13 横屏片源竖屏 fit 后才出现：fill 时代渐变→全屏视频无尺寸落差）。
+                // 首帧后翻转：渐变盖住整个 seek 黑屏期，淡出直接交叉到已渲染的条带。
+                isAwaitingFirstFrame = true
+                firstFrameGuard?.cancel()
+                let guardWork = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    if self.isAwaitingFirstFrame, !self.isReady {
+                        self.isAwaitingFirstFrame = false
+                        self.isReady = true
+                        print("PLAYER_DBG [CHECK] isReady flip reason=firstFrameGuardTimeout")
+                    }
+                }
+                firstFrameGuard = guardWork
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: guardWork)
                 self.cancelSpinnerDelay()
                 self.refreshVideoOrientation(reason: "ready")
                 // 就绪即尝试续播（时长未稳时跟踪器会在首个 tick 再试一次）
                 _ = self.progressTracker?.resumeIfNeeded()
                 let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
-                print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(self.player.rate) control=\(self.player.timeControlStatus.rawValue)")
+                print("PLAYER_DBG [CHECK] load OK sort=\(episode.sort) ready=true waitedMs=\(waitedMs) rate=\(self.player.rate) control=\(self.player.timeControlStatus.rawValue) reveal=waitFirstFrame")
             case .failed(let message):
+                isAwaitingFirstFrame = false
                 self.loadError = message
                 self.cancelSpinnerDelay()
                 print("PLAYER_DBG [Playback] load FAIL reason=itemFailed error=\(message)")
             case .timeout:
+                isAwaitingFirstFrame = false
                 self.loadError = "视频加载超时"
                 self.cancelSpinnerDelay()
                 print("PLAYER_DBG [Playback] load FAIL reason=watchdogTimeout sort=\(episode.sort)")
@@ -515,6 +538,14 @@ final class DramaPlayerViewModel: ObservableObject {
     private func syncTime(_ time: CMTime) {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite, seconds >= 0 else { return }
+        // 首帧就绪检测：item 已 ready 且真正开始合成画面（.playing）才翻 isReady——
+        // 卡片加载渐变淡出时条带已在渲染，无黑屏空档（见 watchStatus .ready 注释）
+        if isAwaitingFirstFrame, !isReady, loadError == nil,
+           player.timeControlStatus == .playing {
+            isAwaitingFirstFrame = false
+            isReady = true
+            print("PLAYER_DBG [CHECK] isReady flip reason=firstFramePlaying t=\(Int(seconds))s")
+        }
         currentTimeText = Self.format(seconds)
         let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
         guard total.isFinite, total > 0 else { return }
@@ -534,6 +565,9 @@ final class DramaPlayerViewModel: ObservableObject {
         // 新 item 方向未知：先按竖屏（fill 现状），presentationSize 就绪后由 refreshVideoOrientation 修正
         videoIsLandscape = false
         videoPixelSize = .zero
+        isAwaitingFirstFrame = false
+        firstFrameGuard?.cancel()
+        firstFrameGuard = nil
         currentTimeText = "00:00"
         durationText = "00:00"
         remainingTimeText = "-00:00"
