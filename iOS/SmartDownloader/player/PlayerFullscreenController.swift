@@ -84,6 +84,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             return
         }
         isAnimating = true
+        rotationAngle = playback.fullscreenRotationAngle
         let startFrame = surface.convert(surface.bounds, to: window)
         let container = FullscreenPlayerView(frame: startFrame)
         container.backgroundColor = .black
@@ -114,7 +115,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         installGestures(on: container)
 
         let screenSize = window.bounds.size
-        print("PLAYER_DBG [Fullscreen] enter from=\(startFrame) screen=\(screenSize)")
+        print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") from=\(startFrame) screen=\(screenSize)")
         UIView.animate(withDuration: 0.35, delay: 0, options: [.curveEaseInOut], animations: {
             // bounds 换成横屏尺寸 + 中心居中 + 旋转 90°：旋转后足迹恰好铺满竖屏屏幕
             container.bounds = CGRect(origin: .zero, size: CGSize(width: screenSize.height, height: screenSize.width))

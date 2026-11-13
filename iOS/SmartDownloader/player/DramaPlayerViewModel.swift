@@ -42,6 +42,10 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 全屏态（容器 transform 自转，非系统界面旋转）：仅横屏片源可进入，姿态服务（判稳）与
     /// 全屏控制层驱动，Combine 订阅方是 PlayerFullscreenController。
     @Published private(set) var isFullscreen = false
+    /// 全屏旋转方向：姿态触发器按设备实际转向给出（重力角 +90° → -π/2，-90° → +π/2），
+    /// 保证内容与物理握持一致——写死单方向会让另一半转向的内容上下倒置（返回 icon
+    /// 跑到对角、进度条翻到顶部）。控制器进/出动画与控制层安全区映射都用它。
+    private(set) var fullscreenRotationAngle: CGFloat = .pi / 2
 
     @Published var isMuted = false {
         didSet {
@@ -210,12 +214,13 @@ final class DramaPlayerViewModel: ObservableObject {
     // MARK: 全屏（容器 transform 自转，无系统界面旋转）
 
     /// 进入全屏：仅横屏片源 + 已就绪有效（竖屏片源转横只会得到细竖条，不动作）。
-    /// 触发方：姿态判稳服务（A-5），无按钮入口。
-    func enterFullscreen() {
+    /// rotationAngle 由姿态触发器按设备实际转向给出（±π/2），控制器与控制层安全区共用。
+    func enterFullscreen(rotationAngle: CGFloat) {
         guard videoIsLandscape, isReady, !isFullscreen else {
             print("PLAYER_DBG [Fullscreen] enterIntent SKIP videoIsLandscape=\(videoIsLandscape) isReady=\(isReady) already=\(isFullscreen)")
             return
         }
+        fullscreenRotationAngle = rotationAngle
         isFullscreen = true
     }
 

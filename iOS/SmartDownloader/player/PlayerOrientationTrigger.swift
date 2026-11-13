@@ -20,6 +20,8 @@ final class PlayerOrientationTrigger {
     /// 当前正在积累的稳定目标（nil = 无）；true = 进全屏，false = 退出
     private var pendingTarget: Bool?
     private var stableSince: Date?
+    /// 最近一次重力角（度，0=竖屏持机，±90=两个横屏转向）：进全屏时据此定旋转方向
+    private var lastAngleDeg: Double = 0
 
     /// 进入全屏阈值（度，相对竖屏持机）
     private let enterThreshold: Double = 55
@@ -62,8 +64,9 @@ final class PlayerOrientationTrigger {
             resetStability()
             return
         }
-        // 0° = 竖屏持机；±90° = 横屏（左右两个方向都算横屏内容方向）
+        // 0° = 竖屏持机；±90° = 横屏（左右两个转向）
         let angleDeg = atan2(x, -y) * 180 / .pi
+        lastAngleDeg = angleDeg
         let absAngle = abs(angleDeg)
 
         if playback.isFullscreen {
@@ -100,12 +103,21 @@ final class PlayerOrientationTrigger {
         }
         guard now.timeIntervalSince(since) >= stableInterval else { return }
         resetStability()
-        print("PLAYER_DBG [Orientation] stable \(target ? "landscape→enter" : "portrait→exit")")
         if target {
-            playback.enterFullscreen()
+            // 旋转方向跟随设备实际转向：顺时针转（重力角 +90°，顶朝右）→ 内容 -π/2；
+            // 逆时针（-90°）→ +π/2。写死单方向会让另一半转向上下倒置。
+            let rotation = Self.rotationAngle(forGravityAngle: lastAngleDeg)
+            print("PLAYER_DBG [Orientation] stable angle=\(Int(lastAngleDeg))° → enter rotation=\(rotation == .pi / 2 ? "+π/2" : "-π/2")")
+            playback.enterFullscreen(rotationAngle: rotation)
         } else {
+            print("PLAYER_DBG [Orientation] stable angle=\(Int(lastAngleDeg))° → exit")
             playback.exitFullscreen()
         }
+    }
+
+    /// 重力角 → 容器旋转角：+90°（顶朝右）→ -π/2；-90°（顶朝左）→ +π/2
+    static func rotationAngle(forGravityAngle angleDeg: Double) -> CGFloat {
+        angleDeg > 0 ? -CGFloat.pi / 2 : CGFloat.pi / 2
     }
 
     private func resetStability() {
