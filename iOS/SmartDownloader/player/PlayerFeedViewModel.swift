@@ -79,6 +79,11 @@ final class PlayerFeedViewModel: ObservableObject {
     /// 滚动停稳后才切换播放源，避免快滑反复 replaceCurrentItem
     func pageSettled(sort: Int) {
         print("PLAYER_DBG [VM] pageSettled begin sort=\(sort)")
+        // 播放期间可能有集刚下载完成：停稳时先对账磁盘再取槽位，
+        // 否则开播时的快照会让刚下完的集继续显示「尚未下载」占位（真机实证）
+        if queue?.refreshAvailability() == true, let refreshed = queue {
+            slots = refreshed.slots
+        }
         guard let slot = slots.first(where: { $0.sort == sort }) else {
             print("PLAYER_DBG [VM] pageSettled NO SLOT sort=\(sort)")
             return

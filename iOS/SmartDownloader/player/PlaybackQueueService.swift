@@ -35,14 +35,48 @@ struct PlaybackQueueService {
         current.flatMap { resolveNext(from: $0, in: slots) }
     }
 
+    /// 全剧集号与站点身份：开播时快照保留，供 refreshAvailability 重跑同一套槽位构建
+    private let knownSorts: [Int]
+    private let target: DramaTarget?
+
     init(request: ImmersivePlaybackRequest) {
         self.seriesName = request.seriesName
         self.intro = request.intro
         self.tags = request.tags
+        self.knownSorts = request.knownSorts
+        self.target = request.target
         slots = Self.buildSlots(forSeries: request.seriesName, knownSorts: request.knownSorts, target: request.target)
         current = slots.first { $0.sort == request.startSort }
             ?? slots.first { $0.isAvailable }
             ?? slots.first
+    }
+
+    /// 下载完成等磁盘变化后的可用性对账：重扫已下载目录，按集号对位更新槽位的
+    /// playlistURL / identity。开播时的快照会让「播放中下完的集」滑过去仍停在
+    /// 「尚未下载」占位（真机实证），本方法在每次停稳时由 VM 调用。
+    /// 只在内容有变化时返回 true（无变化 = 一次目录列举的成本，不触发 UI 刷新）。
+    @discardableResult
+    mutating func refreshAvailability() -> Bool {
+        let fresh = Self.buildSlots(forSeries: seriesName, knownSorts: knownSorts, target: target)
+        var oldBySort: [Int: PlayableEpisode] = [:]
+        for slot in slots { oldBySort[slot.sort] = slot }
+        var changed = false
+        var merged: [PlayableEpisode] = []
+        for slot in fresh {
+            merged.append(slot)
+            if let old = oldBySort[slot.sort] {
+                if old.playlistURL != slot.playlistURL { changed = true }
+            } else {
+                changed = true   // 开播后才出现的新集号（只有已下载集入口的槽位）
+            }
+        }
+        guard changed else { return false }
+        slots = merged
+        // current / history 是值拷贝，按集号重新对位到新槽位（观看历史不丢）
+        if let sort = current?.sort { current = slots.first { $0.sort == sort } ?? current }
+        history = history.map { h in slots.first { $0.sort == h.sort } ?? h }
+        print("PLAYER_DBG [CHECK] queueRefresh series=\(seriesName) available=\(slots.filter { $0.isAvailable }.map { $0.sort })")
+        return true
     }
 
     /// 上滑 / 下滑的唯一入口。返回是否真的切到了另一个资源；

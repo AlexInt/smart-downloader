@@ -131,6 +131,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastRefreshedSort: Int?
         private var lastRefreshedReady: Bool?
         private var lastRefreshedToast: String?
+        /// 槽位可用性指纹（sort:isAvailable 列表）：播放中下载完成会把占位页变成可播卡，
+        /// 但 currentSort/isReady/toast 都可能不变 —— 不跟踪这个维度，卡片永远不重绘（真机实证）
+        private var lastRefreshedSlotsKey = ""
         private var lastLoggedY: CGFloat = -999
         /// 上次实际布局过的几何 key：几何没变时 layoutPages 幂等跳过（防布局回环）
         private var lastLaidSizeKey = ""
@@ -237,13 +240,16 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         // MARK: 页面管理
 
         func refreshCardsIfNeeded() {
+            let slotsKey = parent.slots.map { "\($0.sort):\($0.isAvailable ? 1 : 0)" }.joined(separator: ",")
             let changed = lastRefreshedSort != parent.currentSort
                 || lastRefreshedReady != parent.isReady
                 || lastRefreshedToast != parent.activeToast
+                || lastRefreshedSlotsKey != slotsKey
             guard !hosts.isEmpty, changed else { return }
             lastRefreshedSort = parent.currentSort
             lastRefreshedReady = parent.isReady
             lastRefreshedToast = parent.activeToast
+            lastRefreshedSlotsKey = slotsKey
             let current = parent.currentSort
             for slot in parent.slots {
                 hosts[slot.sort]?.rootView = parent.makeCard(slot)
@@ -259,6 +265,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             lastRefreshedSort = nil
             lastRefreshedReady = nil
             lastRefreshedToast = nil
+            lastRefreshedSlotsKey = ""
             lastPendingReason = ""
             lastLaidSizeKey = ""   // 强制下方的 layoutPages 真正落 frame（新 host 还没排过）
             print("PLAYER_DBG [CHECK] rebuild sorts=\(sorts) count=\(sorts.count)")
