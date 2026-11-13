@@ -26,49 +26,49 @@ final class PlayerSurfaceUIView: UIView {
 
     /// layer 搬走期间的跳过日志只打一次（SwiftUI 每轮 update 都会重设一次，降噪）
     private var loggedAwaySkip = false
-    /// 视频首显开关：isReady 翻转后不立即上屏，等 layer 首帧提交（~150ms）再淡入——
-    /// 渐变淡出与 AVPlayerLayer 首帧提交是两个异步事件，直接对齐会露出「渐变退了底下
-    /// 还是黑的，条带啪地出现」；错开并交叉淡入，两个顺序都不会黑屏
+    /// 视频首显开关：加载期间藏住条带（渐变盖着不可见），ready 当拍交叉淡入
     private var isVideoRevealed = true
-    /// 首显淡入工作项
-    private var revealWork: DispatchWorkItem?
 
-    /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后延迟淡入。
+    /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后立即交叉淡入。
     /// 幂等：已藏住时不重复写（退页/订阅重复触发都会到这）
     func concealForReveal() {
-        revealWork?.cancel()
         guard !isVideoRevealed || videoLayer.opacity > 0 else { return }
         isVideoRevealed = false
         PlayerSurfaceUIView.withoutLayerActions {
             videoLayer.opacity = 0
+            videoLayer.removeAnimation(forKey: "reveal.fadeIn")
         }
         startRevealProbe(phase: "conceal")
-        print("PLAYER_DBG [CHECK] video conceal → waitFirstFrame")
+        print("PLAYER_DBG [CHECK] video conceal → waitReady")
     }
 
-    /// isReady 翻转时调：150ms 后淡入（等 AVPlayerLayer 首帧提交，与渐变淡出错开）
+    /// isReady 翻转时调：立即淡入（与卡片渐变淡出同时起步、同时长 0.15s）——
+    /// 交叉渐变：任意时刻「紫色余量 + 视频显示量 ≈ 1」，无黑窗无突现。
+    /// 探针实证：上一版延迟 150ms 起手 + 默认 250ms 隐式爬升，与渐变淡完之间
+    //开了 ~100ms 全黑窗口（「突然由大到小闪一下」的直接来源）。
+    /// 淡入用显式 CABasicAnimation——UIView.animate 对裸子层的 opacity 不产生动画
+    ///（子层无 view 代理，曾实际跑的是默认 0.25s 隐式动画，时序不可控）
     func scheduleVideoReveal() {
         guard !isVideoRevealed else { return }
-        revealWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.videoLayer.superlayer === self.layer else { return }
-            self.isVideoRevealed = true
-            print("PLAYER_DBG [CHECK] video reveal fadeIn (firstFrameDelay)")
-            UIView.animate(withDuration: 0.15, animations: {
-                self.videoLayer.opacity = 1
-            })
+        isVideoRevealed = true
+        PlayerSurfaceUIView.withoutLayerActions {
+            videoLayer.opacity = 1
         }
-        revealWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-        startRevealProbe(phase: "revealScheduled")
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 0
+        anim.toValue = 1
+        anim.duration = 0.15
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        videoLayer.add(anim, forKey: "reveal.fadeIn")
+        print("PLAYER_DBG [CHECK] video reveal fadeIn (immediate, crossfade with gradient)")
     }
 
     /// 全屏退出还原时调：强制回到已显示态（全屏路径不经首显机制，退出动画本身连续）
     func markRevealed() {
-        revealWork?.cancel()
         isVideoRevealed = true
         PlayerSurfaceUIView.withoutLayerActions {
             videoLayer.opacity = 1
+            videoLayer.removeAnimation(forKey: "reveal.fadeIn")
         }
     }
 
