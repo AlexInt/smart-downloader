@@ -2,7 +2,7 @@
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络/并发约定，最高优先级）。本文只讲「做到哪了 / 还剩什么 / 怎么验」。**实现细节与防回归约束在 AGENTS 与代码注释里，完整过程在 git 历史**，本文不重复每个 build 日志。
 >
-> 最后更新：2026-11-12 · 分支 `feat/drama-detail-page` · 基准提交见 `git log -1`
+> 最后更新：2026-11-13 · 分支 `feat/drama-detail-page` · 基准提交见 `git log -1`
 
 ## 1. 项目一览
 
@@ -45,6 +45,9 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 设计稿三项补齐（同日追加） | ① 格子右下 18×18 状态角标：已下载金色三角 / 未下载灰色下载箭头，下载中与选中集不叠加（同 `[aria-checked=true]` 规则）；② 进度环由绿改回设计稿金色 `#F5C451`（排队淡金轨道 / 下载中闭环 / 完成闭环 / `n/100` / 已下载淡金底同色系，失败仍红环）；③ 「查看全部 ›」由 sheet 改为**内联展开** 13 集以后（6 列 × 56pt，文案切「收起 ›」，≤12 集置灰禁用），推荐/档案按 `extraEpisodeRows` 一起下推。原 sheet 的全选/清空/下载所选搬进展开区底部工具条，刷新移到选集行 ↻，能力不丢 | 模拟器构建 0 error / 0 warning，**待真机回归** |
 | 快捷站点默认加载 | 设置页快捷站点行右侧圆圈单选「默认」（再点取消，默认行带金色标记）；`QuickLinkStore.defaultLinkID` 单独存 UUID（不改 `[QuickLink]` JSON、无需迁移），按 id 查当前列表取 URL，编辑网址自动跟随、条目被删自动回落。新增 `Browser/BrowserStartPage.swift` 统一决策「默认站点 > 上次访问页 > 空白页」，顺手把 View 层的 `UserDefaults.standard` 收进 Service | 模拟器构建 0 error / 0 warning；起始页 8 场景冒烟全过，**待真机验证** |
 | 快捷站点「默认第一项」（11-13 补充） | 用户**从没点过圆圈**时自动选中列表第一项（UI 第一行圆圈直接是选中态）；点过又取消 = 显式「无默认」，回落恢复上次访问页。三态靠 `hasConfiguredDefault`（key 是否存在）+ 空串哨兵区分：上一版取消时 `removeObject` 会把「显式取消」误判成「从没配置」，现改为写空串。`QuickLinkStore.resolvedDefaultID(in:)` 一处解析；VM 的 `defaultLinkID` 改为**生效值**（非存储原值），增删 / 恢复默认列表后由 `refreshEffectiveDefault()` 重算；显式选中的条目被删不猜别的站点 | 构建 0 error / 0 warning；三态 17 项冒烟全过（含重启后持久化、空列表新增、删第一项跟随），**待真机验证** |
+| 横滑结束误暂停修复（11-13） | 调查实证：seekPan `cancelsTouchesInView=false` 且纯横滑时系统分页 pan 不 begin，触摸全程不被取消，SwiftUI tap 收到完整序列，抬手即 TAP→暂停（竖滑那轮已实证同机制，当时只挡了纵向起手）。修复：`endSeekGesture` 开 250ms 吞单击窗（VM `tapSuppressionDeadline`，与长按松手的 `suppressTapUntil` 同机制），卡片 onTapGesture 查询；手势仲裁规则（先起者独占）不变 | 构建 0 error / 0 warning，**待真机回归**（日志锚点：`TAP SKIP reason=justEndedSeek`） |
+| 播放页按片源方向渲染（11-13） | 竖屏持机时横屏片源不再拉满裁切：`AVPlayerItem.presentationSize`（同步非废弃，不新增 async 岛）→ VM `videoIsLandscape`（ready + 周期 tick 刷新，0×0 未知按竖屏处理维持 fill 现状）；`PlayerSurfaceView` 增加 `videoGravity` 参数，片源与持屏方向一致 fill、错配 fit 完整显示（黑边） | 同上（日志锚点：`videoOrientation landscape=true/false`） |
+| 播放器横屏专用控件布局（11-13） | 横屏不再沿用 390×840 画布 contain 缩放（会缩到 ~0.47 控件过小）：新增 `DramaPlayerView.landscapeOverlay`（安全区感知：顶部返回/集数/清屏/静音横排 + 底部进度条横贯 + 2x/toast/加载/错误/未下载居中）；竖屏画布的信息区/点赞收藏/上滑提示横屏不渲染；返回/静音/清屏/集数胶囊/2x/加载/错误/未下载抽成可复用组件两套布局共用，竖屏视觉与坐标不变 | 同上 |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -116,7 +119,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 - 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
 - tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。
 
-**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效。
+**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效；⑪ 快速横滑结束不再误暂停、且 seek/翻页/2x 仲裁不变（误吞时应见 `TAP SKIP reason=justEndedSeek`）；⑫ 横屏片源竖屏持机完整显示不裁切（`videoOrientation landscape=true`）、竖屏片源维持拉满；⑬ 旋转横屏后返回/清屏/静音/进度条尺寸正常（landscapeOverlay）、旋转回竖屏恢复画布布局、横屏下点按暂停/长按 2x/横滑 seek/左缘返回照常。
 
 ## 8. 维护本文档
 

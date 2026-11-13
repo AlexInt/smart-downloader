@@ -105,11 +105,16 @@ struct DramaPlayerView: View {
                 //    不连带暂停，无需控件区几何判定。连续手势（水平 seek / 左缘返回）
                 //    仍在 UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
 
-                // ── ⑤ 设计稿 UI 层（390×840，只含文字/按钮/图标） ─
-                designOverlay
-                    .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
-                    .scaleEffect(scale)
-                    .frame(width: geo.size.width, height: geo.size.height)
+                // ── ⑤ 控件层：竖屏 = 设计稿画布（390×840 contain）；横屏 = 专用布局 ──
+                if screenIsLandscape {
+                    landscapeOverlay(size: geo.size, safeInsets: geo.safeAreaInsets)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                } else {
+                    designOverlay
+                        .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
+                        .scaleEffect(scale)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -328,138 +333,45 @@ struct DramaPlayerView: View {
 
             // 集数胶囊：紧凑「4/11」常驻，清屏不隐藏（始终知道看到哪一集）。
             // 56 宽水平居中（(390-56)/2=167），顶栏四元素（返回/胶囊/清屏/静音）不拥挤
-            RoundedRectangle(cornerRadius: DWRadius.chip)
-                .fill(.black.opacity(0.45))
+            episodeChip
                 .designFrame(167, 50, 56, 26)
-                .allowsHitTesting(false)
-
-            Text(episode.compactEpisodeLabel)
-                .font(DWFont.en(12, .medium))
-                .foregroundStyle(DWColor.textPrimary)
-                .multilineTextAlignment(.center)
-                .designFrame(167, 55, 56, 16)
-                .allowsHitTesting(false)
 
             // 静音（状态本地记住）
             // 静音/清屏是全局偏好，但仅当前卡可操作：邻卡半遮挡状态下误触易困惑
-            Button {
-                guard isActive else { return }
-                playback.isMuted.toggle()
-            } label: {
-                ZStack {
-                    Image("ic_sound")
-                        .renderingMode(.template)
-                        .resizable().scaledToFit()
-                        .foregroundStyle(playback.isMuted ? DWColor.textHint : .white)
-                        .frame(width: 26, height: 26)
-                    // 素材库无独立静音图标：静音时叠加金色斜线表达（icon 同时变灰）
-                    if playback.isMuted {
-                        Capsule()
-                            .fill(DWColor.gold)
-                            .frame(width: 36, height: 2.5)
-                            .rotationEffect(.degrees(45))
-                    }
-                }
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .designFrame(329, 41, 44, 44)
+            muteButton
+                .designFrame(329, 41, 44, 44)
 
             // 清屏（状态本地记住）：隐藏界面信息只看画面。
             // 矩形+斜线与静音图标同一视觉语言：激活时描边变灰 + 金色斜线
-            Button {
-                guard isActive else { return }
-                playback.isCleanScreen.toggle()
-            } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(playback.isCleanScreen ? DWColor.textHint : .white,
-                                      lineWidth: 1.8)
-                        .frame(width: 21, height: 16)
-                    if playback.isCleanScreen {
-                        Capsule()
-                            .fill(DWColor.gold)
-                            .frame(width: 27, height: 2.2)
-                            .rotationEffect(.degrees(45))
-                    }
-                }
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .designFrame(277, 41, 44, 44)
+            cleanScreenButton
+                .designFrame(277, 41, 44, 44)
 
             // 长按倍速状态提示（瞬态反馈，清屏时保留）
-            HStack(spacing: 6) {
-                Image(systemName: "forward.fill")
-                    .font(.system(size: 13, weight: .bold))
-                Text("2× 倍速播放")
-                    .font(DWFont.cn(13, .semibold))
-            }
-            .foregroundStyle(DWColor.gold)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.black.opacity(0.55), in: Capsule())
-            // isActive：isFastForwarding 是当前集的共享状态，邻卡不跟着显示 2x 胶囊
-            .opacity(isActive && playback.isFastForwarding ? 1 : 0)
-            .animation(.easeIn(duration: 0.1), value: playback.isFastForwarding)
-            .designFrame(95, 300, 200, 34)
-            .allowsHitTesting(false)
+            fastForwardCapsule
+                .designFrame(95, 300, 200, 34)
 
             // 加载 / 错误态覆盖（仅当前页需要；瞬态功能反馈，清屏时保留）
             if isActive, let error = playback.loadError {
-                VStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title2)
-                        .foregroundStyle(DWColor.gold)
-                    Text(error)
-                        .font(DWFont.cn(12))
-                        .foregroundStyle(DWColor.textBody)
-                        .multilineTextAlignment(.center)
-                }
-                .designFrame(60, 370, 270, 90)
-                .allowsHitTesting(false)
+                loadErrorHint(error)
+                    .designFrame(60, 370, 270, 90)
             } else if isActive, !playback.isReady {
                 if isEpisodeAvailable {
                     // 800ms 内就绪的加载不显示转圈：预热命中的秒开路径应当无感（阈值依真机实测定）
                     if playback.isLoadingSlow {
-                        ProgressView()
-                            .tint(.white)
+                        loadingSpinner
                             .designFrame(180, 405, 30, 30)
-                            .allowsHitTesting(false)
                     }
                 } else {
                     // 真实存在但未下载的集：不转圈、不假装能播
-                    VStack(spacing: 10) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.title2)
-                            .foregroundStyle(DWColor.textHint)
-                        Text("该集尚未下载")
-                            .font(DWFont.cn(13, .medium))
-                            .foregroundStyle(DWColor.textBody)
-                        Text("上下滑动浏览其他集")
-                            .font(DWFont.cn(11))
-                            .foregroundStyle(DWColor.textHint)
-                    }
-                    .designFrame(60, 355, 270, 100)
-                    .allowsHitTesting(false)
+                    notDownloadedHint
+                        .designFrame(60, 355, 270, 100)
                 }
             }
 
             // 返回按钮：放在最后 + 最高层级，确保关闭入口不被任何覆盖层挡住
-            Button { onClose() } label: {
-                Image("ic_back")
-                    .renderingMode(.template)
-                    .resizable().scaledToFit()
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .designFrame(8, 44, 44, 44)
-            .zIndex(10)
+            backButton
+                .designFrame(8, 44, 44, 44)
+                .zIndex(10)
 
             // 边界 toast：全局组件，本页只决定它落在设计稿的哪个位置
             ToastView(message: toastText)
@@ -518,6 +430,232 @@ struct DramaPlayerView: View {
     /// presentationSize 未知（0×0）时 videoIsLandscape=false，与竖屏片源同等对待 → 竖屏持机保持 fill 现状。
     private func surfaceGravity(screenIsLandscape: Bool) -> AVLayerVideoGravity {
         playback.videoIsLandscape == screenIsLandscape ? .resizeAspectFill : .resizeAspect
+    }
+
+    // MARK: - 可复用控件（竖屏画布与横屏布局共用，保证两套布局行为/视觉一致）
+
+    /// 返回按钮（44×44 命中区）
+    private var backButton: some View {
+        Button { onClose() } label: {
+            Image("ic_back")
+                .renderingMode(.template)
+                .resizable().scaledToFit()
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("返回")
+    }
+
+    /// 静音按钮（仅当前卡可操作：邻卡半遮挡状态下误触易困惑）
+    private var muteButton: some View {
+        Button {
+            guard isActive else { return }
+            playback.isMuted.toggle()
+        } label: {
+            ZStack {
+                Image("ic_sound")
+                    .renderingMode(.template)
+                    .resizable().scaledToFit()
+                    .foregroundStyle(playback.isMuted ? DWColor.textHint : .white)
+                    .frame(width: 26, height: 26)
+                // 素材库无独立静音图标：静音时叠加金色斜线表达（icon 同时变灰）
+                if playback.isMuted {
+                    Capsule()
+                        .fill(DWColor.gold)
+                        .frame(width: 36, height: 2.5)
+                        .rotationEffect(.degrees(45))
+                }
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 清屏按钮（矩形+斜线与静音图标同一视觉语言）
+    private var cleanScreenButton: some View {
+        Button {
+            guard isActive else { return }
+            playback.isCleanScreen.toggle()
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(playback.isCleanScreen ? DWColor.textHint : .white,
+                                  lineWidth: 1.8)
+                    .frame(width: 21, height: 16)
+                if playback.isCleanScreen {
+                    Capsule()
+                        .fill(DWColor.gold)
+                        .frame(width: 27, height: 2.2)
+                        .rotationEffect(.degrees(45))
+                }
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 集数胶囊：紧凑「4/11」常驻，清屏不隐藏（始终知道看到哪一集）
+    private var episodeChip: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: DWRadius.chip)
+                .fill(.black.opacity(0.45))
+            Text(episode.compactEpisodeLabel)
+                .font(DWFont.en(12, .medium))
+                .foregroundStyle(DWColor.textPrimary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(width: 56, height: 26)
+        .allowsHitTesting(false)
+    }
+
+    /// 长按倍速提示（瞬态反馈，清屏时保留；位置由调用方决定）
+    private var fastForwardCapsule: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "forward.fill")
+                .font(.system(size: 13, weight: .bold))
+            Text("2× 倍速播放")
+                .font(DWFont.cn(13, .semibold))
+        }
+        .foregroundStyle(DWColor.gold)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.55), in: Capsule())
+        // isActive：isFastForwarding 是当前集的共享状态，邻卡不跟着显示 2x 胶囊
+        .opacity(isActive && playback.isFastForwarding ? 1 : 0)
+        .animation(.easeIn(duration: 0.1), value: playback.isFastForwarding)
+        .allowsHitTesting(false)
+    }
+
+    /// 加载失败提示（瞬态反馈，清屏时保留）
+    private func loadErrorHint(_ error: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.title2)
+                .foregroundStyle(DWColor.gold)
+            Text(error)
+                .font(DWFont.cn(12))
+                .foregroundStyle(DWColor.textBody)
+                .multilineTextAlignment(.center)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// 加载转圈：800ms 内就绪的加载不显示（预热命中的秒开路径应当无感）
+    private var loadingSpinner: some View {
+        ProgressView()
+            .tint(.white)
+            .allowsHitTesting(false)
+    }
+
+    /// 未下载占位（真实存在但尚未下载的集：不转圈、不假装能播）
+    private var notDownloadedHint: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .font(.title2)
+                .foregroundStyle(DWColor.textHint)
+            Text("该集尚未下载")
+                .font(DWFont.cn(13, .medium))
+                .foregroundStyle(DWColor.textBody)
+            Text("上下滑动浏览其他集")
+                .font(DWFont.cn(11))
+                .foregroundStyle(DWColor.textHint)
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - 横屏专用控件布局
+    //
+    // 竖屏设计稿画布（390×840 contain 缩放）在横屏会按屏高缩到 ~0.47，所有控件过小（用户反馈）。
+    // 横屏改用安全区感知的专用布局：顶部控制条（返回/集数/清屏/静音）+ 底部进度 HUD 横贯，
+    // 瞬态（2x / toast / 加载 / 错误 / 未下载）居中。
+    // 竖屏画布里的信息区 / 点赞收藏 / 上滑提示是竖屏设计稿元素，横屏不渲染
+    //（横屏 = 观影模式保持克制；点赞收藏回竖屏操作，边界提示由 VM toast 承担）。
+    // 卡片内依旧零连续手势：横屏布局只有 Button 与纯展示视图。
+
+    private func landscapeOverlay(size: CGSize, safeInsets: EdgeInsets) -> some View {
+        let contentWidth = max(0, size.width - safeInsets.leading - safeInsets.trailing)
+        return ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    backButton
+                    episodeChip
+                    Spacer(minLength: 12)
+                    cleanScreenButton
+                    muteButton
+                }
+                Spacer(minLength: 0)
+                landscapeProgressHud(width: contentWidth)
+            }
+            .padding(.top, max(safeInsets.top, 10))
+            .padding(.bottom, max(safeInsets.bottom, 12))
+            .padding(.leading, max(safeInsets.leading, 16))
+            .padding(.trailing, max(safeInsets.trailing, 16))
+
+            fastForwardCapsule
+                .position(x: size.width / 2, y: size.height * 0.32)
+            ToastView(message: toastText)
+                .position(x: size.width / 2, y: size.height * 0.2)
+
+            landscapeCenterStatus
+                .position(x: size.width / 2, y: size.height / 2)
+        }
+    }
+
+    /// 横屏中央瞬态：错误 / 加载（800ms 后）/ 未下载占位
+    @ViewBuilder
+    private var landscapeCenterStatus: some View {
+        if isActive, let error = playback.loadError {
+            loadErrorHint(error)
+                .frame(maxWidth: 300)
+        } else if isActive, !playback.isReady {
+            if isEpisodeAvailable {
+                if playback.isLoadingSlow {
+                    loadingSpinner
+                }
+            } else {
+                notDownloadedHint
+            }
+        }
+    }
+
+    /// 横屏进度 HUD：进度条横贯内容宽 + 时间行两端对齐；可见性/动画与竖屏 progressHud 同一套逻辑。
+    /// 隐藏时同时禁用命中（时长 label 是 Button，不可见时不得误触，同竖屏 allowsHitTesting(isProgressVisible)）。
+    private func landscapeProgressHud(width: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: DWRadius.progress)
+                    .fill(.white.opacity(0.30))
+                    .frame(width: width, height: 3)
+                RoundedRectangle(cornerRadius: DWRadius.progress)
+                    .fill(DWColor.primary)
+                    .frame(width: width * progressValue, height: 3)
+            }
+            HStack {
+                Text(timeText)
+                    .font(DWFont.en(11, .medium))
+                    .foregroundStyle(DWColor.textTime)
+                Spacer()
+                Button {
+                    playback.toggleTimeDisplay()
+                } label: {
+                    Text(durationText)
+                        .font(DWFont.en(11, .medium))
+                        .foregroundStyle(DWColor.textTime)
+                        .frame(width: 56, height: 24, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .opacity(isProgressVisible ? 1 : 0)
+        .offset(y: isProgressVisible ? 0 : 12)
+        .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
+        .allowsHitTesting(isProgressVisible)
     }
 }
 
