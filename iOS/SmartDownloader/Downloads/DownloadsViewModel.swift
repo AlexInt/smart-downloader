@@ -47,6 +47,10 @@ final class DownloadsViewModel: ObservableObject {
         managerObservation = manager.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.scheduleSizeRecompute() }
+        // 首次计算不能只挂在 objectWillChange 上：页面安静（无任务变化、无进度 tick）时
+        // objectWillChange 永远不来，已下载列表永远不出数字（用户反馈 2026-11-13）——
+        // init 即排一次；全局指纹去重保证后续不重复算
+        scheduleSizeRecompute()
     }
 
     // MARK: - 磁盘占用统计
