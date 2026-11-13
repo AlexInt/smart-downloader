@@ -19,6 +19,8 @@ final class PlayerOrientationTrigger {
     private let motion = CMMotionManager()
     /// 当前正在积累的稳定目标（nil = 无）；true = 进全屏，false = 退出
     private var pendingTarget: Bool?
+    /// 全屏中左右转向切换的积累目标（nil = 无）：与进/出共用同一稳定窗
+    private var pendingFlipAngle: CGFloat?
     private var stableSince: Date?
     /// 最近一次重力角（度，0=竖屏持机，±90=两个横屏转向）：进全屏时据此定旋转方向
     private var lastAngleDeg: Double = 0
@@ -70,9 +72,16 @@ final class PlayerOrientationTrigger {
         let absAngle = abs(angleDeg)
 
         if playback.isFullscreen {
-            // 全屏中：回竖稳（滞后带下沿）才退出
+            // 全屏中：回竖稳（滞后带下沿）退出；越进入阈值且转向与当前旋转角不同 → 左右转体
             if absAngle <= exitThreshold {
                 accumulate(target: false)
+            } else if absAngle >= enterThreshold {
+                let desired = Self.rotationAngle(forGravityAngle: lastAngleDeg)
+                if desired != playback.fullscreenRotationAngle {
+                    accumulateFlip(to: desired)
+                } else {
+                    resetStability()
+                }
             } else {
                 resetStability()
             }
@@ -94,6 +103,7 @@ final class PlayerOrientationTrigger {
         let now = Date()
         if pendingTarget != target {
             pendingTarget = target
+            pendingFlipAngle = nil
             stableSince = now
             return
         }
@@ -120,8 +130,28 @@ final class PlayerOrientationTrigger {
         angleDeg > 0 ? -CGFloat.pi / 2 : CGFloat.pi / 2
     }
 
+    /// 全屏中左右转向切换：与进/出同一稳定窗（0.6s），甩动路过不误翻
+    private func accumulateFlip(to angle: CGFloat) {
+        let now = Date()
+        if pendingFlipAngle != angle {
+            pendingFlipAngle = angle
+            pendingTarget = nil
+            stableSince = now
+            return
+        }
+        guard let since = stableSince else {
+            stableSince = now
+            return
+        }
+        guard now.timeIntervalSince(since) >= stableInterval else { return }
+        resetStability()
+        print("PLAYER_DBG [Orientation] stable flip → rotate \(angle == .pi / 2 ? "+π/2" : "-π/2")")
+        playback.rotateFullscreen(to: angle)
+    }
+
     private func resetStability() {
         pendingTarget = nil
+        pendingFlipAngle = nil
         stableSince = nil
     }
 }

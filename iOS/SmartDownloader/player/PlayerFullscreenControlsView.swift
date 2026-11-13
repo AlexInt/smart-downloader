@@ -56,6 +56,9 @@ final class PlayerFullscreenControlsView: UIView {
         super.init(frame: .zero)
         setupViews()
         bind()
+        // 初始一致性：非清屏进度条常驻、清屏进度条隐藏；子控件 alpha 由本类统一管理，
+        // 父视图 alpha 恒为 1（可见性只动子控件——父视图置 0 会连控制层一起藏死）
+        updateVisibility(animated: false)
     }
 
     required init?(coder: NSCoder) { fatalError("不支持") }
@@ -187,8 +190,8 @@ final class PlayerFullscreenControlsView: UIView {
         } else {
             actions()
         }
-        // 进度条本体：清屏时只随 scrub 显隐；非清屏常驻
-        let barVisible = !playback.isCleanScreen || playback.isScrubbing
+        // 进度条本体：非清屏常驻；清屏下跟随手动呼出（点按 3s）与 scrub——与竖屏 HUD 同口径
+        let barVisible = !playback.isCleanScreen || userVisible || playback.isScrubbing
         let barActions = { [weak self] in
             self?.progressTrack.alpha = barVisible ? 1 : 0
             self?.progressFill.alpha = barVisible ? 1 : 0

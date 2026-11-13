@@ -39,13 +39,16 @@ final class DramaPlayerViewModel: ObservableObject {
     /// （同步、非废弃 API，HLS 首帧解码后有效）；0×0 = 未知，保持 false 按竖屏处理（维持拉满现状）。
     /// 渲染 gravity 由单例容器统一设置（PlayerPagingScrollView.videoGravity）。
     @Published private(set) var videoIsLandscape = false
+    /// 片源像素尺寸（presentationSize）：全屏进/出动画以「视频显示带」（surface 内 fit 的
+    /// 居中矩形）为起点/终点，据此换算；0×0 = 未知，退回 surface 全框（旧路径）。
+    private(set) var videoPixelSize: CGSize = .zero
     /// 全屏态（容器 transform 自转，非系统界面旋转）：仅横屏片源可进入，姿态服务（判稳）与
     /// 全屏控制层驱动，Combine 订阅方是 PlayerFullscreenController。
     @Published private(set) var isFullscreen = false
     /// 全屏旋转方向：姿态触发器按设备实际转向给出（重力角 +90° → -π/2，-90° → +π/2），
     /// 保证内容与物理握持一致——写死单方向会让另一半转向的内容上下倒置（返回 icon
     /// 跑到对角、进度条翻到顶部）。控制器进/出动画与控制层安全区映射都用它。
-    private(set) var fullscreenRotationAngle: CGFloat = .pi / 2
+    @Published private(set) var fullscreenRotationAngle: CGFloat = .pi / 2
 
     @Published var isMuted = false {
         didSet {
@@ -228,6 +231,17 @@ final class DramaPlayerViewModel: ObservableObject {
     func exitFullscreen() {
         guard isFullscreen else { return }
         isFullscreen = false
+    }
+
+    /// 全屏中左右转向切换：仅更新旋转方向（触发器判稳后调用），
+    /// 控制器订阅后做转体动画；写死单方向会让另一侧内容上下颠倒
+    func rotateFullscreen(to angle: CGFloat) {
+        guard isFullscreen, fullscreenRotationAngle != angle else {
+            print("PLAYER_DBG [Fullscreen] rotate SKIP fullscreen=\(isFullscreen) sameAngle=\(fullscreenRotationAngle == angle)")
+            return
+        }
+        print("PLAYER_DBG [Fullscreen] rotate to=\(angle == .pi / 2 ? "+π/2" : "-π/2")")
+        fullscreenRotationAngle = angle
     }
 
     func seek(fraction: Double) {
@@ -514,6 +528,7 @@ final class DramaPlayerViewModel: ObservableObject {
     private func resetTimes() {
         // 新 item 方向未知：先按竖屏（fill 现状），presentationSize 就绪后由 refreshVideoOrientation 修正
         videoIsLandscape = false
+        videoPixelSize = .zero
         currentTimeText = "00:00"
         durationText = "00:00"
         remainingTimeText = "-00:00"
@@ -525,6 +540,7 @@ final class DramaPlayerViewModel: ObservableObject {
     private func refreshVideoOrientation(reason: String) {
         let size = player.currentItem?.presentationSize ?? .zero
         guard size.width > 0, size.height > 0 else { return }
+        videoPixelSize = size
         let landscape = size.width > size.height
         guard landscape != videoIsLandscape else { return }
         videoIsLandscape = landscape
