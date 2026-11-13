@@ -233,11 +233,15 @@ final class PlayerFullscreenControlsView: UIView {
         muteButton.frame = CGRect(x: w - localInsets.right - 52, y: spill + localInsets.top + 8, width: 44, height: 44)
         cleanButton.frame = CGRect(x: muteButton.frame.minX - 52, y: spill + localInsets.top + 8, width: 44, height: 44)
         // 视觉尺寸与竖屏 DramaPlayerView 完全一致：清屏 21×16 描边矩形 + 27×2.2 斜线、
-        // 静音 26 图标 + 36×2.5 斜线（都居中在 44 命中区）
+        // 静音 26 图标 + 36×2.5 斜线（都居中在 44 命中区）。
+        // 斜线带 45° transform：必须用 bounds+center 定位——setFrame 会经逆变换重设 bounds
+        //（实测被改成 20.65×17.54，金色斜线渲染成胖块 =「黄线很大」）
         cleanRect.frame = CGRect(x: 11.5, y: 14, width: 21, height: 16)
-        cleanSlash.frame = CGRect(x: 8.5, y: 20.9, width: 27, height: 2.2)
+        cleanSlash.bounds = CGRect(origin: .zero, size: CGSize(width: 27, height: 2.2))
+        cleanSlash.center = CGPoint(x: 22, y: 22)
         muteIcon.frame = CGRect(x: 9, y: 9, width: 26, height: 26)
-        muteSlash.frame = CGRect(x: 4, y: 20.75, width: 36, height: 2.5)
+        muteSlash.bounds = CGRect(origin: .zero, size: CGSize(width: 36, height: 2.5))
+        muteSlash.center = CGPoint(x: 22, y: 22)
 
         // 底部：进度条（横贯，44pt 高命中带）+ 时间行
         let barWidth = w - localInsets.left - localInsets.right - 16

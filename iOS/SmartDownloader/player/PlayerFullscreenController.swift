@@ -134,6 +134,49 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         view.layer.add(anim, forKey: "fullscreen.\(keyPath)")
     }
 
+    /// 与整体观感一致的缓动（sin 版 easeInOut，首末速度 0）
+    private static func easeInOutSine(_ p: Double) -> Double {
+        0.5 - cos(p * .pi) / 2
+    }
+
+    /// 旋转 + 均匀缩放联合关键帧动画：竖向足迹（旋转矩形的轴对齐包围盒高）按缓动单调插值，
+    /// scale 沿途反解 s = targetH / (W·sinθ + H·cosθ)。
+    /// 直接对 scale 线性插值时，旋转中段包围盒先缩后胀再缩（W·sinθ 项随角度加速增长、
+    /// 跑赢了 scale 的收缩）——视频视觉上「变大再变小」。竖向严格单调不超屏；横向允许
+    /// 超出屏幕（与全屏裁切同语义，不可见）。
+    private func addRotateAndScaleAnimation(on view: UIView, rotationFrom: CGFloat, rotationTo: CGFloat,
+                                            verticalFrom: CGFloat, verticalTo: CGFloat,
+                                            duration: TimeInterval) {
+        let W = view.bounds.width, H = view.bounds.height
+        let steps = 30
+        var keyTimes: [NSNumber] = []
+        var rotations: [NSNumber] = []
+        var scales: [NSNumber] = []
+        for i in 0...steps {
+            let p = Double(i) / Double(steps)
+            let e = Self.easeInOutSine(p)
+            let θ = rotationFrom + (rotationTo - rotationFrom) * e
+            let targetH = verticalFrom + (verticalTo - verticalFrom) * e
+            let denom = W * abs(sin(θ)) + H * abs(cos(θ))
+            let s = denom > 0 ? targetH / denom : 1
+            keyTimes.append(NSNumber(value: p))
+            rotations.append(NSNumber(value: Double(θ)))
+            scales.append(NSNumber(value: Double(s)))
+        }
+        let rot = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        rot.values = rotations
+        rot.keyTimes = keyTimes
+        rot.duration = duration
+        rot.calculationMode = .linear   // 分段值已含缓动形状，段间线性即可
+        view.layer.add(rot, forKey: "fullscreen.rotation")
+        let scl = CAKeyframeAnimation(keyPath: "transform.scale")
+        scl.values = scales
+        scl.keyTimes = keyTimes
+        scl.duration = duration
+        scl.calculationMode = .linear
+        view.layer.add(scl, forKey: "fullscreen.scale")
+    }
+
     /// 进入：容器 bounds 取「视频横屏整幅矩形」（与片源同宽高比、长边铺满屏幕长边），
     /// fill 恒等 = 精确铺满无裁切无变形；起始 presentation 用均匀 scale 对齐「视频显示带」，
     /// 动画中均匀放大 + 旋转到全幅。起点与卡片画面逐像素重合、全程无不等比变形
@@ -195,8 +238,16 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             self.controls?.showTransient()   // 进入全屏后呼出控制层，3s 自动收起
             self.flushPending()
         })
-        addScalarAnimation("transform.scale", from: s0, to: 1, duration: duration, on: container)
-        addScalarAnimation("transform.rotation.z", from: 0, to: rotationAngle, duration: duration, on: container)
+        if playback.videoPixelSize.width > 0 {
+            // 联合关键帧：竖向足迹单调插值，消除旋转中段包围盒鼓包（「变大再变小」）
+            addRotateAndScaleAnimation(on: container, rotationFrom: 0, rotationTo: rotationAngle,
+                                       verticalFrom: band.height, verticalTo: screenSize.height,
+                                       duration: duration)
+        } else {
+            // 片源尺寸未知（videoIsLandscape 下理论不可达）：退回线性标量
+            addScalarAnimation("transform.scale", from: s0, to: 1, duration: duration, on: container)
+            addScalarAnimation("transform.rotation.z", from: 0, to: rotationAngle, duration: duration, on: container)
+        }
         // 模型终态=动画终态（只旋转 scale 1，足迹=全幅矩形）。注意用实际转向角 rotationAngle，
         // 写死 ±π/2 会让另一半转向进全屏内容上下倒置（de08f27 没修干净的那半）
         container.transform = CGAffineTransform(rotationAngle: rotationAngle)
@@ -211,6 +262,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             return
         }
         isAnimating = true
+        let screenSize = window.bounds.size
         let band = videoBandFrame(in: window)
         let s0 = container.bounds.width > 0 ? band.width / container.bounds.width : 1
         print("PLAYER_DBG [Fullscreen] exit to=\(band)")
@@ -227,8 +279,14 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             print("PLAYER_DBG [Fullscreen] exit done")
             self.flushPending()
         })
-        addScalarAnimation("transform.rotation.z", from: rotationAngle, to: 0, duration: duration, on: container)
-        addScalarAnimation("transform.scale", from: 1, to: s0, duration: duration, on: container)
+        if playback.videoPixelSize.width > 0 {
+            addRotateAndScaleAnimation(on: container, rotationFrom: rotationAngle, rotationTo: 0,
+                                       verticalFrom: screenSize.height, verticalTo: band.height,
+                                       duration: duration)
+        } else {
+            addScalarAnimation("transform.rotation.z", from: rotationAngle, to: 0, duration: duration, on: container)
+            addScalarAnimation("transform.scale", from: 1, to: s0, duration: duration, on: container)
+        }
         // 模型终态=动画终态（scale s0，足迹=显示带）。绝不能落 identity——bounds 是横屏
         // 整幅矩形，identity 足迹撑回整屏宽，动画结束帧与模型帧之间会闪出一次大画面
         //（「回竖屏画面动一下」的根因）
