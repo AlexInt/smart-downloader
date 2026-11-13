@@ -87,6 +87,10 @@ struct DownloadsView: View {
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            // 自定义 tab bar 在 App 层用 safeAreaInset 注入，但 paging TabView 的页面
+            // 不接收祖先追加的底部安全区（已知传递缺陷）→ 列表满屏时最后一行被 bar 盖住。
+            // 这里按 bar 实高显式补底部安全区（MainTab.barReservedHeight 与 bar 内边距同步）。
+            .safeAreaPadding(.bottom, MainTab.barReservedHeight)
             .navigationTitle("下载")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -306,6 +310,8 @@ struct SeriesDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
+        // 同 DownloadsView：二级页的 List 同样吃不到 App 层 tab bar 的追加安全区
+        .safeAreaPadding(.bottom, MainTab.barReservedHeight)
         .navigationTitle(seriesName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

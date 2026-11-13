@@ -29,4 +29,10 @@ enum MainTab: Int, CaseIterable, Identifiable {
         case .settings: return "gearshape"
         }
     }
+
+    /// 自定义底部 tab bar 的预留高度（与 App.mainTabBar 的内边距同步：
+    /// VStack(spacing:2){ icon≈24 + text≈13 } + padding(top:6, bottom:2) ≈ 47）。
+    /// 分页 TabView 的页面不接收祖先 safeAreaInset 追加的底部安全区（已知传递缺陷），
+    /// 下载页列表用它显式补底部安全区；改 bar 内边距时同步此值。
+    static let barReservedHeight: CGFloat = 47
 }
