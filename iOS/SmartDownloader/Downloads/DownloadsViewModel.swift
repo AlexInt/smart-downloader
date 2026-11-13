@@ -27,8 +27,12 @@ final class DownloadsViewModel: ObservableObject {
     @Published private(set) var seriesSizes: [String: Int64] = [:]
     /// 剧集区总占用：「已下载顶部：剧集·N部·xx.xGB」用
     @Published private(set) var seriesTotalBytes: Int64 = 0
-    /// 上次已计算的输入指纹：done 任务 id 集合 + 总数没变就不重算（下载进度 tick 不触发磁盘枚举）
+    /// 上次已计算的全局输入指纹：done 任务 id 集 + 总数没变 → 连 work item 都不排（进度 tick 零成本）
     private var lastSizeSignature = ""
+    /// 每剧占用缓存：键 = 剧名，值 = (该剧 done 集 id 指纹, 字节)。
+    /// 全局指纹变了也只重扫「有增删的剧」，没动的剧直接复用缓存字节（用户要求 2026-11-13）。
+    /// 主线程约定：只在主线程读写（后台只负责扫盘）
+    private var seriesSizeCache: [String: (signature: String, bytes: Int64)] = [:]
     private var sizeRecomputeWork: DispatchWorkItem?
     private var managerObservation: AnyCancellable?
 
@@ -45,36 +49,62 @@ final class DownloadsViewModel: ObservableObject {
 
     // MARK: - 磁盘占用统计
 
-    /// 去抖 500ms：批量删除/连续完成只算一次；磁盘枚举在后台线程（可能上千切片）
+    /// 去抖 500ms：批量删除/连续完成只算一次；主线程先算全局指纹，
+    /// **没变化直接 return（不排 work item、不碰磁盘）**——缓存命中零成本
     private func scheduleSizeRecompute() {
+        let signature = Self.sizeSignature(manager.tasks)
+        guard signature != lastSizeSignature else { return }
         sizeRecomputeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.recomputeSizes() }
         sizeRecomputeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
+    /// 全局指纹 = done 任务 id 集 + 任务总数；新增/完成/删除都会变，进度 tick 不会变
+    private static func sizeSignature(_ tasks: [DownloadTask]) -> String {
+        let doneIDs = tasks.filter { $0.state == .done }.map(\.id.uuidString).sorted()
+        return "\(doneIDs.joined(separator: ","))#\(tasks.count)"
+    }
+
     private func recomputeSizes() {
-        let doneIDs = manager.tasks.filter { $0.state == .done }.map(\.id.uuidString).sorted()
-        let signature = "\(doneIDs.joined(separator: ","))#\(manager.tasks.count)"
+        let signature = Self.sizeSignature(manager.tasks)
         guard signature != lastSizeSignature else {
             print("PLAYER_DBG [Service] diskUsage SKIP reason=sameSignature tasks=\(manager.tasks.count)")
             return
         }
         lastSizeSignature = signature
-        let seriesNames = Set(manager.tasks.filter { $0.state == .done && $0.seriesName != nil }.map { $0.seriesName! })
+        let groups = Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
+                                by: { $0.seriesName! })
+        // 主线程决策：每剧自己的指纹（该集 done 集 id 集）对比缓存——
+        // 没增删的剧直接复用缓存字节，只把变了的剧交给后台扫盘
+        var reuse: [String: Int64] = [:]
+        var toScan: [(name: String, signature: String)] = []
+        for (name, eps) in groups {
+            let sig = eps.map(\.id.uuidString).sorted().joined(separator: ",")
+            if let cached = seriesSizeCache[name], cached.signature == sig {
+                reuse[name] = cached.bytes
+            } else {
+                toScan.append((name, sig))
+            }
+        }
+        // 被删空的剧：缓存条目一并清掉
+        seriesSizeCache = seriesSizeCache.filter { groups[$0.key] != nil }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var sizes: [String: Int64] = [:]
-            var total: Int64 = 0
-            for name in seriesNames.sorted() {
-                let size = DiskUsageService.directorySize(DownloadEngine.seriesDirectory(for: name))
-                sizes[name] = size
-                total += size
+            let scanned: [(String, String, Int64)] = toScan.map {
+                ($0.name, $0.signature, DiskUsageService.directorySize(DownloadEngine.seriesDirectory(for: $0.name)))
             }
             DispatchQueue.main.async {
                 guard let self else { return }
+                var sizes = reuse                    // 未变的剧用缓存
+                var total = reuse.values.reduce(0, +)
+                for (name, sig, bytes) in scanned {
+                    sizes[name] = bytes
+                    total += bytes
+                    self.seriesSizeCache[name] = (signature: sig, bytes: bytes)
+                }
                 self.seriesSizes = sizes
                 self.seriesTotalBytes = total
-                print("PLAYER_DBG [Service] diskUsage series=\(sizes.count) total=\(DiskUsageService.formatted(total))")
+                print("PLAYER_DBG [Service] diskUsage series=\(sizes.count) total=\(DiskUsageService.formatted(total)) reused=\(reuse.count) scanned=\(scanned.count)")
             }
         }
     }
