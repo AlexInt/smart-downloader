@@ -80,8 +80,6 @@ struct DramaDetailView: View {
     @State private var introOverflow = false
     /// 截断态文本：前缀使「前缀 + … 展开」恰好 ≤2 行（内联尾部，用户拍板 2026-11-13）——nil = 不溢出
     @State private var collapsedIntro: String?
-    /// 实测简介文本高度：展开态「收起」按钮的落位依据
-    @State private var introTextHeight: CGFloat = 0
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -400,15 +398,18 @@ struct DramaDetailView: View {
         ZStack(alignment: .topLeading) {
             let height = 36 + descShift
             if vm.isDescriptionExpanded {
+                // 展开态 = 设计稿固定窗口（36+54=90pt，约 4 行）+ 裁切，收起在窗口下方设计位：
+                // descShift 是固定常量而非实测高度，窗口不能随文本长高 —— 否则文字漫进选集区（真机反馈）
                 Text(vm.intro ?? "")
                     .font(DWFont.cn(13))
                     .lineSpacing(5)
                     .foregroundStyle(DWColor.textBody)
+                    .lineLimit(nil)
                     .frame(width: 350, height: height, alignment: .topLeading)
+                    .clipped()
                     .designFrame(20, 386, 350, height, alignment: .topLeading)
                     .animation(motion, value: vm.isDescriptionExpanded)
                 if introOverflow {
-                    // 收起：紧跟实测文本底部（原固定 y=471 会压在展开后的文字上）
                     Button { vm.toggleDescription() } label: {
                         HStack(spacing: 2) {
                             Text("收起")
@@ -416,28 +417,35 @@ struct DramaDetailView: View {
                         }
                         .font(DWFont.cn(12, .medium))
                         .foregroundStyle(DWColor.gold)
+                        .frame(width: 68, height: 44)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .designFrame(302, 386 + introTextHeight + 4, 68, 24)
+                    .designFrame(296, 471, 68, 44)
                 }
             } else if let prefix = collapsedIntro {
                 // 截断态（用户拍板 2026-11-13）：第一行填满换行，第二行行尾内联「… 展开」——
-                // 金色展开与前缀同段排版，恰好落在第二行行尾；点任意处展开；渐隐遮罩/钉死按钮废弃
+                // 金色展开与前缀同段排版，恰好落在第二行行尾；点任意处展开；渐隐遮罩/钉死按钮废弃。
+                // lineLimit(2)+clipped 双保险：TextKit 估算与真实渲染有分毫漂移时不漫出容器
                 collapsedIntroText(prefix)
                     .font(DWFont.cn(13))
                     .lineSpacing(5)
+                    .lineLimit(2)
                     .frame(width: 350, height: height, alignment: .topLeading)
+                    .clipped()
                     .designFrame(20, 386, 350, height, alignment: .topLeading)
                     .contentShape(Rectangle())
                     .onTapGesture { vm.toggleDescription() }
                     .animation(motion, value: vm.isDescriptionExpanded)
             } else {
-                // ≤2 行：完整文本，无任何按钮
+                // ≤2 行：完整文本，无任何按钮（lineLimit(2)+clipped 兑底防首帧未测量的溢出闪现）
                 Text(vm.intro ?? "")
                     .font(DWFont.cn(13))
                     .lineSpacing(5)
                     .foregroundStyle(DWColor.textBody)
+                    .lineLimit(2)
                     .frame(width: 350, height: height, alignment: .topLeading)
+                    .clipped()
                     .designFrame(20, 386, 350, height, alignment: .topLeading)
             }
         }
@@ -474,7 +482,6 @@ struct DramaDetailView: View {
             attributes: attrs, context: nil)
         let step = uiFont.lineHeight + 5
         let lineCount = max(1, Int((bounds.height + 2) / step) + 1)
-        introTextHeight = ceil(bounds.height)
         introOverflow = lineCount > 2
         if introOverflow {
             collapsedIntro = Self.truncatedIntroPrefix(text, tail: "… 展开", width: 350, attrs: attrs, step: step)
