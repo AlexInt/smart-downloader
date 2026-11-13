@@ -101,7 +101,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 3 | 相邻卡片首帧海报（渐变占位 → AVAssetImageGenerator + 磁盘缓存，可复用预热池 asset） | 中 |
 | 4 | 本地推荐算法（接入点已留 §4.6） | 按需 |
 | 5 | 「长按 2x 中途继续上滑切集」手势竞争观察（离散手势回卡片后未专测此组合） | 低 |
-| 6 | **播放器视图壳 UIKit+Combine 化**：**包 A（全屏链路）已完成**（§2，分支 feat/player-uikit-shell）；包 B 待做——竖屏卡片 DramaPlayerView UIKit 化（designFrame 转 frame+scale）、卡片手势迁 UIGestureRecognizer（六条仲裁约束逐条对照）、PlayerFeedView/Container 胶水收编、UIHostingController 退役；VM/Service/Model（GCD+Combine）零改动路线已在包 A 验证（全屏控制器/控制层直接订阅同一批 @Published） | 中 |
+| 6 | **播放器视图壳 UIKit+Combine 化**：**包 A（全屏链路）已完成**（§2，分支 feat/player-uikit-shell）；包 B 待做——竖屏卡片 DramaPlayerView UIKit 化（designFrame 转 frame+scale）、卡片手势迁 UIGestureRecognizer（六条仲裁约束逐条对照）、PlayerFeedView/Container 胶水收编、UIHostingController 退役；VM/Service/Model（GCD+Combine）零改动路线已在包 A 验证（全屏控制器/控制层直接订阅同一批 @Published）；前置调研：specs/播放器旋转方案调研.md（ZFPlayer/SJRotation/KSPlayer 源码级对照 + 借鉴清单，搬运粒度维持 videoLayer 勿改搬 view） | 中 |
 
 ## 6. 待查 / 已知问题
 
