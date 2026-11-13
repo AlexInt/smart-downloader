@@ -756,9 +756,10 @@ struct DramaDetailView: View {
                         AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
-                                image.resizable().scaledToFill()
+                                // scaledToFit（用户拍板 2026-11-13）：完整显示整张封面不裁切；
+                                // 中/矮两档卡高比 3:4 矮，图片宽度收窄居中，两侧露出深色背景
+                                image.resizable().scaledToFit()
                                     .frame(width: DetailLayout.recoColumnWidth, height: coverHeight)
-                                    .clipped()
                             default:
                                 recoCoverPlaceholder(height: coverHeight)
                             }
