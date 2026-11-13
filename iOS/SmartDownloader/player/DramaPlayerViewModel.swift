@@ -37,8 +37,11 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var isLoadingSlow = false
     /// 当前集视频画面方向：true = 横屏（宽>高）。来源 `AVPlayerItem.presentationSize`
     /// （同步、非废弃 API，HLS 首帧解码后有效）；0×0 = 未知，保持 false 按竖屏处理（维持拉满现状）。
-    /// 渲染 gravity 由卡片按「片源方向与持屏方向是否一致」选择（DramaPlayerView.surfaceGravity）。
+    /// 渲染 gravity 由单例容器统一设置（PlayerPagingScrollView.videoGravity）。
     @Published private(set) var videoIsLandscape = false
+    /// 全屏态（容器 transform 自转，非系统界面旋转）：仅横屏片源可进入，姿态服务（判稳）与
+    /// 全屏控制层驱动，Combine 订阅方是 PlayerFullscreenController。
+    @Published private(set) var isFullscreen = false
 
     @Published var isMuted = false {
         didSet {
@@ -204,6 +207,24 @@ final class DramaPlayerViewModel: ObservableObject {
         print("PLAYER_DBG [Playback] timeDisplay → \(showRemainingTime ? "remaining" : "duration")")
     }
 
+    // MARK: 全屏（容器 transform 自转，无系统界面旋转）
+
+    /// 进入全屏：仅横屏片源 + 已就绪有效（竖屏片源转横只会得到细竖条，不动作）。
+    /// 触发方：姿态判稳服务（A-5），无按钮入口。
+    func enterFullscreen() {
+        guard videoIsLandscape, isReady, !isFullscreen else {
+            print("PLAYER_DBG [Fullscreen] enterIntent SKIP videoIsLandscape=\(videoIsLandscape) isReady=\(isReady) already=\(isFullscreen)")
+            return
+        }
+        isFullscreen = true
+    }
+
+    /// 退出全屏（姿态回竖稳 / 控制层返回 icon）
+    func exitFullscreen() {
+        guard isFullscreen else { return }
+        isFullscreen = false
+    }
+
     func seek(fraction: Double) {
         isSeekGestureActive = true
         guard !isFastForwarding else {
@@ -266,6 +287,7 @@ final class DramaPlayerViewModel: ObservableObject {
         statusWatch?.invalidate()
         statusWatch = nil
         isFastForwarding = false
+        isFullscreen = false   // 播放页销毁：全屏态复位（容器由 Coordinator.dismantle 显式还原）
         endSeekGesture()
         isCleanScreenFlashActive = false
         hideScrubHudNow()

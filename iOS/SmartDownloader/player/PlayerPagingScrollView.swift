@@ -57,15 +57,17 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         context.coordinator.edgePan = edgePan
         print("PLAYER_DBG [CHECK] gestures installed count=\(scroll.gestureRecognizers?.count ?? 0)")
 
-        // 视频承载容器（单例）：唯一 AVPlayerLayer 宿主，z 序在全部卡片之下（卡片视频区透明），
+        // 视频承载容器（单例）：唯一视频子层宿主，z 序在全部卡片之下（卡片视频区透明），
         // frame 对位活跃卡（内容坐标）——滚动/翻页时视频随内容移动，卡片不再各自持有 surface。
         let surface = PlayerSurfaceUIView()
-        surface.playerLayer.player = playback.player
-        surface.playerLayer.videoGravity = Self.videoGravity(for: playback)
+        surface.player = playback.player
+        surface.videoGravity = Self.videoGravity(for: playback)
         surface.backgroundColor = .clear
         surface.isUserInteractionEnabled = false
         scroll.insertSubview(surface, at: 0)
         context.coordinator.surfaceView = surface
+        // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
+        context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
         return scroll
     }
 
@@ -76,6 +78,11 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         context.coordinator.refreshCardsIfNeeded()
         context.coordinator.applyStartOffsetIfNeeded(in: scroll)
         context.coordinator.updateSurfaceContainer(in: scroll)
+    }
+
+    static func dismantleUIView(_ uiView: PagingScrollView, coordinator: Coordinator) {
+        // 播放页销毁：全屏容器挂在 keyWindow 上，必须显式还原，否则泄漏在 window 上
+        coordinator.fullscreenController?.teardown()
     }
 
     /// 渲染 gravity：横屏片源完整显示（fit）、竖屏片源拉满（fill）。App 已锁竖屏，
@@ -100,8 +107,10 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedY: CGFloat = -999
         /// 上次实际布局过的几何 key：几何没变时 layoutPages 幂等跳过（防布局回环）
         private var lastLaidSizeKey = ""
-        /// 视频承载容器（唯一 AVPlayerLayer 宿主），makeUIView 创建、z 序在卡片之下
+        /// 视频承载容器（唯一视频子层宿主），makeUIView 创建、z 序在卡片之下
         var surfaceView: PlayerSurfaceUIView?
+        /// 全屏控制器（容器 transform 自转 + isFullscreen 订阅），随滚动层销毁时 teardown
+        var fullscreenController: PlayerFullscreenController?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
@@ -284,7 +293,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         /// 视频容器对位活跃卡 + gravity 跟随片源方向（updateUIView 与几何变化后都会调）。
         func updateSurfaceContainer(in scroll: PagingScrollView) {
             guard let surface = surfaceView else { return }
-            surface.playerLayer.videoGravity = PlayerPagingScrollView.videoGravity(for: parent.playback)
+            surface.videoGravity = PlayerPagingScrollView.videoGravity(for: parent.playback)
             let width = scroll.bounds.width
             let height = scroll.bounds.height
             guard width > 0, height > 0, let current = parent.currentSort,
