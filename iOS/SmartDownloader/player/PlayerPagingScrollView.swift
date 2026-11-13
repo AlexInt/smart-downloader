@@ -67,6 +67,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         surface.isUserInteractionEnabled = false
         scroll.insertSubview(surface, at: 0)
         context.coordinator.surfaceView = surface
+        // 首显机制：进页/切集时条带先藏（渐变盖着，用户不可见），ready 后延迟 150ms 淡入
+        //（与卡片渐变淡出错开，消「渐变退了底下还是黑的、条带啪地出现」）
+        surface.concealForReveal()
         // gravity 即时跟随片源方向：不等下一次 SwiftUI update——ready 翻转后首帧可能
         // 先于 update 提交渲染，fill→fit 跳变即「刚进竖屏画面抖一下」。
         // @Published 在赋值调用栈内同步发出，直接 sink 当场落 gravity，早于任何渲染提交
@@ -74,6 +77,17 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         context.coordinator.gravityCancellable = playback.$videoIsLandscape
             .sink { [weak surface] landscape in
                 surface?.videoGravity = landscape ? .resizeAspect : .resizeAspectFill
+            }
+        // isReady 订阅：翻转 false（新一集开始）藏住条带；翻转 true（item ready）延迟 150ms
+        // 淡入——与卡片渐变淡出错开，交叉过渡无黑屏空档（渐变退完前条带已在淡入）
+        context.coordinator.readyCancellable = playback.$isReady
+            .removeDuplicates()
+            .sink { [weak surface] ready in
+                if ready {
+                    surface?.scheduleVideoReveal()
+                } else {
+                    surface?.concealForReveal()
+                }
             }
         // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
         context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
@@ -123,6 +137,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         var fullscreenController: PlayerFullscreenController?
         /// 片源方向 → surface gravity 的即时订阅（不等 SwiftUI update，防 fill→fit 首帧跳变）
         var gravityCancellable: AnyCancellable?
+        /// isReady → 视频条带延迟首显（与卡片渐变淡出错开，防黑屏空档/突现）
+        var readyCancellable: AnyCancellable?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）

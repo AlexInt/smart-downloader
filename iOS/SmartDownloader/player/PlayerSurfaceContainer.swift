@@ -26,6 +26,47 @@ final class PlayerSurfaceUIView: UIView {
 
     /// layer 搬走期间的跳过日志只打一次（SwiftUI 每轮 update 都会重设一次，降噪）
     private var loggedAwaySkip = false
+    /// 视频首显开关：isReady 翻转后不立即上屏，等 layer 首帧提交（~150ms）再淡入——
+    /// 渐变淡出与 AVPlayerLayer 首帧提交是两个异步事件，直接对齐会露出「渐变退了底下
+    /// 还是黑的，条带啪地出现」；错开并交叉淡入，两个顺序都不会黑屏
+    private var isVideoRevealed = true
+    /// 首显淡入工作项
+    private var revealWork: DispatchWorkItem?
+
+    /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后延迟淡入
+    func concealForReveal() {
+        revealWork?.cancel()
+        isVideoRevealed = false
+        PlayerSurfaceUIView.withoutLayerActions {
+            videoLayer.opacity = 0
+        }
+        print("PLAYER_DBG [CHECK] video conceal → waitFirstFrame")
+    }
+
+    /// isReady 翻转时调：150ms 后淡入（等 AVPlayerLayer 首帧提交，与渐变淡出错开）
+    func scheduleVideoReveal() {
+        guard !isVideoRevealed else { return }
+        revealWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.videoLayer.superlayer === self.layer else { return }
+            self.isVideoRevealed = true
+            print("PLAYER_DBG [CHECK] video reveal fadeIn (firstFrameDelay)")
+            UIView.animate(withDuration: 0.15, animations: {
+                self.videoLayer.opacity = 1
+            })
+        }
+        revealWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// 全屏退出还原时调：强制回到已显示态（全屏路径不经首显机制，退出动画本身连续）
+    func markRevealed() {
+        revealWork?.cancel()
+        isVideoRevealed = true
+        PlayerSurfaceUIView.withoutLayerActions {
+            videoLayer.opacity = 1
+        }
+    }
 
     var videoGravity: AVLayerVideoGravity {
         get { videoLayer.videoGravity }

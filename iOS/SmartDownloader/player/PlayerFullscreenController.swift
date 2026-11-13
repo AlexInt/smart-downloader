@@ -316,13 +316,16 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         let layer = surface.videoLayer
         // 禁隐式动作 + 先落位再挂回：裸 CALayer 直接改 frame 会 0.25s 飞行
         //（「横转竖抖一下」的根因）；先设 frame/gravity 再 addSublayer，
-        // 树里从不存在携带旧坐标系 frame 的中间态
+        // 树里从不存在携带旧坐标系 frame 的中间态。全屏路径不经首显机制：
+        // opacity 强制归 1（进全屏前若处于首显隐藏态，退出后不能留在隐藏）
         PlayerSurfaceUIView.withoutLayerActions {
             layer.removeFromSuperlayer()
             layer.frame = surface.bounds
             layer.videoGravity = PlayerPagingScrollView.videoGravity(for: playback)
+            layer.opacity = 1
             surface.layer.addSublayer(layer)
         }
+        surface.markRevealed()
         print("PLAYER_DBG [Fullscreen] restore layer frame=\(surface.bounds) gravity=\(playback.videoIsLandscape ? "fit" : "fill")")
     }
 
