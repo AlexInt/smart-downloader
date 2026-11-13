@@ -159,11 +159,22 @@ final class DownloadsViewModel: ObservableObject {
         sortOrder.order(manager.tasks.filter { $0.state == .done && $0.seriesName == nil })
     }
 
-    /// 剧 -> 已落盘的集。组内按创建时间排；剧之间「最新优先」看最近一集、「最早优先」看最早一集。
+    /// 剧 -> 已落盘的集。组内按创建时间排；剧之间：
+    /// 容量排序按磁盘占用缓存字节（未算出当 0，后台算完自动重排），
+    /// 时间排序「最新优先」看最近一集、「最早优先」看最早一集。
     var seriesGroups: [(name: String, episodes: [DownloadTask])] {
         let grouped = Dictionary(grouping: manager.tasks.filter { $0.state == .done && $0.seriesName != nil },
                                  by: { $0.seriesName! })
         let groups = grouped.map { (name: $0.key, episodes: sortOrder.order($0.value)) }
+        if sortOrder == .sizeDesc || sortOrder == .sizeAsc {
+            let ascending = sortOrder == .sizeAsc
+            return groups.sorted { a, b in
+                let sa = seriesSizes[a.name] ?? 0
+                let sb = seriesSizes[b.name] ?? 0
+                if sa != sb { return ascending ? sa < sb : sa > sb }
+                return a.name < b.name
+            }
+        }
         return groups.sorted { a, b in
             let timesA = a.episodes.map(\.createdAt)
             let timesB = b.episodes.map(\.createdAt)

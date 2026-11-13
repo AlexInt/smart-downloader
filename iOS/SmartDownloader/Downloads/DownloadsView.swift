@@ -13,26 +13,44 @@ struct PlayerItem: Identifiable {
 enum DownloadSortOrder: String, CaseIterable, Identifiable {
     case newestFirst
     case oldestFirst
+    /// 容量排序（用户拍板 2026-11-13）：只作用于「已下载」的剧分组维度，
+    /// 字节来自磁盘占用缓存（DownloadsViewModel.seriesSizes，未算出当 0）
+    case sizeDesc
+    case sizeAsc
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .newestFirst: return "最新创建优先"
         case .oldestFirst: return "最早创建优先"
+        case .sizeDesc: return "容量从大到小"
+        case .sizeAsc: return "容量从小到大"
         }
     }
     var icon: String {
         switch self {
         case .newestFirst: return "arrow.down"
         case .oldestFirst: return "arrow.up"
+        case .sizeDesc: return "arrow.down.circle"
+        case .sizeAsc: return "arrow.up.circle"
+        }
+    }
+
+    /// 集级排序：容量是「剧分组维度」的排序（见 seriesGroups），
+    /// 集内/进行中/散装回退到同方向的时间序（单集容量不在本排序语义内）
+    private var effectiveTimeOrder: DownloadSortOrder {
+        switch self {
+        case .oldestFirst, .sizeAsc: return .oldestFirst
+        case .newestFirst, .sizeDesc: return .newestFirst
         }
     }
 
     /// 按创建时间排；同一时刻用标题/集号兜底，避免顺序抖动
     func order(_ tasks: [DownloadTask]) -> [DownloadTask] {
-        tasks.sorted { a, b in
+        let effective = effectiveTimeOrder
+        return tasks.sorted { a, b in
             if a.createdAt != b.createdAt {
-                return self == .newestFirst ? a.createdAt > b.createdAt : a.createdAt < b.createdAt
+                return effective == .newestFirst ? a.createdAt > b.createdAt : a.createdAt < b.createdAt
             }
             return a.title < b.title
         }
