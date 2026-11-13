@@ -227,7 +227,6 @@ final class DramaPlayerViewModel: ObservableObject {
         }
         fullscreenRotationAngle = rotationAngle
         isFullscreen = true
-        AppHaptics.medium()   // 进入全屏：显著状态迁移（行业惯例中触；左右转向切换不重震）
         print("PLAYER_DBG [Fullscreen] enterIntent OK angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2")")
     }
 
@@ -238,7 +237,6 @@ final class DramaPlayerViewModel: ObservableObject {
             return
         }
         isFullscreen = false
-        AppHaptics.light()   // 退出全屏回竖屏：轻触收尾
         print("PLAYER_DBG [Fullscreen] exitIntent OK")
     }
 

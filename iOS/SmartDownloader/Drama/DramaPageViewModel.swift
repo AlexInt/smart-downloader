@@ -458,7 +458,7 @@ final class DramaPageViewModel: ObservableObject {
         let newlyDone = fresh.subtracting(downloadedSorts)
         downloadedSorts = fresh
         if initialLibraryApplied, let sort = newlyDone.min() {
-            AppHaptics.success()   // 单集下载完成：异步结果达成（成功触）
+            // 不加触觉：下载完成可能成批到达且用户不在看（用户拍板 2026-11-13 去除）
             showToast("第 \(sort) 集下载完成")
         }
     }
