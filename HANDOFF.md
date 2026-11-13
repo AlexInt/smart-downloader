@@ -85,6 +85,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 6. **推荐算法接入点**：只改 `PlaybackQueueService.resolveNext/resolvePrevious`；`neighbors(of:)` 也走它们，预热自动跟随新序。
 7. **诊断日志**：`PLAYER_DBG` 前缀 + `[CHECK]` 断言行；失败分支必须有 log；排障后保留不清理（全文见 AGENTS）。
 8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已移除**；主屏 12 格直点（`tapEpisodeDirect`），「查看全部」是内联展开（`showAllEpisodesInline`），展开的 13+ 集走多选语义（`tapEpisode`）+ 底部工具条，两条点击路径按 `multiSelect` 分流、别合并。展开时 `pageLayout` 的 recoY 必须按 `contentBottomDesignY = 720 + extraEpisodeRows*56` 下推，否则推荐区会压住额外集。勿改回固定高度 / sheet / CTA。
+9. **播放页两条有意取舍（2026-11-13 用户拍板）**：① 横屏 = 观影模式——竖屏画布的信息区/点赞收藏/上滑提示在 `landscapeOverlay` 不渲染，点赞收藏回竖屏操作，勿当缺失补回横屏；② 片源方向未知（`AVPlayerItem.presentationSize` 0×0）按竖屏 fill 处理，宁可不切换也不猜方向。详见 AGENTS「iOS 架构约定」第 12 条。
 
 ## 5. 待办清单（按优先级）
 
