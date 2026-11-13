@@ -21,7 +21,12 @@ final class FullscreenPlayerView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        videoLayer?.frame = bounds
+        // 裸 CALayer 写 frame 禁隐式动作（同 PlayerSurfaceUIView.withoutLayerActions 说明）
+        if let videoLayer, videoLayer.frame != bounds {
+            PlayerSurfaceUIView.withoutLayerActions {
+                videoLayer.frame = bounds
+            }
+        }
         onLayout?()
     }
 }
@@ -207,12 +212,16 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         container.backgroundColor = .clear
         container.clipsToBounds = true
 
-        // videoLayer 搬家（唯一宿主切换）：动画前先落位到起点，无空帧
-        surface.videoLayer.removeFromSuperlayer()
-        container.videoLayer = surface.videoLayer
-        container.layer.addSublayer(surface.videoLayer)
-        surface.videoLayer.frame = container.bounds
-        surface.videoLayer.videoGravity = .resizeAspectFill   // bounds 与片源同宽高比：fill=精确铺满，无裁切无变形，分辨率整幅原生
+        // videoLayer 搬家（唯一宿主切换）：动画前先落位到起点，无空帧。
+        // 裸 CALayer 的 frame 写入必须禁隐式动作——否则 0.25s 飞行叠加容器动画（起手抖一下）
+        let videoLayer = surface.videoLayer
+        PlayerSurfaceUIView.withoutLayerActions {
+            videoLayer.removeFromSuperlayer()
+            videoLayer.frame = CGRect(origin: .zero, size: fullRect.size)
+            videoLayer.videoGravity = .resizeAspectFill   // bounds 与片源同宽高比：fill=精确铺满，无裁切无变形，分辨率整幅原生
+            container.layer.addSublayer(videoLayer)
+        }
+        container.videoLayer = videoLayer
 
         window.addSubview(container)
         self.container = container
@@ -305,10 +314,15 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
 
     private func restoreVideoLayer() {
         let layer = surface.videoLayer
-        layer.removeFromSuperlayer()
-        surface.layer.addSublayer(layer)
-        layer.frame = surface.bounds
-        layer.videoGravity = PlayerPagingScrollView.videoGravity(for: playback)
+        // 禁隐式动作 + 先落位再挂回：裸 CALayer 直接改 frame 会 0.25s 飞行
+        //（「横转竖抖一下」的根因）；先设 frame/gravity 再 addSublayer，
+        // 树里从不存在携带旧坐标系 frame 的中间态
+        PlayerSurfaceUIView.withoutLayerActions {
+            layer.removeFromSuperlayer()
+            layer.frame = surface.bounds
+            layer.videoGravity = PlayerPagingScrollView.videoGravity(for: playback)
+            surface.layer.addSublayer(layer)
+        }
         print("PLAYER_DBG [Fullscreen] restore layer frame=\(surface.bounds) gravity=\(playback.videoIsLandscape ? "fit" : "fill")")
     }
 

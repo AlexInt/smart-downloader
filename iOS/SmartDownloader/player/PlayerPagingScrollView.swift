@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import Combine
 
 /// UIKit 原生纵向分页容器（ZFPlayer / 开源抖音实践）。
 /// `UIScrollView.isPagingEnabled` 由 UIKit 独占 pan。
@@ -66,6 +67,14 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         surface.isUserInteractionEnabled = false
         scroll.insertSubview(surface, at: 0)
         context.coordinator.surfaceView = surface
+        // gravity 即时跟随片源方向：不等下一次 SwiftUI update——ready 翻转后首帧可能
+        // 先于 update 提交渲染，fill→fit 跳变即「刚进竖屏画面抖一下」。
+        // @Published 在赋值调用栈内同步发出，直接 sink 当场落 gravity，早于任何渲染提交
+        //（注意用 sink 参数而不是读属性：@Published 发出时属性还是旧值）
+        context.coordinator.gravityCancellable = playback.$videoIsLandscape
+            .sink { [weak surface] landscape in
+                surface?.videoGravity = landscape ? .resizeAspect : .resizeAspectFill
+            }
         // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
         context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
         print("PLAYER_DBG [UIScroll] fullscreen controller installed surface=\(surface.bounds)")
@@ -112,6 +121,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         var surfaceView: PlayerSurfaceUIView?
         /// 全屏控制器（容器 transform 自转 + isFullscreen 订阅），随滚动层销毁时 teardown
         var fullscreenController: PlayerFullscreenController?
+        /// 片源方向 → surface gravity 的即时订阅（不等 SwiftUI update，防 fill→fit 首帧跳变）
+        var gravityCancellable: AnyCancellable?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
@@ -286,7 +297,10 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             guard width > 0, height > 0, let current = parent.currentSort,
                   let index = parent.slots.firstIndex(where: { $0.sort == current }) else { return }
             let frame = CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
-            if surface.frame != frame { surface.frame = frame }
+            if surface.frame != frame {
+                print("PLAYER_DBG [CHECK] surface frame → \(frame)")
+                surface.frame = frame
+            }
         }
 
         /// 几何变化后把 currentSort 那一页同步顶对齐视口。

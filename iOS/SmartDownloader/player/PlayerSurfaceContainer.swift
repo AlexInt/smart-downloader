@@ -24,16 +24,49 @@ final class PlayerSurfaceUIView: UIView {
         set { videoLayer.player = newValue }
     }
 
+    /// layer 搬走期间的跳过日志只打一次（SwiftUI 每轮 update 都会重设一次，降噪）
+    private var loggedAwaySkip = false
+
     var videoGravity: AVLayerVideoGravity {
         get { videoLayer.videoGravity }
-        set { videoLayer.videoGravity = newValue }
+        set {
+            // 全屏期间 videoLayer 搬在全屏容器里，gravity 由控制器管（fill）：
+            // SwiftUI 周期性 updateSurfaceContainer 会重设 surface.videoGravity（fit），
+            // 穿透写入会把全屏容器的 fill 改掉（横屏画面突然回缩/出黑边）
+            guard videoLayer.superlayer === layer else {
+                if !loggedAwaySkip {
+                    loggedAwaySkip = true
+                    print("PLAYER_DBG [CHECK] surface gravity SET SKIP reason=layerAway wanted=\(newValue == .resizeAspect ? "fit" : "fill")")
+                }
+                return
+            }
+            loggedAwaySkip = false
+            guard videoLayer.videoGravity != newValue else { return }
+            videoLayer.videoGravity = newValue
+            print("PLAYER_DBG [CHECK] surface gravity APPLY \(newValue == .resizeAspect ? "fit" : "fill")")
+        }
+    }
+
+    /// videoLayer 是裸 CALayer（手动 addSublayer 的子层，非 UIView 背板层）：
+    /// 直接改 frame 会触发 0.25s 隐式动画——UIView 只关自己背板层的隐式动作，管不到子层。
+    /// 进/出全屏时 layer 的 frame 要在两个坐标系间切换，隐式动画让视频「飞一下」
+    /// （刚进竖屏 / 横转竖都抖一下的根因）。所有 videoLayer 几何写入统一走这里禁用。
+    /// 只影响隐式动画（action 查找），不影响显式 add 的 CAAnimation。
+    static func withoutLayerActions(_ body: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        body()
+        CATransaction.commit()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // 视频子层在自己身上时才跟随布局；被搬走到全屏容器期间由全屏容器管 frame
-        if videoLayer.superlayer === layer {
-            videoLayer.frame = bounds
+        // 视频子层在自己身上时才跟随布局；被搬走到全屏容器期间由全屏容器管 frame。
+        // 值没变不写（滚动期间 bounds 不变，避免无谓写入）
+        if videoLayer.superlayer === layer, videoLayer.frame != bounds {
+            Self.withoutLayerActions {
+                videoLayer.frame = bounds
+            }
         }
     }
 }
