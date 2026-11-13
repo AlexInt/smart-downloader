@@ -10,6 +10,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 launchSection
+                dramaRouteSection
                 quickLinkSection
             }
             .listStyle(.insetGrouped)
@@ -42,7 +43,18 @@ struct SettingsView: View {
         }
     }
 
-    /// 条目 2：快捷站点，多对 key/value，可增可改可删
+    /// 条目 2：剧集页路由模式（原生 / Web）
+    private var dramaRouteSection: some View {
+        Section {
+            Toggle("打开 Web 剧集页", isOn: $viewModel.useWebDramaPage)
+        } header: {
+            Text("剧集页")
+        } footer: {
+            Text("关闭（默认）：点进剧集用原生剧集页。开启：在浏览页内直接打开网页版剧集页（保留网页的播放/解锁能力），立即生效。")
+        }
+    }
+
+    /// 条目 3：快捷站点，多对 key/value，可增可改可删
     private var quickLinkSection: some View {
         Section {
             if viewModel.links.isEmpty {

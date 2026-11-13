@@ -22,6 +22,8 @@ struct BrowserView: View {
     @State private var dramaPageTarget: DramaTarget?
     /// 同一部剧只自动推入一次（SPA 回退后清除，重进会再推）
     @State private var lastAutoDramaKey: String?
+    /// 剧集页路由偏好（设置页开关，默认原生）：每次事件现读现判，改动立即生效
+    private let routePreferences = DramaRoutePreferences()
 
     var body: some View {
         NavigationStack {
@@ -131,8 +133,13 @@ struct BrowserView: View {
         }
     }
 
-    /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页
+    /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页。
+    /// 设置页「打开 Web 剧集页」开启时不推（网页自己展示），也不回退——让网页停在剧集页
     private func detectDrama(_ target: DramaTarget, undoSPA: Bool) {
+        guard !routePreferences.useWebDramaPage else {
+            print("BROWSER: 检测到剧集页 -> \(target.id) SKIP 推原生页（Web 剧集页模式）")
+            return
+        }
         // 保活容器下浏览页常驻底层：非浏览 tab（如启动时在下载/设置 tab）不自动推入，
         // 避免详情页盖住其它页；回到浏览 tab 时由 onChange(of: selectedTab) 补推
         guard selectedTab == .browser else { return }
@@ -257,6 +264,8 @@ struct WebViewContainer: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var parent: WebViewContainer
         private var lastMainURL: URL?
+        /// 剧集页路由偏好：决策时现读 UserDefaults，设置页改动立即生效
+        private let routePreferences = DramaRoutePreferences()
         private var provisionalRetries = 0
         /// 主帧 URL KVO（SPA pushState 换页不触发 didCommit，靠它同步地址栏/剧集页检测）
         var urlObservation: NSKeyValueObservation?
@@ -278,9 +287,15 @@ struct WebViewContainer: UIViewRepresentable {
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             if navigationAction.targetFrame?.isMainFrame == true {
                 lastMainURL = navigationAction.request.url
-                // 用户点击剧集链接：路由到原生剧集页，网页本体不加载该页
+                // 用户点击剧集链接：路由到原生剧集页，网页本体不加载该页。
+                // 「打开 Web 剧集页」开启时不拦截，网页正常加载剧集页
                 if navigationAction.navigationType == .linkActivated,
                    let target = DramaTarget.parse(navigationAction.request.url?.absoluteString ?? "") {
+                    if routePreferences.useWebDramaPage {
+                        print("BROWSER: 点击剧集 -> \(target.id) 放行（Web 剧集页模式）")
+                        decisionHandler(.allow)
+                        return
+                    }
                     parent.onDramaLinkClick(target)
                     decisionHandler(.cancel)
                     return

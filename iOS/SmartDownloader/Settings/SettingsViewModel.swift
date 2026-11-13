@@ -22,14 +22,21 @@ final class SettingsViewModel: ObservableObject {
     @Published var draft: QuickLink?
     /// 草稿来源是否为「新增」：决定编辑器标题和是否给删除入口
     @Published private(set) var draftIsNew = false
+    /// 浏览器点进剧集页走 Web 页还是原生页（用户拍板 2026-11-13 默认原生）：
+    /// 改动即落盘，浏览页路由判定每次现读现判，立即生效
+    @Published var useWebDramaPage: Bool {
+        didSet { routePreferences.useWebDramaPage = useWebDramaPage }
+    }
 
     private let linkStore = QuickLinkStore()
     private let launchPreferences = AppLaunchPreferences()
+    private let routePreferences = DramaRoutePreferences()
 
     init() {
         // init 内的赋值不触发 didSet，不会把刚读出来的值再写回去
         self.launchTab = launchPreferences.launchTab
         self.links = linkStore.load()
+        self.useWebDramaPage = routePreferences.useWebDramaPage
         // 从没点过圆圈时，这里解析出的就是列表第一项（UI 第一行的圆圈直接是选中态）
         self.defaultLinkID = linkStore.resolvedDefaultID(in: links)
     }
