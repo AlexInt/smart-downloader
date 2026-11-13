@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 import UIKit
 
 /// DramaWave · 分页播放列表里的单张卡片（中文版 / 紫色）
@@ -16,8 +15,6 @@ import UIKit
 struct DramaPlayerView: View {
     let episode: DramaEpisode
     @ObservedObject var playback: DramaPlayerViewModel
-    /// 只有当前页绑定播放器；相邻页显示渐变占位
-    let player: AVPlayer?
     let isActive: Bool
     var onClose: () -> Void = {}
     var hasNextEpisode = false
@@ -63,14 +60,8 @@ struct DramaPlayerView: View {
                                                          geoInsets: geo.safeAreaInsets)
 
             ZStack(alignment: .topLeading) {
-                // ── ① 视频：只有当前页绑定播放器；gravity 见 surfaceGravity ──
-                PlayerSurfaceView(player: isActive ? player : nil,
-                                  videoGravity: surfaceGravity(screenIsLandscape: screenIsLandscape))
-                    .opacity(isActive && playback.isReady ? 1 : 0)
-                    .animation(.easeOut(duration: 0.15), value: playback.isReady)
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .allowsHitTesting(false)
-
+                // ── ① 视频：由分页滚动层的单例容器承载（PlayerPagingScrollView.Coordinator），
+                //    本卡在视频区透明——容器在卡片之下，加载渐变（②）淡出后露出视频 ──
                 // ── ② 加载态渐变：相邻页与加载中都显示 ─────────
                 ZStack(alignment: .center) {
                     LinearGradient(stops: [
@@ -130,7 +121,7 @@ struct DramaPlayerView: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .ignoresSafeArea()
-        .background(DWColor.background.ignoresSafeArea())
+        // 背景透明：视频由滚动层下的单例容器渲染（z 序在卡片之下），卡片只画渐变/压暗/控件
         // 离散手势放卡片内：SwiftUI 深度优先解析，Button 天然优先于卡片手势，
         // 点静音/清屏/点赞/收藏/返回不会再连带触发暂停（无需任何控件区判定）。
         // 长按 2x 与水平 seek 的冲突仲裁 = 「先起者独占本次触摸」（真机日志实证）：
@@ -436,12 +427,7 @@ struct DramaPlayerView: View {
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
     }
 
-    /// 渲染 gravity：片源方向与持屏方向一致才拉满（fill），错配则完整显示（fit，留黑边）。
-    /// 竖屏片源 + 竖屏持机 / 横屏片源 + 横屏持机 = fill；错配 = fit。
-    /// presentationSize 未知（0×0）时 videoIsLandscape=false，与竖屏片源同等对待 → 竖屏持机保持 fill 现状。
-    private func surfaceGravity(screenIsLandscape: Bool) -> AVLayerVideoGravity {
-        playback.videoIsLandscape == screenIsLandscape ? .resizeAspectFill : .resizeAspect
-    }
+    /// 渲染 gravity 已上移到 PlayerPagingScrollView.videoGravity（单例容器统一设置）。
 
     // MARK: - 可复用控件（竖屏画布与横屏布局共用，保证两套布局行为/视觉一致）
 
@@ -711,7 +697,6 @@ struct DramaPlayerView: View {
     DramaPlayerView(
         episode: .designPreview,
         playback: DramaPlayerViewModel(playerService: PlaybackPlayerService()),
-        player: nil,
         isActive: false
     )
 }

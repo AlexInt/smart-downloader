@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// UIKit 原生纵向分页容器（ZFPlayer / 开源抖音实践）。
 /// `UIScrollView.isPagingEnabled` 由 UIKit 独占 pan。
@@ -55,6 +56,16 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         scroll.addGestureRecognizer(edgePan)
         context.coordinator.edgePan = edgePan
         print("PLAYER_DBG [CHECK] gestures installed count=\(scroll.gestureRecognizers?.count ?? 0)")
+
+        // 视频承载容器（单例）：唯一 AVPlayerLayer 宿主，z 序在全部卡片之下（卡片视频区透明），
+        // frame 对位活跃卡（内容坐标）——滚动/翻页时视频随内容移动，卡片不再各自持有 surface。
+        let surface = PlayerSurfaceUIView()
+        surface.playerLayer.player = playback.player
+        surface.playerLayer.videoGravity = Self.videoGravity(for: playback)
+        surface.backgroundColor = .clear
+        surface.isUserInteractionEnabled = false
+        scroll.insertSubview(surface, at: 0)
+        context.coordinator.surfaceView = surface
         return scroll
     }
 
@@ -64,6 +75,14 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         context.coordinator.rebuildIfNeeded(in: scroll)
         context.coordinator.refreshCardsIfNeeded()
         context.coordinator.applyStartOffsetIfNeeded(in: scroll)
+        context.coordinator.updateSurfaceContainer(in: scroll)
+    }
+
+    /// 渲染 gravity：横屏片源完整显示（fit）、竖屏片源拉满（fill）。App 已锁竖屏，
+    /// 不再随持屏方向切换（旧 fit↔fill 二值跳变即「中间条突变全屏」的根因）。
+    /// presentationSize 未知（0×0）时 videoIsLandscape=false，按竖屏 fill 处理。
+    static func videoGravity(for playback: DramaPlayerViewModel) -> AVLayerVideoGravity {
+        playback.videoIsLandscape ? .resizeAspect : .resizeAspectFill
     }
 
     // MARK: - Coordinator
@@ -81,6 +100,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedY: CGFloat = -999
         /// 上次实际布局过的几何 key：几何没变时 layoutPages 幂等跳过（防布局回环）
         private var lastLaidSizeKey = ""
+        /// 视频承载容器（唯一 AVPlayerLayer 宿主），makeUIView 创建、z 序在卡片之下
+        var surfaceView: PlayerSurfaceUIView?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
@@ -257,6 +278,19 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             // 异步 setContentOffset，动画结束后连环执行、内容连环跳（「旋转过程很奇怪」）；
             // 同步只把当前页顶对齐视口，无排队跳变。一次性首屏定位仍走 applyStartOffsetIfNeeded。
             realignToCurrentPage(in: scroll)
+            updateSurfaceContainer(in: scroll)
+        }
+
+        /// 视频容器对位活跃卡 + gravity 跟随片源方向（updateUIView 与几何变化后都会调）。
+        func updateSurfaceContainer(in scroll: PagingScrollView) {
+            guard let surface = surfaceView else { return }
+            surface.playerLayer.videoGravity = PlayerPagingScrollView.videoGravity(for: parent.playback)
+            let width = scroll.bounds.width
+            let height = scroll.bounds.height
+            guard width > 0, height > 0, let current = parent.currentSort,
+                  let index = parent.slots.firstIndex(where: { $0.sort == current }) else { return }
+            let frame = CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
+            if surface.frame != frame { surface.frame = frame }
         }
 
         /// 几何变化后把 currentSort 那一页同步顶对齐视口。

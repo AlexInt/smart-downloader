@@ -56,7 +56,6 @@ struct PlayerFeedView: View {
                             index: slot.sort,
                             total: vm.totalEpisodes),
             playback: vm.playback,
-            player: vm.currentSort == slot.sort ? vm.playback.player : nil,
             isActive: vm.currentSort == slot.sort,
             onClose: onClose,
             hasNextEpisode: vm.hasNext(after: slot.sort),
