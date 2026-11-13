@@ -26,14 +26,24 @@ final class FullscreenPlayerView: UIView {
     }
 }
 
-final class PlayerFullscreenController: NSObject {
+final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private let playback: DramaPlayerViewModel
     private unowned let surface: PlayerSurfaceUIView
     private var container: FullscreenPlayerView?
+    private var controls: PlayerFullscreenControlsView?
+    /// 当前全屏旋转方向（+π/2 / -π/2）：退出动画与控制层安全区映射都要用
+    private var rotationAngle: CGFloat = .pi / 2
     private var cancellables = Set<AnyCancellable>()
     private var isAnimating = false
     /// 动画期间的最新意图（连续触发以最后为准，不排队跳变）
     private var pendingTarget: Bool?
+    /// 长按松手后的吞单击窗（与卡片 250ms 抑制同机制，全屏态本地持有）
+    private var tapSuppressionUntil = Date.distantPast
+    /// 本次触摸是否按满 0.15s 真正起过 2x（perform 里置位）
+    private var longPressOwnedTouch = false
+    private var seekPan: UIPanGestureRecognizer?
+    /// 横向 seek 的基准进度（began 时捕获，相对映射：位移/容器宽 = 进度增量）
+    private var scrubBaseFraction: Double?
 
     init(playback: DramaPlayerViewModel, surface: PlayerSurfaceUIView) {
         self.playback = playback
@@ -89,6 +99,20 @@ final class PlayerFullscreenController: NSObject {
         window.addSubview(container)
         self.container = container
 
+        // 控制层 + 手势：控制层随容器自转（左上角返回 icon 返回竖屏，无独立退出全屏按钮）
+        let controls = PlayerFullscreenControlsView(playback: playback)
+        controls.frame = container.bounds
+        controls.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        controls.localInsets = Self.localInsets(rotationAngle: rotationAngle, windowInsets: window.safeAreaInsets)
+        controls.alpha = 0
+        controls.onBack = { [weak self] in
+            print("PLAYER_DBG [Fullscreen] back icon → exitFullscreen")
+            self?.playback.exitFullscreen()
+        }
+        container.addSubview(controls)
+        self.controls = controls
+        installGestures(on: container)
+
         let screenSize = window.bounds.size
         print("PLAYER_DBG [Fullscreen] enter from=\(startFrame) screen=\(screenSize)")
         UIView.animate(withDuration: 0.35, delay: 0, options: [.curveEaseInOut], animations: {
@@ -100,6 +124,7 @@ final class PlayerFullscreenController: NSObject {
             guard let self else { return }
             self.isAnimating = false
             print("PLAYER_DBG [Fullscreen] enter done")
+            self.controls?.showTransient()   // 进入全屏后呼出控制层，3s 自动收起
             self.flushPending()
         })
     }
@@ -135,6 +160,112 @@ final class PlayerFullscreenController: NSObject {
         surface.layer.addSublayer(layer)
         layer.frame = surface.bounds
         layer.videoGravity = PlayerPagingScrollView.videoGravity(for: playback)
+    }
+
+    // MARK: 控制层安全区映射（窗口 insets → 旋转后的容器本地坐标）
+
+    /// +π/2：本地 top=窗口 trailing、bottom=leading、left=窗口 top、right=bottom；-π/2 镜像。
+    /// 两个横屏方向的窗口 leading/trailing 相等（灵动岛居中），映射后都能避开岛区。
+    static func localInsets(rotationAngle: CGFloat, windowInsets: UIEdgeInsets) -> UIEdgeInsets {
+        if abs(rotationAngle - .pi / 2) < 0.01 {
+            return UIEdgeInsets(top: windowInsets.right, left: windowInsets.top,
+                                bottom: windowInsets.left, right: windowInsets.bottom)
+        }
+        return UIEdgeInsets(top: windowInsets.left, left: windowInsets.bottom,
+                            bottom: windowInsets.right, right: windowInsets.top)
+    }
+
+    // MARK: 全屏手势（点按暂停 / 长按 2x / 横向相对 seek）
+    //
+    // 竖屏卡片六条仲裁约束的全屏版（UIKit 原生实现）：
+    // ① 拖动先起 → seek 独占：pan .began 即 VM.beginSeekGesture，长按 perform 查闸门；
+    // ② 长按先起 → 2x 独占：perform（按满 0.15s）才起 2x，allowableMovement 放开；
+    // ③ 长按松手 → 吞单击 250ms；④ 2x 只在 began（perform 等价态）里起；
+    // ⑤ seek 抬手不补 seek（VM.endSeekGesture 内含）；⑥ tap 查 VM.seek 闸门与抑制窗。
+
+    private func installGestures(on container: FullscreenPlayerView) {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        container.addGestureRecognizer(tap)
+
+        let long = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        long.minimumPressDuration = 0.15
+        long.allowableMovement = 10_000   // 2x 不靠位移距离撚断（同卡片 maximumDistance 10_000）
+        container.addGestureRecognizer(long)
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSeekPan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        container.addGestureRecognizer(pan)
+        seekPan = pan
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // seek 只认横向/斜向主导（保持与卡片同规则；全屏无分页滚动可干扰）
+        guard gestureRecognizer === seekPan, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let t = pan.translation(in: pan.view)
+        return abs(t.x) >= abs(t.y)
+    }
+
+    @objc private func handleTap(_ tap: UITapGestureRecognizer) {
+        if Date() < tapSuppressionUntil {
+            print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=justEndedLongPress")
+            return
+        }
+        if Date() < playback.tapSuppressionDeadline {
+            print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=justEndedSeek")
+            return
+        }
+        if playback.isSeekGestureActive {
+            print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=seekGestureActive")
+            return
+        }
+        print("PLAYER_DBG [CHECK] fullscreen TAP → togglePlayback")
+        playback.togglePlayback()
+        controls?.showTransient()
+    }
+
+    @objc private func handleLongPress(_ long: UILongPressGestureRecognizer) {
+        switch long.state {
+        case .began:
+            guard !playback.isSeekGestureActive else {
+                print("PLAYER_DBG [CHECK] fullscreen LONGPRESS SKIP reason=seeking")
+                longPressOwnedTouch = false
+                return
+            }
+            longPressOwnedTouch = true
+            print("PLAYER_DBG [CHECK] fullscreen LONGPRESS began → 2x")
+            playback.beginFastForward()
+            controls?.showTransient()
+        case .ended, .cancelled, .failed:
+            guard longPressOwnedTouch else { return }
+            longPressOwnedTouch = false
+            print("PLAYER_DBG [CHECK] fullscreen LONGPRESS ended → 1x")
+            playback.endFastForward()
+            tapSuppressionUntil = Date().addingTimeInterval(0.25)
+        default:
+            break
+        }
+    }
+
+    @objc private func handleSeekPan(_ pan: UIPanGestureRecognizer) {
+        guard let view = pan.view else { return }
+        switch pan.state {
+        case .began:
+            scrubBaseFraction = playback.progress
+            playback.beginSeekGesture()
+            print("PLAYER_DBG [CHECK] fullscreen seekPan began scrubBase=\(String(format: "%.2f", scrubBaseFraction ?? 0))")
+        case .changed:
+            let t = pan.translation(in: view)
+            guard abs(t.x) > abs(t.y), abs(t.x) > 6, let base = scrubBaseFraction else { return }
+            let fraction = min(max(base + PlayerGesturePolicy.scrubDelta(translationX: t.x, screenWidth: view.bounds.width), 0), 1)
+            print("PLAYER_DBG [CHECK] fullscreen seekPan dx=\(Int(t.x)) fraction=\(String(format: "%.2f", fraction))")
+            playback.seek(fraction: fraction)
+        case .ended, .cancelled, .failed:
+            scrubBaseFraction = nil
+            playback.endSeekGesture()   // 内含吞单击窗 + 进度落盘
+        default:
+            break
+        }
     }
 
     private func flushPending() {
