@@ -2,7 +2,7 @@
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络/并发约定，最高优先级）。本文只讲「做到哪了 / 还剩什么 / 怎么验」。**实现细节与防回归约束在 AGENTS 与代码注释里，完整过程在 git 历史**，本文不重复每个 build 日志。
 >
-> 最后更新：2026-11-13 · 分支 `feat/drama-detail-page` · 基准提交见 `git log -1`
+> 最后更新：2026-11-13 · 分支 `feat/player-uikit-shell`（包 A 已合入 main 后新开）· 基准提交见 `git log -1`
 
 ## 1. 项目一览
 
@@ -52,6 +52,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 旋转后画面消失 + bounds 振荡修复（11-13） | 真机日志实锤两件事：① geo insets 全 0、window=0/62/20/62 **MISMATCH**，坐实宿主链传播问题；② 旋转后 contentOffset 不重排——竖屏 offset 2622 在横屏页高 402 下落到第 6.5 页，正在播的卡整个在屏外（画面消失、声音继续）；且 bounds 在 402x874 ↔ 874x402 每 ~2s 振荡（无 SwiftUI 重渲染参与，旧 layoutPages 每个布局 pass 无条件重写 frame+contentSize 的布局回环）。修复：layoutPages 幂等化（几何没变就跳过）+ 几何变化后重新落回 currentSort 那一页 | 同上（锚点：旋转后 `layout bounds=…x…` 一次 + `startOffset APPLY/APPLIED` 重新落位、无反复振荡） |
 | 旋转过渡跳变修复（11-13） | 真机确认横屏画面恢复，但「旋转过程很奇怪」：旋转动画的每个中间尺寸 pass 都重置 startApplied 并排一个异步 setContentOffset，动画结束后连环执行 → 内容连环跳。改为同步 `realignToCurrentPage`（每 pass 把当前页顶对齐视口，无排队跳变）；另加 `geometryFlip AGREE/DISAGREE` 判别日志（bounds 方向 vs keyWindow 方向）区分物理旋转与桥接自振荡 | 构建 0 error / 0 warning，**待真机复验**（锚点：`realignOffset`、`geometryFlip … AGREE/DISAGREE`；DISAGREE = 坐实桥接自振荡 → #6 UIKit 化根除） |
 | 旋转流畅度修复（11-13） | geometryFlip 每次翻转都 **AGREE** → App 忠实跟随系统旋转、无自振荡；翻转每 ~1.5s 一次 = 设备在竖横 45° 边界附近来回倾/反复转，每次跨界系统就重播旋转动画（系统行为）。不顺畅的量化：每次翻转 mainStall ~110-130ms ≈ 丢 7-8 帧，主因 = 11 张卡每 pass 全量重建控件层。修复：横屏控制层只在活跃卡渲染，邻卡只留渐变占位（成本 ~1/11 + 去邻卡叠影，AGENTS 12 已记）；顺带 tags 列改「先查再补」清掉启动报错噪音 | 构建 0 error / 0 warning，**待真机复验**：旋转时 mainStall 应显著下降；若仍 >100ms → 剩余成本在桥接/11 个 hosting 重建，归 #6 UIKit 化 |
+| **播放器 UIKit+Combine 化 包 A：全屏链路重构（11-13，新分支 feat/player-uikit-shell）** | 按开源 rotate 模式重构（对照 ZFPlayer/SJVideoPlayer，用户拍板）：① App 锁竖屏（Info.plist 仅 Portrait，窗口方向永不翻转，旋转振荡/跳变整类退役）；② 播放器容器单例化（PlayerSurfaceUIView 挂分页滚动层下对位活跃卡，卡片视频区透明、videoLayer 改可搬运子层）；③ 全屏 = PlayerFullscreenController 搬 videoLayer 进 keyWindow 容器 + transform 旋转 90°/放大连续动画（视频「跟随旋转慢慢变大」，退出反向）；④ 全屏控制层 UIKit+Combine（左上返回 icon=退出、点按呼出 3s 收起、订阅同一 VM，安全区按旋转方向映射避灵动岛）；⑤ 姿态判稳触发器（CoreMotion，滞后 55°/28°+0.6s 稳定窗，仅横屏片源，无按钮）；⑥ 卡片横屏分支/geometryFlip/landscapeInsets 全部退役，AGENTS 12 改写为「锁竖屏+容器自转」 | 各步构建 0 error / 0 warning，**待真机回归**（§7 ⑭） |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -100,7 +101,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 3 | 相邻卡片首帧海报（渐变占位 → AVAssetImageGenerator + 磁盘缓存，可复用预热池 asset） | 中 |
 | 4 | 本地推荐算法（接入点已留 §4.6） | 按需 |
 | 5 | 「长按 2x 中途继续上滑切集」手势竞争观察（离散手势回卡片后未专测此组合） | 低 |
-| 6 | **播放器视图壳 UIKit+Combine 化**（已立项，用户拍板后续有时间做）：范围=仅视图壳（PlayerFeedView / PlayerPagingScrollView / DramaPlayerView / PlayerSurfaceView / DramaPlayerContainer，约 1100 行）换成 UIKit；手势走原生 UIGestureRecognizer（delegate 链显式可控），安全区走 safeAreaLayoutGuide，每卡省一个 UIHostingController。**VM/Service/Model（GCD + ObservableObject/Combine）零改动**，UIKit 直接订阅同一批 @Published。代价：重新挣回 6 条手势仲裁约束 + 清屏/HUD/toast/秒开行为等价、designFrame/DWColor 出 UIColor/UIFont 适配层、AGENTS 加「player 视图层 UIKit」例外约定；动工时用 propose 模式出方案再实施 | 中 |
+| 6 | **播放器视图壳 UIKit+Combine 化**：**包 A（全屏链路）已完成**（§2，分支 feat/player-uikit-shell）；包 B 待做——竖屏卡片 DramaPlayerView UIKit 化（designFrame 转 frame+scale）、卡片手势迁 UIGestureRecognizer（六条仲裁约束逐条对照）、PlayerFeedView/Container 胶水收编、UIHostingController 退役；VM/Service/Model（GCD+Combine）零改动路线已在包 A 验证（全屏控制器/控制层直接订阅同一批 @Published） | 中 |
 
 ## 6. 待查 / 已知问题
 
@@ -125,7 +126,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 - 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
 - tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。
 
-**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效；⑪ 快速横滑结束不再误暂停、且 seek/翻页/2x 仲裁不变（误吞时应见 `TAP SKIP reason=justEndedSeek`）；⑫ 横屏片源竖屏持机完整显示不裁切（`videoOrientation landscape=true`）、竖屏片源维持拉满；⑬ 旋转横屏后返回/清屏/静音/进度条尺寸正常（landscapeOverlay）、旋转回竖屏恢复画布布局、横屏下点按暂停/长按 2x/横滑 seek/左缘返回照常。
+**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效；⑪ 快速横滑结束不再误暂停、且 seek/翻页/2x 仲裁不变（误吞时应见 `TAP SKIP reason=justEndedSeek`）；⑫ 横屏片源竖屏持机完整显示不裁切（`videoOrientation landscape=true`）、竖屏片源维持拉满；⑬ 旋转横屏后返回/清屏/静音/进度条尺寸正常（landscapeOverlay）、旋转回竖屏恢复画布布局、横屏下点按暂停/长按 2x/横滑 seek/左缘返回照常；⑭ **（全屏改造后，取代 ⑬ 的旋转条目）**：App 锁竖屏——转设备不再引发界面翻转；横屏片源稳定转横自动进全屏（动画连续、视频全程可见不跳变、无按钮）、45° 边界倾斜不反复进出、全屏内左上返回 icon 回竖屏（动画反向回原卡）、点按暂停/长按 2x/横滑 seek 可用且不误暂停、竖屏片源转横不动作、上下滑切集不受影响、杀进程重开全屏态不残留。
 
 ## 8. 维护本文档
 

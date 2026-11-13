@@ -270,22 +270,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             let first = hosts[parent.slots.first?.sort ?? -1]?.view.frame ?? .zero
             let last = hosts[parent.slots.last?.sort ?? -1]?.view.frame ?? .zero
             print("PLAYER_DBG [CHECK] layout bounds=\(width)x\(height) contentSize=\(scroll.contentSize) firstFrame=\(first) lastFrame=\(last)")
-            // 几何翻转判别：bounds 方向应与 keyWindow 一致。DISAGREE = 桥接自振荡（设备没转、
-            // 布局自己翻，坐实桥接层问题，UIKit 化 #6 要根除的类别）；AGREE = 物理旋转。
-            let keyWindow = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .first?.windows.first { $0.isKeyWindow }
-            let boundsLandscape = width > height
-            let windowLandscape = (keyWindow?.bounds.width ?? 0) > (keyWindow?.bounds.height ?? 0)
-            let agree = keyWindow == nil || boundsLandscape == windowLandscape
-            print("PLAYER_DBG [UIScroll] geometryFlip bounds=\(Int(width))x\(Int(height)) "
-                + "window=\(keyWindow.map { "\(Int($0.bounds.width))x\(Int($0.bounds.height))" } ?? "nil") "
-                + "\(agree ? "AGREE" : "DISAGREE")")
-            // 页高变了：旧 contentOffset 落在新网格的错页上（真机实证：竖屏 offset 2622 在
-            // 横屏页高 402 下落到第 6.5 页 → 正在播的卡在屏外、画面消失）。同步重落当前页：
-            // 旋转动画的每个中间尺寸 pass 都会进来——旧实现每 pass 重置 startApplied 再排一个
-            // 异步 setContentOffset，动画结束后连环执行、内容连环跳（「旋转过程很奇怪」）；
-            // 同步只把当前页顶对齐视口，无排队跳变。一次性首屏定位仍走 applyStartOffsetIfNeeded。
+            // 几何变化（App 已锁竖屏，正常只剩首次布局）后把当前页顶对齐视口兜底；
+            // 一次性首屏定位仍走 applyStartOffsetIfNeeded。
             realignToCurrentPage(in: scroll)
             updateSurfaceContainer(in: scroll)
         }

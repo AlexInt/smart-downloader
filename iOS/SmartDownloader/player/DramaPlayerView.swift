@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// DramaWave · 分页播放列表里的单张卡片（中文版 / 紫色）
 ///
@@ -51,13 +50,8 @@ struct DramaPlayerView: View {
             // UI 层用 contain：宁可留一点相对空隙，也不把返回按钮 / 底部提示裁出屏幕
             let scale = min(geo.size.width / DWLayout.designWidth,
                             geo.size.height / DWLayout.designHeight)
-            // 持屏方向（宽>高 = 横屏）：决定渲染 gravity 与（横屏适配后）控件布局分支
-            let screenIsLandscape = geo.size.width > geo.size.height
-            // 安全区取窗口值（竖屏画布不消费 insets，此值仅横屏控件层使用）：
-            // geo.safeAreaInsets 经 UIHostingController+UIScrollView(.never) 宿主链横屏下不可信
-            //（0/过期 → 控件压灵动岛与 home 条，布局混乱根因）
-            let windowInsets = Self.windowSafeAreaInsets(size: geo.size,
-                                                         geoInsets: geo.safeAreaInsets)
+            // App 已锁竖屏：全屏由播放器容器 transform 自转（PlayerFullscreenController），
+            // 卡片不再有横屏分支——勿再加「卡片随系统旋转」类实现（曾致布局振荡/跳变）
 
             ZStack(alignment: .topLeading) {
                 // ── ① 视频：由分页滚动层的单例容器承载（PlayerPagingScrollView.Coordinator），
@@ -102,21 +96,12 @@ struct DramaPlayerView: View {
                 //    不连带暂停，无需控件区几何判定。连续手势（水平 seek / 左缘返回）
                 //    仍在 UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
 
-                // ── ⑤ 控件层：竖屏 = 设计稿画布（390×840 contain）；横屏 = 专用布局 ──
-                // 横屏控制层只在活跃卡渲染：邻卡只留渐变占位——11 张卡每 pass 重建控件层是
-                // 旋转时主线程卡顿的大头（真机实测每次方向翻转 mainStall ~110-130ms ≈ 丢 7-8 帧），
-                // 且邻卡上多套顶栏/HUD 叠影本身就是错误 UX；竖屏邻卡维持画布（半遮挡预览可见）。
-                if screenIsLandscape {
-                    if isActive {
-                        landscapeOverlay(size: geo.size, safeInsets: windowInsets)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                    }
-                } else {
-                    designOverlay
-                        .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
-                        .scaleEffect(scale)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
+                // ── ⑤ 控件层：设计稿画布（390×840 contain）。全屏态由全屏容器自带的
+                //    PlayerFullscreenControlsView 覆盖（挂 keyWindow，随容器自转） ──
+                designOverlay
+                    .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
+                    .scaleEffect(scale)
+                    .frame(width: geo.size.width, height: geo.size.height)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -565,131 +550,6 @@ struct DramaPlayerView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: - 横屏专用控件布局
-    //
-    // 竖屏设计稿画布（390×840 contain 缩放）在横屏会按屏高缩到 ~0.47，所有控件过小（用户反馈）。
-    // 横屏改用安全区感知的专用布局：顶部控制条（返回/集数/清屏/静音）+ 底部进度 HUD 横贯，
-    // 瞬态（2x / toast / 加载 / 错误 / 未下载）居中。
-    // 竖屏画布里的信息区 / 点赞收藏 / 上滑提示是竖屏设计稿元素，横屏不渲染
-    //（横屏 = 观影模式保持克制；点赞收藏回竖屏操作，边界提示由 VM toast 承担）。
-    // 卡片内依旧零连续手势：横屏布局只有 Button 与纯展示视图。
-    //
-    // 安全区来源 = keyWindow.safeAreaInsets（勿改回 geo.safeAreaInsets）：卡片经
-    // UIHostingController + UIScrollView(.never) 宿主链进入 SwiftUI，geo 值在该链路横屏下
-    // 不可信（0/过期）；窗口值由 UIKit 直接给出、与宿主链无关。
-
-    /// 横屏控件层的安全区来源：窗口（UIKit 直接给出）。iPhone 单窗口（TARGETED_DEVICE_FAMILY=1）。
-    /// 顺带对账 geo.safeAreaInsets（仅横屏、节流日志）：长期 MISMATCH 即坐实宿主链传播问题；
-    /// MATCH 却仍乱则另找原因。
-    private static func windowSafeAreaInsets(size: CGSize, geoInsets: EdgeInsets) -> EdgeInsets {
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first
-        let raw = (scene?.windows.first { $0.isKeyWindow })?.safeAreaInsets ?? .zero
-        let windowInsets = EdgeInsets(top: raw.top, leading: raw.left,
-                                      bottom: raw.bottom, trailing: raw.right)
-        if size.width > size.height {
-            logInsetsOnce(size: size, geoInsets: geoInsets, windowInsets: windowInsets)
-        }
-        return windowInsets
-    }
-
-    /// geo 与窗口两份 insets 的对账日志（节流：同参数组合只打一次）——
-    /// 若长期 MISMATCH 即坐实宿主链传播问题；MATCH 却仍乱则另找原因。
-    private static var lastInsetsLogKey = ""
-
-    private static func logInsetsOnce(size: CGSize, geoInsets: EdgeInsets, windowInsets: EdgeInsets) {
-        let key = "\(Int(size.width))x\(Int(size.height))|"
-            + "\(geoInsets.top)/\(geoInsets.leading)/\(geoInsets.bottom)/\(geoInsets.trailing)|"
-            + "\(windowInsets.top)/\(windowInsets.leading)/\(windowInsets.bottom)/\(windowInsets.trailing)"
-        guard key != lastInsetsLogKey else { return }
-        lastInsetsLogKey = key
-        print("PLAYER_DBG [UIScroll] landscapeInsets size=\(Int(size.width))x\(Int(size.height)) "
-            + "geo=\(geoInsets.top)/\(geoInsets.leading)/\(geoInsets.bottom)/\(geoInsets.trailing) "
-            + "window=\(windowInsets.top)/\(windowInsets.leading)/\(windowInsets.bottom)/\(windowInsets.trailing) "
-            + "\(geoInsets == windowInsets ? "MATCH" : "MISMATCH")")
-    }
-
-    private func landscapeOverlay(size: CGSize, safeInsets: EdgeInsets) -> some View {
-        let contentWidth = max(0, size.width - safeInsets.leading - safeInsets.trailing)
-        return ZStack(alignment: .topLeading) {
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    backButton
-                    episodeChip
-                    Spacer(minLength: 12)
-                    cleanScreenButton
-                    muteButton
-                }
-                Spacer(minLength: 0)
-                landscapeProgressHud(width: contentWidth)
-            }
-            .padding(.top, max(safeInsets.top, 10))
-            .padding(.bottom, max(safeInsets.bottom, 12))
-            .padding(.leading, max(safeInsets.leading, 16))
-            .padding(.trailing, max(safeInsets.trailing, 16))
-
-            fastForwardCapsule
-                .position(x: size.width / 2, y: size.height * 0.32)
-            ToastView(message: toastText)
-                .position(x: size.width / 2, y: size.height * 0.2)
-
-            landscapeCenterStatus
-                .position(x: size.width / 2, y: size.height / 2)
-        }
-    }
-
-    /// 横屏中央瞬态：错误 / 加载（800ms 后）/ 未下载占位
-    @ViewBuilder
-    private var landscapeCenterStatus: some View {
-        if isActive, let error = playback.loadError {
-            loadErrorHint(error)
-                .frame(maxWidth: 300)
-        } else if isActive, !playback.isReady {
-            if isEpisodeAvailable {
-                if playback.isLoadingSlow {
-                    loadingSpinner
-                }
-            } else {
-                notDownloadedHint
-            }
-        }
-    }
-
-    /// 横屏进度 HUD：进度条横贯内容宽 + 时间行两端对齐；可见性/动画与竖屏 progressHud 同一套逻辑。
-    /// 隐藏时同时禁用命中（时长 label 是 Button，不可见时不得误触，同竖屏 allowsHitTesting(isProgressVisible)）。
-    private func landscapeProgressHud(width: CGFloat) -> some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: DWRadius.progress)
-                    .fill(.white.opacity(0.30))
-                    .frame(width: width, height: 3)
-                RoundedRectangle(cornerRadius: DWRadius.progress)
-                    .fill(DWColor.primary)
-                    .frame(width: width * progressValue, height: 3)
-            }
-            HStack {
-                Text(timeText)
-                    .font(DWFont.en(11, .medium))
-                    .foregroundStyle(DWColor.textTime)
-                Spacer()
-                Button {
-                    playback.toggleTimeDisplay()
-                } label: {
-                    Text(durationText)
-                        .font(DWFont.en(11, .medium))
-                        .foregroundStyle(DWColor.textTime)
-                        .frame(width: 56, height: 24, alignment: .trailing)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .opacity(isProgressVisible ? 1 : 0)
-        .offset(y: isProgressVisible ? 0 : 12)
-        .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
-        .allowsHitTesting(isProgressVisible)
-    }
 }
 
 // Xcode 15+ / iOS 17+；旧版请改用 PreviewProvider。
