@@ -33,13 +33,16 @@ final class PlayerSurfaceUIView: UIView {
     /// 首显淡入工作项
     private var revealWork: DispatchWorkItem?
 
-    /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后延迟淡入
+    /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后延迟淡入。
+    /// 幂等：已藏住时不重复写（退页/订阅重复触发都会到这）
     func concealForReveal() {
         revealWork?.cancel()
+        guard !isVideoRevealed || videoLayer.opacity > 0 else { return }
         isVideoRevealed = false
         PlayerSurfaceUIView.withoutLayerActions {
             videoLayer.opacity = 0
         }
+        startRevealProbe(phase: "conceal")
         print("PLAYER_DBG [CHECK] video conceal → waitFirstFrame")
     }
 
@@ -57,6 +60,7 @@ final class PlayerSurfaceUIView: UIView {
         }
         revealWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        startRevealProbe(phase: "revealScheduled")
     }
 
     /// 全屏退出还原时调：强制回到已显示态（全屏路径不经首显机制，退出动画本身连续）
@@ -65,6 +69,46 @@ final class PlayerSurfaceUIView: UIView {
         isVideoRevealed = true
         PlayerSurfaceUIView.withoutLayerActions {
             videoLayer.opacity = 1
+        }
+    }
+
+    // MARK: - 首显探针（排障用，排障后保留）
+    // 「由大到小闪一下」已两轮未定位：reveal 淡入起手时 layer 的 presentation 状态
+    // （首帧是否已提交、frame 是否已落位）没有直接证据。这里用 CADisplayLink 在
+    // reveal 窗口内逐帧记录：时间、opacity 的 presentation/model 值、frame、
+    // surface frame——一次真机日志即可钉死帧序。
+    private var revealProbe: CADisplayLink?
+    private var revealProbeStart: CFTimeInterval = 0
+
+    /// 开启探针：re conceal → reveal 淡入结束后自动停（最多 2s 自保）
+    func startRevealProbe(phase: String) {
+        print("PLAYER_DBG [CHECK] revealProbe phase=\(phase) t=0ms surface=\(frame) layer=\(videoLayer.frame) opacityModel=\(videoLayer.opacity)")
+        guard revealProbe == nil else { return }
+        revealProbeStart = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(revealProbeTick(_:)))
+        link.add(to: .main, forMode: .common)
+        revealProbe = link
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.stopRevealProbe(reason: "timeout2s")
+        }
+    }
+
+    func stopRevealProbe(reason: String) {
+        guard let link = revealProbe else { return }
+        link.invalidate()
+        revealProbe = nil
+        print("PLAYER_DBG [CHECK] revealProbe STOP reason=\(reason)")
+    }
+
+    @objc private func revealProbeTick(_ link: CADisplayLink) {
+        let ms = Int((CACurrentMediaTime() - revealProbeStart) * 1000)
+        // presentation opacity：淡入过程中它才是用户真实看到的值
+        let presented = videoLayer.presentation()?.opacity ?? -1
+        let pf = videoLayer.presentation()?.frame ?? .null
+        print("PLAYER_DBG [CHECK] revealProbe frame t=\(ms)ms opModel=\(videoLayer.opacity) opPresented=\(String(format: "%.2f", presented)) layerFrame=\(videoLayer.frame) presentFrame=\(pf) surface=\(frame)")
+        // 淡入完成（model 与 presentation 都到 1）即停
+        if videoLayer.opacity >= 1, presented >= 0.99 {
+            stopRevealProbe(reason: "fadeInDone")
         }
     }
 
