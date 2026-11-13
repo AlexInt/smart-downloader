@@ -43,15 +43,21 @@ final class DramaSession {
                               let episodeAll = data["episodeAll"] as? [[String: Any]] else {
                             return .failure(DramaError.badResponse)
                         }
+                        var accessNotes: [String] = []
                         let episodes = episodeAll
                             .filter { !Self.isTrue($0["is_adv"]) }
                             .sorted { ($0["sort"] as? Int ?? 0) < ($1["sort"] as? Int ?? 0) }
-                            .map { ep in
+                            .map { ep -> ApiDramaEpisode in
                                 let access = ep["access"] as? [String: Any]
+                                let canPlay = Self.isTrue(access?["can_play"])
+                                // [CHECK] 下载接口每集权限原值：can_play=false 时看 state 定性
+                                //（站点锁定/试看用尽 vs access 字段缺失解析问题）
+                                accessNotes.append("s\(ep["sort"] as? Int ?? 0)/id\(ep["id"] as? Int ?? 0)=\(access?["state"] as? String ?? "nil"),can_play=\(canPlay)")
                                 return ApiDramaEpisode(id: ep["id"] as? Int ?? 0,
                                                     sort: ep["sort"] as? Int ?? 0,
-                                                    playable: Self.isTrue(access?["can_play"]))
+                                                    playable: canPlay)
                             }
+                        print("PLAYER_DBG [CHECK] fetchInfo \(name) access [\(accessNotes.joined(separator: " "))]")
                         return .success(DramaInfo(name: name, updateStatus: data["update_status"] as? String, episodes: episodes))
                     })
                 }

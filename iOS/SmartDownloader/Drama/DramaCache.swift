@@ -488,6 +488,13 @@ enum DramaCache {
             }
 
             // 2) 每集元数据：行不存在时补建（详情接口可能比下载接口多列几集）
+            // [CHECK] 详情接口每集权限原值：与下载接口 fetchInfo 的 access 日志对照，
+            // 两个源不一致时能一眼看出是站点侧差异还是解析问题
+            let accessDump = episodes.prefix(14).map { ep -> String in
+                let a = ep.access
+                return "s\(ep.sort)=\(a?.state ?? "nil"),cp=\(a?.canPlay.map { $0 ? "1" : "0" } ?? "?"),ct=\(a?.contentType ?? "nil")"
+            }
+            print("PLAYER_DBG [CHECK] saveDetail \(site)#\(dramaID) access [\(accessDump.joined(separator: " "))] trial=\(detail.access?.trialEpisodeCount ?? -1) reason=\(detail.access?.reason ?? "nil")")
             for ep in episodes {
                 DramaDatabase.execWrite(db, """
                 INSERT INTO drama_episodes (site, drama_id, episode_id, sort, title, duration, resolution,

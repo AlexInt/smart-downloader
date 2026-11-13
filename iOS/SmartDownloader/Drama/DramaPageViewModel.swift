@@ -260,17 +260,28 @@ final class DramaPageViewModel: ObservableObject {
         // 缓存路径打开的页面没有 session：现建一个（每集下载前仍会重调接口取新鲜直链）
         let session = self.session ?? DramaSession(target: target)
         self.session = session
+        let requested = selected.count
         let chosen = info.episodes
             .filter { selected.contains($0.id) && $0.playable
                 && !downloadedSorts.contains($0.sort)
                 && !queuedSorts.contains($0.sort) }
             .sorted { $0.sort < $1.sort }
         guard !chosen.isEmpty else {
+            // 修：批量路径选中集全部不可播时原本静默吞掉（chosen 空即清选返回），用户视角是「没反应」
             selected.removeAll()
+            if requested > 0 {
+                print("PLAYER_DBG [CHECK] startDownload DROP-ALL reason=notPlayable requested=\(requested)")
+                showToast("所选 \(requested) 集暂无可下载项（站点未开放或已在队列）")
+            }
             return
         }
         // 立即清空选择：连点「下载所选」不会二次提交同一批
         selected.removeAll()
+        if chosen.count < requested {
+            // 部分选中集因站点权限/重复被过滤：如实报告，不再静默丢弃
+            print("PLAYER_DBG [CHECK] startDownload DROP-PARTIAL requested=\(requested) chosen=\(chosen.count)")
+            showToast("已入队 \(chosen.count) 集，\(requested - chosen.count) 集跳过（未开放或已在队列）")
+        }
         SeriesDownloadCoordinator.start(target: target, seriesName: info.name,
                                         episodes: chosen, manager: manager, session: session)
     }
@@ -287,7 +298,8 @@ final class DramaPageViewModel: ObservableObject {
         } else if queuedSorts.contains(ep.sort) {
             cancelDownload(sort: ep.sort)
         } else if !ep.playable {
-            showToast("第 \(ep.sort) 集暂不可看")
+            print("PLAYER_DBG [CHECK] tapEpisodeDirect REFUSE reason=notPlayable sort=\(ep.sort) id=\(ep.id)")
+            showToast("第 \(ep.sort) 集站点未开放下载")
         } else {
             selectedSort = ep.sort
             selected = [ep.id]
