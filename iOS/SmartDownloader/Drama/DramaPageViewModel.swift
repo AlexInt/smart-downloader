@@ -41,8 +41,15 @@ final class DramaPageViewModel: ObservableObject {
         if coverURL != remote {
             coverURL = remote
         }
+        guard !coverFetchInFlight else {
+            print("PLAYER_DBG [Entry] cover fetch SKIP reason=inFlight id=\(target.dramaID)")
+            return
+        }
+        coverFetchInFlight = true
         DramaCoverCache.fetch(site: target.site, dramaID: target.dramaID, remote: remote) { [weak self] local in
-            guard let self, let local else { return }
+            guard let self else { return }
+            self.coverFetchInFlight = false
+            guard let local else { return }
             self.coverURL = local
             self.coverReloadToken += 1   // 换 id 重建 AsyncImage 指向本地文件
         }
@@ -57,6 +64,8 @@ final class DramaPageViewModel: ObservableObject {
     private var tagsSource: String?
     /// 本次访问是否已触发过详情采集（缓存分支与网络分支都会调 harvestIfNeeded）
     private var hasHarvestedThisVisit = false
+    /// 封面拉取在飞行中标志：三个赋值点先后走到 applyCover，不重复发同一请求
+    private var coverFetchInFlight = false
     /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
     @Published var playbackRequest: ImmersivePlaybackRequest?
 
@@ -441,11 +450,20 @@ final class DramaPageViewModel: ObservableObject {
             return
         }
         hasHarvestedThisVisit = true
-        if !force, let fetchedAt = DramaCache.detailFetchedAt(site: target.site, dramaID: target.dramaID),
-           Date().timeIntervalSince(fetchedAt) < DramaCoverCache.maxAge {
-            let days = Int(Date().timeIntervalSince(fetchedAt) / 86400)
-            print("PLAYER_DBG [Entry] harvest SKIP reason=fresh \(days)d<=15d")
-            return
+        // 15 天新鲜度闸门（用户拍板 2026-11-13）+ 封面文件必须存在：详情再新，
+        // 封面从未落盘（CDN 密文拉不到/收割 canvas 未导出）就不能跳过收割 ——
+        // 否则缓存路径永远拿不到封面，用户看到的永远是远程密文兕底
+        if !force, let fetchedAt = DramaCache.detailFetchedAt(site: target.site, dramaID: target.dramaID) {
+            let age = Date().timeIntervalSince(fetchedAt)
+            let days = Int(age / 86400)
+            let coverOK = DramaCoverCache.validLocalURL(site: target.site, dramaID: target.dramaID) != nil
+            if age < DramaCoverCache.maxAge && coverOK {
+                print("PLAYER_DBG [Entry] harvest SKIP reason=fresh \(days)d<=15d cover=ok")
+                return
+            }
+            print("PLAYER_DBG [Entry] harvest trigger reason=\(age < DramaCoverCache.maxAge ? "coverMissing" : "stale") \(days)d cover=\(coverOK ? "ok" : "missing")")
+        } else {
+            print("PLAYER_DBG [Entry] harvest trigger reason=noRecord cover=\(DramaCoverCache.validLocalURL(site: target.site, dramaID: target.dramaID) != nil ? "ok" : "missing")")
         }
         print("PLAYER_DBG [Entry] harvest trigger reason=\(force ? "forceRefresh" : "staleOrMissing") cover=\(coverURL != nil) intro=\(intro != nil) tags=\(tags != nil)")
         DramaMetaHarvester.harvest(target: target) { [weak self] in

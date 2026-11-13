@@ -13,6 +13,26 @@ let dramaMetaJS = """
   var imgs = [];
   var nodes = document.querySelectorAll('img');
   for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
+  var coverData = '';
+  try {
+    var big = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var im = nodes[i];
+      var s = im.currentSrc || im.src || '';
+      if (im.complete && im.naturalWidth >= 300 && s.indexOf('blob:') === 0) { big = im; break; }
+    }
+    if (!big) {
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].complete && nodes[i].naturalWidth >= 300) { big = nodes[i]; break; }
+      }
+    }
+    if (big) {
+      var cv = document.createElement('canvas');
+      cv.width = big.naturalWidth; cv.height = big.naturalHeight;
+      cv.getContext('2d').drawImage(big, 0, 0);
+      coverData = cv.toDataURL('image/jpeg', 0.85);
+    }
+  } catch (e) { coverData = ''; }
   return JSON.stringify({
     url: location.href,
     title: document.title || '',
@@ -20,6 +40,7 @@ let dramaMetaJS = """
     ogTitle: q('meta[property="og:title"]'),
     keywords: q('meta[name="keywords"]'),
     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
+    coverData: coverData,
     imgs: imgs,
     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
   });
@@ -280,13 +301,26 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                     update["tags_source"] = "api"
                 }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
+                // 封面 blob 已由站点 JS 解密（pic.* CDN 下发的是密文，URLSession 直拉必 badData）：
+                // 把已解密的 <img> 画到 canvas 导出 JPEG，按剧集 id 落进 15 天封面缓存
+                if let cd = d["coverData"] as? String, cd.hasPrefix("data:image"),
+                   let comma = cd.firstIndex(of: ","),
+                   let imgData = Data(base64Encoded: String(cd[cd.index(after: comma)...])) {
+                    DramaCoverCache.storeImageData(site: target.site, dramaID: target.dramaID, data: imgData)
+                }
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
                 let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"
-                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc)")
+                let coverDataLen = (d["coverData"] as? String ?? "").count
+                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen)")
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
-                if !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty {
+                // 收尾条件：拿到封面解密数据（优先，blob canvas 需要图片加载完成，
+                // round>=1 再判）或 og/desc 已到手且至少 poll 过两轮（canvas 可能因
+                // 跨域污染导出失败，不能为等封面拖满 5 轮）
+                let hasCoverData = (d["coverData"] as? String ?? "").hasPrefix("data:image")
+                let hasOgOrDesc = !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty
+                if (hasCoverData && round >= 1) || (hasOgOrDesc && round >= 2) {
                     self.finish()
                 } else {
                     self.nextRound(webView: webView, target: target, round: round)

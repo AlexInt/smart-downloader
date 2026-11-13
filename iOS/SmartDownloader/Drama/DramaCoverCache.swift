@@ -12,6 +12,10 @@ import UIKit
 // - 有效期按文件修改时间判定（写入即修改），过期文件顺手删除并允许重拉；
 // - 存储放 Caches/DramaCovers（系统可回收空间；被清了就是重新拉一次，无一致性风险）；
 // - 拉取用 URLSession 后台线程，写盘原子替换；解码校验避免把错误页缓存成图片。
+// - 已知例外（真机实证）：本站图床 pic.* 下发的是密文（站点 JS 解密后转 blob 展示），
+//   URLSession 直拉必 badData —— 解密后的图像数据由 DramaMetaHarvester 在隐藏 WebView
+//   里（canvas 导出 JPEG）经 storeImageData 落盘，本类不负责解密；fetch() 仅作无
+//   WebView 收割时的兕底（普通站点可直接命中）。
 // 主线程约定：completion 固定回主线程；文件 IO 在 URLSession 回调线程。
 final class DramaCoverCache {
     /// 缓存有效期：15 天（用户拍板 2026-11-13）
@@ -56,7 +60,7 @@ final class DramaCoverCache {
             // 解码校验：防止把 CDN/WAF 的错误页缓存成图片
             guard let data, data.count > 0, error == nil, httpOK,
                   UIImage(data: data) != nil else {
-                print("PLAYER_DBG [Entry] cover cache FETCH FAIL id=\(dramaID) err=\(error?.localizedDescription ?? (httpOK ? "badData" : "http\(String(describing: (response as? HTTPURLResponse)?.statusCode))"))")
+                print("PLAYER_DBG [Entry] cover cache FETCH FAIL id=\(dramaID) url=\(remote.absoluteString) err=\(error?.localizedDescription ?? (httpOK ? "badData" : "http\(String(describing: (response as? HTTPURLResponse)?.statusCode))"))")
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
@@ -70,5 +74,21 @@ final class DramaCoverCache {
                 DispatchQueue.main.async { completion(nil) }
             }
         }.resume()
+    }
+
+    /// 收割 JS 已在站点 WebView 里解密好的封面（blob → canvas → dataURL）按剧集 id 落盘。
+    /// 主线程调用（同步写，~几百 KB 原子替换）；与 fetch() 互不覆盖，过期逻辑共用。
+    static func storeImageData(site: String, dramaID: String, data: Data) {
+        guard UIImage(data: data) != nil else {
+            print("PLAYER_DBG [Entry] cover cache HARVEST STORE FAIL id=\(dramaID) err=badData bytes=\(data.count)")
+            return
+        }
+        let target = fileURL(site: site, dramaID: dramaID)
+        do {
+            try data.write(to: target, options: .atomic)
+            print("PLAYER_DBG [Entry] cover cache STORED id=\(dramaID) bytes=\(data.count) via=harvest")
+        } catch {
+            print("PLAYER_DBG [Entry] cover cache WRITE FAIL id=\(dramaID) err=\(error.localizedDescription)")
+        }
     }
 }
