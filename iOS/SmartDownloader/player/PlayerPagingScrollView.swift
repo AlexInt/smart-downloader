@@ -79,7 +79,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastRefreshedReady: Bool?
         private var lastRefreshedToast: String?
         private var lastLoggedY: CGFloat = -999
-        private var lastLoggedSize = ""
+        /// 上次实际布局过的几何 key：几何没变时 layoutPages 幂等跳过（防布局回环）
+        private var lastLaidSizeKey = ""
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
@@ -198,6 +199,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             lastRefreshedReady = nil
             lastRefreshedToast = nil
             lastPendingReason = ""
+            lastLaidSizeKey = ""   // 强制下方的 layoutPages 真正落 frame（新 host 还没排过）
             print("PLAYER_DBG [CHECK] rebuild sorts=\(sorts) count=\(sorts.count)")
 
             hosts.values.forEach { $0.view.removeFromSuperview() }
@@ -215,23 +217,33 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             let width = scroll.bounds.width
             let height = scroll.bounds.height
             let sizeKey = "\(Int(width))x\(Int(height))x\(parent.slots.count)"
-            let shouldLog = sizeKey != lastLoggedSize
-            if shouldLog { lastLoggedSize = sizeKey }
+            let geometryChanged = sizeKey != lastLaidSizeKey
             guard width > 0, height > 0 else {
-                if shouldLog { print("PLAYER_DBG [CHECK] layout SKIPPED zero bounds=\(width)x\(height)") }
+                if geometryChanged {
+                    lastLaidSizeKey = sizeKey
+                    print("PLAYER_DBG [CHECK] layout SKIPPED zero bounds=\(width)x\(height)")
+                }
                 return
             }
+            // 几何没变就不重写：layoutSubviews 每个布局 pass 都进来，旧实现无条件重写全部
+            // 页面 frame + contentSize——布局过程中改自身可滚动属性会再触发一轮布局，
+            // 旋转后与 SwiftUI 桥接的布局回合互相踢（真机实证 bounds 在 402x874 ↔ 874x402
+            // 每 ~2s 振荡）。幂等化斩断这条反馈腿。
+            guard geometryChanged else { return }
+            lastLaidSizeKey = sizeKey
             for (index, slot) in parent.slots.enumerated() {
                 hosts[slot.sort]?.view.frame =
                     CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
             }
             scroll.contentSize = CGSize(width: width,
                                         height: height * CGFloat(parent.slots.count))
-            if shouldLog {
-                let first = hosts[parent.slots.first?.sort ?? -1]?.view.frame ?? .zero
-                let last = hosts[parent.slots.last?.sort ?? -1]?.view.frame ?? .zero
-                print("PLAYER_DBG [CHECK] layout bounds=\(width)x\(height) contentSize=\(scroll.contentSize) firstFrame=\(first) lastFrame=\(last)")
-            }
+            let first = hosts[parent.slots.first?.sort ?? -1]?.view.frame ?? .zero
+            let last = hosts[parent.slots.last?.sort ?? -1]?.view.frame ?? .zero
+            print("PLAYER_DBG [CHECK] layout bounds=\(width)x\(height) contentSize=\(scroll.contentSize) firstFrame=\(first) lastFrame=\(last)")
+            // 旋转后页高变了：旧 contentOffset 落在新网格的错页上（真机实证：竖屏 offset
+            // 2622 在横屏页高 402 下落到第 6.5 页，正在播的卡整个在屏外 → 画面消失、声音
+            // 继续）。重置一次性标记，让 applyStartOffset 重新落回 currentSort 那一页。
+            startApplied = false
             applyStartOffsetIfNeeded(in: scroll)
         }
 
