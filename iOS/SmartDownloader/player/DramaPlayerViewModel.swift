@@ -225,12 +225,17 @@ final class DramaPlayerViewModel: ObservableObject {
         }
         fullscreenRotationAngle = rotationAngle
         isFullscreen = true
+        print("PLAYER_DBG [Fullscreen] enterIntent OK angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2")")
     }
 
     /// 退出全屏（姿态回竖稳 / 控制层返回 icon）
     func exitFullscreen() {
-        guard isFullscreen else { return }
+        guard isFullscreen else {
+            print("PLAYER_DBG [Fullscreen] exitIntent SKIP reason=notFullscreen")
+            return
+        }
         isFullscreen = false
+        print("PLAYER_DBG [Fullscreen] exitIntent OK")
     }
 
     /// 全屏中左右转向切换：仅更新旋转方向（触发器判稳后调用），

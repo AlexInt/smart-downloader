@@ -47,13 +47,21 @@ final class PlayerFullscreenControlsView: UIView {
     private let timeButton = UIButton(type: .custom)
 
     /// 容器本地安全区（控制器按旋转方向映射）
-    var localInsets: UIEdgeInsets = .zero { didSet { setNeedsLayout() } }
+    var localInsets: UIEdgeInsets = .zero {
+        didSet {
+            setNeedsLayout()
+            print("PLAYER_DBG [Fullscreen] controls insets t=\(localInsets.top) l=\(localInsets.left) b=\(localInsets.bottom) r=\(localInsets.right)")
+        }
+    }
     /// 手动呼出态（点按/进入全屏置位，3s 后收起）
     private var userVisible = false
     private var hideWork: DispatchWorkItem?
     private var lastProgress: CGFloat = -1
     /// 布局对账日志只打一次
     private var didLogLayout = false
+    /// 可见性状态翻转才打日志（降噪：bind 抖动不刷屏）
+    private var lastLoggedVisible: Bool?
+    private var lastLoggedBarVisible: Bool?
 
     var onBack: (() -> Void)?
 
@@ -179,15 +187,25 @@ final class PlayerFullscreenControlsView: UIView {
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.userVisible = false
+            print("PLAYER_DBG [Fullscreen] controls auto-hide (3s)")
             self?.updateVisibility(animated: true)
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        print("PLAYER_DBG [Fullscreen] controls show transient (3s)")
         updateVisibility(animated: true)
     }
 
     private func updateVisibility(animated: Bool) {
         let visible = userVisible || playback.isScrubbing
+        // 进度条本体：非清屏常驻；清屏下跟随手动呼出（点按 3s）与 scrub——与竖屏 HUD 同口径
+        let barVisible = !playback.isCleanScreen || userVisible || playback.isScrubbing
+        // 可见性状态翻转才打（降噪）
+        if visible != lastLoggedVisible || barVisible != lastLoggedBarVisible {
+            lastLoggedVisible = visible
+            lastLoggedBarVisible = barVisible
+            print("PLAYER_DBG [Fullscreen] controls visible=\(visible) bar=\(barVisible) user=\(userVisible) scrub=\(playback.isScrubbing) clean=\(playback.isCleanScreen)")
+        }
         let actions = { [weak self] in
             self?.backButton.alpha = visible ? 1 : 0
             self?.cleanButton.alpha = visible ? 1 : 0
@@ -200,8 +218,6 @@ final class PlayerFullscreenControlsView: UIView {
         } else {
             actions()
         }
-        // 进度条本体：非清屏常驻；清屏下跟随手动呼出（点按 3s）与 scrub——与竖屏 HUD 同口径
-        let barVisible = !playback.isCleanScreen || userVisible || playback.isScrubbing
         let barActions = { [weak self] in
             self?.progressTrack.alpha = barVisible ? 1 : 0
             self?.progressFill.alpha = barVisible ? 1 : 0
@@ -267,14 +283,17 @@ final class PlayerFullscreenControlsView: UIView {
     }
 
     @objc private func cleanTapped() {
+        print("PLAYER_DBG [CHECK] fullscreen clean tap → isCleanScreen=\(!playback.isCleanScreen)")
         playback.isCleanScreen.toggle()
     }
 
     @objc private func muteTapped() {
+        print("PLAYER_DBG [CHECK] fullscreen mute tap → isMuted=\(!playback.isMuted)")
         playback.isMuted.toggle()
     }
 
     @objc private func timeTapped() {
+        print("PLAYER_DBG [CHECK] fullscreen time tap → remaining=\(!playback.showRemainingTime)")
         playback.toggleTimeDisplay()
     }
 }

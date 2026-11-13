@@ -44,6 +44,8 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private var seekPan: UIPanGestureRecognizer?
     /// 横向 seek 的基准进度（began 时捕获，相对映射：位移/容器宽 = 进度增量）
     private var scrubBaseFraction: Double?
+    /// seekPan .changed 的拒绝原因每次手势只打一次（降噪）
+    private var seekChangedRejectLogged = false
 
     init(playback: DramaPlayerViewModel, surface: PlayerSurfaceUIView) {
         self.playback = playback
@@ -68,7 +70,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     /// 播放页销毁：立即还原 videoLayer 并移除 window 上的全屏容器（无动画）
     func teardown() {
         cancellables.removeAll()
-        guard container != nil else { return }
+        guard container != nil else {
+            print("PLAYER_DBG [Fullscreen] teardown noop reason=neverEntered")
+            return
+        }
         restoreVideoLayer()
         container?.removeFromSuperview()
         container = nil
@@ -80,6 +85,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private func handle(_ full: Bool) {
         guard !isAnimating else {
             pendingTarget = full
+            print("PLAYER_DBG [Fullscreen] intent \(full ? "enter" : "exit") DEFERRED reason=animating")
             return
         }
         full ? performEnter() : performExit()
@@ -87,7 +93,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
 
     /// 全屏中旋转角变更（左右转向切换）
     private func handleRotationChange(_ angle: CGFloat) {
-        guard playback.isFullscreen else { return }
+        guard playback.isFullscreen else {
+            print("PLAYER_DBG [Fullscreen] angle CHANGE IGNORED reason=notFullscreen angle=\(angle == .pi / 2 ? "+π/2" : "-π/2")")
+            return
+        }
         performReorientation(to: angle)
     }
 
@@ -224,7 +233,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         self.controls = controls
         installGestures(on: container)
 
-        print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") band=\(band) full=\(fullRect.size) screen=\(screenSize)")
+        print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") band=\(band) full=\(fullRect.size) s0=\(String(format: "%.3f", s0)) screen=\(screenSize)")
         // 模型先行落终态：center 起点=显示带中心；scale 动画从带比例 s0 → 1（均匀，无变形）
         container.center = CGPoint(x: band.midX, y: band.midY)
         let duration: TimeInterval = 0.3
@@ -257,6 +266,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     /// 的 fit 显示逐像素重合；完成后 videoLayer 搬回 surface。
     private func performExit() {
         guard let container, let window = surface.window else {
+            print("PLAYER_DBG [Fullscreen] exit FORCE CLEAN reason=noWindow hadContainer=\(container != nil)")
             container?.removeFromSuperview()
             self.container = nil
             return
@@ -265,7 +275,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         let screenSize = window.bounds.size
         let band = videoBandFrame(in: window)
         let s0 = container.bounds.width > 0 ? band.width / container.bounds.width : 1
-        print("PLAYER_DBG [Fullscreen] exit to=\(band)")
+        print("PLAYER_DBG [Fullscreen] exit to=\(band) s0=\(String(format: "%.3f", s0))")
         let duration: TimeInterval = 0.3
         UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseInOut], animations: {
             container.center = CGPoint(x: band.midX, y: band.midY)
@@ -299,17 +309,24 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         surface.layer.addSublayer(layer)
         layer.frame = surface.bounds
         layer.videoGravity = PlayerPagingScrollView.videoGravity(for: playback)
+        print("PLAYER_DBG [Fullscreen] restore layer frame=\(surface.bounds) gravity=\(playback.videoIsLandscape ? "fit" : "fill")")
     }
 
     /// 全屏中左右转向切换：只转体（scale 不变），单段角度动画经 0°——
     /// 内容先回正再转向另一侧，与「翻转手机」的自然预期一致
     private func performReorientation(to newAngle: CGFloat) {
-        guard let container, let controls else { return }
+        guard let container, let controls else {
+            print("PLAYER_DBG [Fullscreen] flip SKIP reason=noContainerOrControls")
+            return
+        }
         guard !isAnimating else {
             print("PLAYER_DBG [Fullscreen] flip SKIP reason=animating")
             return
         }
-        guard rotationAngle != newAngle else { return }
+        guard rotationAngle != newAngle else {
+            print("PLAYER_DBG [Fullscreen] flip SKIP reason=sameAngle")
+            return
+        }
         isAnimating = true
         let old = rotationAngle
         rotationAngle = newAngle
@@ -320,7 +337,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         addScalarAnimation("transform.rotation.z", from: old, to: newAngle, duration: duration, on: container)
         container.transform = CGAffineTransform(rotationAngle: newAngle)   // 模型终态
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            guard let self, self.container != nil else { return }
+            guard let self, self.container != nil else {
+                print("PLAYER_DBG [Fullscreen] flip END SKIP reason=teardown")
+                return
+            }
             self.isAnimating = false
             print("PLAYER_DBG [Fullscreen] flip done")
             self.controls?.showTransient()
@@ -363,13 +383,16 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         pan.cancelsTouchesInView = false
         container.addGestureRecognizer(pan)
         seekPan = pan
+        print("PLAYER_DBG [Fullscreen] gestures installed (tap/longPress/seekPan)")
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         // seek 只认横向/斜向主导（保持与卡片同规则；全屏无分页滚动可干扰）
         guard gestureRecognizer === seekPan, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let t = pan.translation(in: pan.view)
-        return abs(t.x) >= abs(t.y)
+        let ok = abs(t.x) >= abs(t.y)
+        print("PLAYER_DBG [CHECK] fullscreen seekPan shouldBegin tx=\(Int(t.x)) ty=\(Int(t.y)) → \(ok ? "OK" : "REJECT vertical-dominant")")
+        return ok
     }
 
     @objc private func handleTap(_ tap: UITapGestureRecognizer) {
@@ -418,11 +441,19 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         switch pan.state {
         case .began:
             scrubBaseFraction = playback.progress
+            seekChangedRejectLogged = false
             playback.beginSeekGesture()
             print("PLAYER_DBG [CHECK] fullscreen seekPan began scrubBase=\(String(format: "%.2f", scrubBaseFraction ?? 0))")
         case .changed:
             let t = pan.translation(in: view)
-            guard abs(t.x) > abs(t.y), abs(t.x) > 6, let base = scrubBaseFraction else { return }
+            guard abs(t.x) > abs(t.y), abs(t.x) > 6, let base = scrubBaseFraction else {
+                // 降噪：同一次手势里只打一次拒绝原因
+                if !seekChangedRejectLogged {
+                    seekChangedRejectLogged = true
+                    print("PLAYER_DBG [CHECK] fullscreen seekPan changed SKIP tx=\(Int(t.x)) ty=\(Int(t.y)) reason=notHorizontalDominant")
+                }
+                return
+            }
             let fraction = min(max(base + PlayerGesturePolicy.scrubDelta(translationX: t.x, screenWidth: view.bounds.width), 0), 1)
             print("PLAYER_DBG [CHECK] fullscreen seekPan dx=\(Int(t.x)) fraction=\(String(format: "%.2f", fraction))")
             playback.seek(fraction: fraction)
@@ -438,7 +469,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         guard let pending = pendingTarget else { return }
         pendingTarget = nil
         if pending != playback.isFullscreen {
+            print("PLAYER_DBG [Fullscreen] pending \(pending ? "enter" : "exit") FLUSH → run")
             handle(pending)
+        } else {
+            print("PLAYER_DBG [Fullscreen] pending \(pending ? "enter" : "exit") DROP reason=stale")
         }
     }
 }

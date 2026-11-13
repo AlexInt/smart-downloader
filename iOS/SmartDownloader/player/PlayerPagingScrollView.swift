@@ -68,6 +68,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         context.coordinator.surfaceView = surface
         // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
         context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
+        print("PLAYER_DBG [UIScroll] fullscreen controller installed surface=\(surface.bounds)")
         return scroll
     }
 

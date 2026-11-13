@@ -21,6 +21,10 @@ final class PlayerOrientationTrigger {
     private var pendingTarget: Bool?
     /// 全屏中左右转向切换的积累目标（nil = 无）：与进/出共用同一稳定窗
     private var pendingFlipAngle: CGFloat?
+    /// 平放/斜提状态（只在状态翻转时打日志，30Hz 采样降噪）
+    private var isFlatLogged = false
+    /// 竖屏中进全屏被阻断状态（只在状态翻转时打日志）
+    private var isBlockedLogged = false
     private var stableSince: Date?
     /// 最近一次重力角（度，0=竖屏持机，±90=两个横屏转向）：进全屏时据此定旋转方向
     private var lastAngleDeg: Double = 0
@@ -54,7 +58,11 @@ final class PlayerOrientationTrigger {
     func stop() {
         motion.stopDeviceMotionUpdates()
         pendingTarget = nil
+        pendingFlipAngle = nil
         stableSince = nil
+        isFlatLogged = false
+        isBlockedLogged = false
+        print("PLAYER_DBG [Orientation] trigger stopped")
     }
 
     // MARK: 私有
@@ -62,9 +70,17 @@ final class PlayerOrientationTrigger {
     private func consume(gravityX x: Double, gravityY y: Double, gravityZ z: Double) {
         let horizontal = (x * x + y * y).squareRoot()
         guard horizontal > minUprightMagnitude else {
-            // 平放/斜提：倾角不可信，稳定积累作废
+            // 平放/斜提：倾角不可信，稳定积累作废（只在进入/离开该状态时打一次）
+            if !isFlatLogged {
+                isFlatLogged = true
+                print("PLAYER_DBG [Orientation] flat SKIP reason=horizontal=\(String(format: "%.2f", horizontal))<=\(minUprightMagnitude)")
+            }
             resetStability()
             return
+        }
+        if isFlatLogged {
+            isFlatLogged = false
+            print("PLAYER_DBG [Orientation] flat RESUME horizontal=\(String(format: "%.2f", horizontal))")
         }
         // 0° = 竖屏持机；±90° = 横屏（左右两个转向）
         let angleDeg = atan2(x, -y) * 180 / .pi
@@ -86,10 +102,18 @@ final class PlayerOrientationTrigger {
                 resetStability()
             }
         } else {
-            // 竖屏中：仅横屏片源 + 已就绪，稳定越进入阈值才进入
+            // 竖屏中：仅横屏片源 + 已就绪，稳定越进入阈值才进入（阻断只在状态翻转时打一次）
             guard playback.videoIsLandscape, playback.isReady else {
+                if !isBlockedLogged {
+                    isBlockedLogged = true
+                    print("PLAYER_DBG [Orientation] enter BLOCKED reason=landscape=\(playback.videoIsLandscape) ready=\(playback.isReady)")
+                }
                 resetStability()
                 return
+            }
+            if isBlockedLogged {
+                isBlockedLogged = false
+                print("PLAYER_DBG [Orientation] enter UNBLOCKED landscape=\(playback.videoIsLandscape) ready=\(playback.isReady)")
             }
             if absAngle >= enterThreshold {
                 accumulate(target: true)
@@ -105,6 +129,7 @@ final class PlayerOrientationTrigger {
             pendingTarget = target
             pendingFlipAngle = nil
             stableSince = now
+            print("PLAYER_DBG [Orientation] intent \(target ? "enter" : "exit") WAIT windowMs=\(Int(stableInterval * 1000))")
             return
         }
         guard let since = stableSince else {
@@ -137,6 +162,7 @@ final class PlayerOrientationTrigger {
             pendingFlipAngle = angle
             pendingTarget = nil
             stableSince = now
+            print("PLAYER_DBG [Orientation] flip intent \(angle == .pi / 2 ? "+π/2" : "-π/2") WAIT windowMs=\(Int(stableInterval * 1000))")
             return
         }
         guard let since = stableSince else {
