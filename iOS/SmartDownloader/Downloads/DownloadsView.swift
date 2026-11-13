@@ -204,7 +204,7 @@ struct DownloadsView: View {
                             }
                         }
                     } header: {
-                        Text("剧集 · \(vm.seriesGroups.count) 部")
+                        Text(seriesHeaderText)
                     } footer: {
                         Text("左滑删除整剧，点进剧名可逐集管理")
                     }
@@ -229,8 +229,25 @@ struct DownloadsView: View {
                 Text(group.name).lineLimit(1)
                 Text(seriesSubtitle(group)).font(.caption).foregroundColor(.secondary)
             }
+            Spacer(minLength: 8)
+            // 右侧磁盘占用：后台枚举完成后出现（用户拍板 2026-11-13），未算出时不占位
+            if let sizeText = vm.seriesSizeText(group.name) {
+                Text(sizeText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 剧集区标题：部数 + 总占用（总占用未算出/为 0 时只显部数）
+    private var seriesHeaderText: String {
+        var text = "剧集 · \(vm.seriesGroups.count) 部"
+        if vm.seriesTotalBytes > 0 {
+            text += " · \(DiskUsageService.formatted(vm.seriesTotalBytes))"
+        }
+        return text
     }
 
     /// 剧行副标题带上时间，让「最新/最早优先」的排序依据可见

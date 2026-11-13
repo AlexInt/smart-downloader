@@ -23,11 +23,66 @@ final class DownloadsViewModel: ObservableObject {
     @Published var sortOrder: DownloadSortOrder {
         didSet { UserDefaults.standard.set(sortOrder.rawValue, forKey: "DownloadsView.sortOrder") }
     }
+    /// 每部剧的磁盘占用（字节；未计算到的剧不在字典里）：副剧行右侧 label 用
+    @Published private(set) var seriesSizes: [String: Int64] = [:]
+    /// 剧集区总占用：「已下载顶部：剧集·N部·xx.xGB」用
+    @Published private(set) var seriesTotalBytes: Int64 = 0
+    /// 上次已计算的输入指纹：done 任务 id 集合 + 总数没变就不重算（下载进度 tick 不触发磁盘枚举）
+    private var lastSizeSignature = ""
+    private var sizeRecomputeWork: DispatchWorkItem?
+    private var managerObservation: AnyCancellable?
 
     init(manager: DownloadManager) {
         self.manager = manager
         let raw = UserDefaults.standard.string(forKey: "DownloadsView.sortOrder")
         self.sortOrder = raw.flatMap(DownloadSortOrder.init(rawValue:)) ?? .newestFirst
+        // 任务的任何变化（新增/完成/删除）都可能改变磁盘占用 → 去抖后重算；
+        // 指纹在计算时取最新值，进度 tick（id/done 不变）算完发现指纹相同自然跳过
+        managerObservation = manager.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.scheduleSizeRecompute() }
+    }
+
+    // MARK: - 磁盘占用统计
+
+    /// 去抖 500ms：批量删除/连续完成只算一次；磁盘枚举在后台线程（可能上千切片）
+    private func scheduleSizeRecompute() {
+        sizeRecomputeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.recomputeSizes() }
+        sizeRecomputeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func recomputeSizes() {
+        let doneIDs = manager.tasks.filter { $0.state == .done }.map(\.id.uuidString).sorted()
+        let signature = "\(doneIDs.joined(separator: ","))#\(manager.tasks.count)"
+        guard signature != lastSizeSignature else {
+            print("PLAYER_DBG [Service] diskUsage SKIP reason=sameSignature tasks=\(manager.tasks.count)")
+            return
+        }
+        lastSizeSignature = signature
+        let seriesNames = Set(manager.tasks.filter { $0.state == .done && $0.seriesName != nil }.map { $0.seriesName! })
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var sizes: [String: Int64] = [:]
+            var total: Int64 = 0
+            for name in seriesNames.sorted() {
+                let size = DiskUsageService.directorySize(DownloadEngine.seriesDirectory(for: name))
+                sizes[name] = size
+                total += size
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.seriesSizes = sizes
+                self.seriesTotalBytes = total
+                print("PLAYER_DBG [Service] diskUsage series=\(sizes.count) total=\(DiskUsageService.formatted(total))")
+            }
+        }
+    }
+
+    /// 某剧的人读占用；未计算到（后台枚举未完成）返回 nil，视图不显示占位
+    func seriesSizeText(_ name: String) -> String? {
+        guard let bytes = seriesSizes[name] else { return nil }
+        return DiskUsageService.formatted(bytes)
     }
 
     // MARK: - 派生列表
