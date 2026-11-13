@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WebKit
 
 // 元数据收割（Service）：从 DramaNativePage.swift 拆出，逐字迁移不改行为。
@@ -42,15 +43,21 @@ let dramaMetaJS = """
     return '';
   }
   var recCovers = {};
+  var recDiag = { anchors: 0, imgs: 0, ready: 0, nw: [] };
   try {
     var ownId = idFromHref(location.pathname);
     var anchors = document.querySelectorAll('a[href*="/drama/detail/"]');
+    recDiag.anchors = anchors.length;
     var recCount = 0;
     for (var i = 0; i < anchors.length && recCount < 12; i++) {
       var vid = idFromHref(anchors[i].getAttribute('href'));
       if (!vid || vid === ownId || recCovers[vid]) continue;
       var im = anchors[i].querySelector('img');
-      if (!im || !im.complete || !im.naturalWidth || im.naturalWidth < 60) continue;
+      if (!im) continue;
+      recDiag.imgs++;
+      if (im.complete && im.naturalWidth) recDiag.ready++;
+      if (recDiag.nw.length < 6) recDiag.nw.push(im.naturalWidth);
+      if (!im.complete || !im.naturalWidth || im.naturalWidth < 60) continue;
       try {
         var w = Math.min(im.naturalWidth, 320);
         var h = Math.round(im.naturalHeight * (w / im.naturalWidth));
@@ -71,6 +78,7 @@ let dramaMetaJS = """
     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
     coverData: coverData,
     recCovers: recCovers,
+    recDiag: recDiag,
     imgs: imgs,
     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
   });
@@ -157,6 +165,19 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: config)
         view.navigationDelegate = self
         webView = view
+        // 必须挂进 keyWindow（插最底层 + alpha 0.01 + 禁交互）：完全脱离视图树时 WebKit
+        // 不渲染，站点的 IntersectionObserver 懒加载永不回调，推荐卡封面停在 1px 占位图
+        //（真机实证 rec=0）；挂窗后 IO 正常回调，blob 换入才能被收割 JS 导出。
+        // 插在最底层：用户不可见、不挡任何交互；不是截图，页面本来就是收割器自己在加载。
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first {
+            view.frame = window.bounds
+            view.alpha = 0.01
+            view.isUserInteractionEnabled = false
+            window.insertSubview(view, at: 0)
+        } else {
+            print("PLAYER_DBG [Entry] harvest attach SKIP reason=noKeyWindow（懒加载封面本轮拿不到）")
+        }
         view.load(URLRequest(url: URL(string: target.pageURLString)!))
         // 超时兜底：25 秒后用已拿到的部分数据收尾（finish 幂等，迟到触发无害）
         DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
@@ -170,6 +191,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         Self.active.removeAll { $0 === self }
         // userContentController 强持有 handler，不解除会 harvester↔webview 循环引用
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "apicap")
+        webView?.removeFromSuperview()   // 挂窗的收割 webview 用完即摘
         if apiDetail == nil {
             print("PLAYER_DBG [Entry] tags FAIL reason=noDetailResponse apiCaptures=\(apiCaptures.count)")
         }
@@ -293,11 +315,15 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let target = pendingTarget else { return }
-        // 滚到底触发懒加载：推荐卡封面在折叠线以下，站点的懒加载不解不换 blob、
-        // 不滚永远 naturalWidth=1px 占位图（收割 JS 拿不到已解密图）
+        // 分步滚到底触发懒加载：推荐区在折叠线以下且很长，一次跳底只让最后一屏
+        // 的卡进视口，前面的卡 IO 不触发；分步滚完整页才全部换 blob
         webView.evaluateJavaScript("""
-        window.scrollTo(0, document.body.scrollHeight);
-        document.querySelectorAll('img[loading="lazy"]').forEach(function (i) { i.loading = 'eager'; });
+        (function step(i) {
+          if (i <= 0) { window.scrollTo(0, 0); return; }
+          window.scrollBy(0, 800);
+          setTimeout(function () { step(i - 1); }, 250);
+        })(10);
+        document.querySelectorAll('img[loading="lazy"]').forEach(function (x) { x.loading = 'eager'; });
         """, completionHandler: nil)
         // 主文档完整 HTML 一次性落盘：meta keywords / class 选择器的样本，
         // SSR 直出 tags 时也是兜底证据（不用靠 innerText 猜选择器）
@@ -360,7 +386,12 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                 let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"
                 let coverDataLen = (d["coverData"] as? String ?? "").count
                 let recCount = (d["recCovers"] as? [String: String] ?? [:]).count
-                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen) rec=\(recCount)")
+                var recDiagText = "nil"
+                if let rd = d["recDiag"] as? [String: Any] {
+                    let nwList = (rd["nw"] as? [NSNumber] ?? []).map(String.init).joined(separator: ",")
+                    recDiagText = "a:\(rd["anchors"] ?? 0) i:\(rd["imgs"] ?? 0) r:\(rd["ready"] ?? 0) nw:[\(nwList)]"
+                }
+                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen) rec=\(recCount) diag=\(recDiagText)")
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
