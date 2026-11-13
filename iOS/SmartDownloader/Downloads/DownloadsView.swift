@@ -243,7 +243,7 @@ struct DownloadsView: View {
     private func seriesRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "square.stack.3d.up.fill").foregroundColor(.purple)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(group.name).lineLimit(1)
                 Text(seriesSubtitle(group)).font(.caption).foregroundColor(.secondary)
             }
@@ -256,7 +256,8 @@ struct DownloadsView: View {
                     .monospacedDigit()
             }
         }
-        .padding(.vertical, 2)
+        // 行高压缩（用户拍板 2026-11-13）：行内上下 padding 清零，交给 List 自身行内边距
+        .padding(.vertical, 0)
     }
 
     /// 剧集区标题：部数 + 总占用（总占用未算出/为 0 时只显部数）
@@ -412,14 +413,15 @@ struct TaskRow: View {
     var body: some View {
         HStack(spacing: 12) {
             stateIcon
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(rowTitle)
                     .lineLimit(1)
                 detailLine
             }
             Spacer()
         }
-        .padding(.vertical, 2)
+        // 行高压缩（用户拍板 2026-11-13，与剧行同口径）：行内上下 padding 清零
+        .padding(.vertical, 0)
     }
 
     @ViewBuilder private var stateIcon: some View {
