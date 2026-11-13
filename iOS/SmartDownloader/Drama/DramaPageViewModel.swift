@@ -100,7 +100,7 @@ final class DramaPageViewModel: ObservableObject {
     init(target: DramaTarget, manager: DownloadManager) {
         self.target = target
         self.manager = manager
-        isFavorite = favorites.isFavorite(target.id)
+        isFavorite = favorites.isFavorite(site: target.site, dramaID: target.dramaID)
         // 每次进剧集页都重抓一次详情（整包落库）：清掉进程内去重标记，
         // 同一次访问内的重复触发仍由 hasHarvestedThisVisit 挡住
         DramaMetaHarvester.harvestedKeys.remove(target.id)
@@ -191,7 +191,7 @@ final class DramaPageViewModel: ObservableObject {
 
     func toggleFavorite() {
         isFavorite.toggle()
-        favorites.setFavorite(isFavorite, for: target.id)
+        favorites.setFavorite(isFavorite, site: target.site, dramaID: target.dramaID)
         AppHaptics.light()   // 收藏切换：动作确认（行业惯例）
         showToast(isFavorite ? "已加入收藏" : "已取消收藏")
     }

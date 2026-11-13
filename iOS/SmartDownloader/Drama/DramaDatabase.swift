@@ -10,6 +10,8 @@ import SQLite3
 // 版本历史：
 //   v1  episode_actions / local_actions 两张行为表 + 把旧 UserDefaults 的点赞/收藏/进度搬进库
 //   v2  详情接口整包落库：drama_cache 加 api_detail 与提升列、drama_episodes 加每集元数据列、新增 drama_related
+//   v3  剧级收藏入库：新增 drama_favorites（键 site+drama_id，created_at 供最近收藏排序），
+//       旧 UserDefaults 收割迁入（独立标记门控，读路径永远走库）
 //
 // 幂等策略：建表一律 CREATE IF NOT EXISTS；加列先查 PRAGMA table_info 再 ALTER（不靠版本号判断列是否存在），
 // 这样即使旧库版本号被别的入口提前抬高，缺的列也补得上。
@@ -20,7 +22,7 @@ let SQLITE_TRANSIENT = unsafeBitCast(OpaquePointer(bitPattern: -1), to: sqlite3_
 
 enum DramaDatabase {
 
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     private static var migrated = false
     private static let legacyMigratedKey = "EpisodeActions.legacyMigrated"
 
@@ -45,6 +47,7 @@ enum DramaDatabase {
         createBaseTables(db)
         addMissingColumns(db)
         migrateLegacyUserDefaultsIfNeeded(db)
+        migrateLegacyFavoritesIfNeeded(db)
         if version < schemaVersion {
             sqlite3_exec(db, "PRAGMA user_version = \(schemaVersion);", nil, nil, nil)
             print("CACHE OK[migrate] user_version \(version) -> \(schemaVersion)")
@@ -105,6 +108,12 @@ enum DramaDatabase {
             serialize_status_text TEXT, content_access_type TEXT,
             position INTEGER, updated_at TEXT,
             PRIMARY KEY (site, drama_id, related_video_id)
+        );
+        CREATE TABLE IF NOT EXISTS drama_favorites (
+            site TEXT NOT NULL,
+            drama_id TEXT NOT NULL,
+            created_at TEXT,
+            PRIMARY KEY (site, drama_id)
         );
         """
         if sqlite3_exec(db, schema, nil, nil, nil) != SQLITE_OK {
@@ -210,6 +219,42 @@ enum DramaDatabase {
 
     /// 旧写法把点赞/收藏按「集目录相对路径」记在 UserDefaults，上一版进度记在 PlaybackProgress.<资源路径>。
     /// 一次性搬进库并删源键；用独立标记门控，避免 schema 版本被提前抬高后搬迁被跳过。
+    /// v3：旧 UserDefaults 剧级收藏（key "DramaDetail.favorite.<site#dramaID>"）一次性搬进库。
+    /// 独立 UserDefaults 标记门控（与 schema 版本解耦，第 7 条）；只搬 bool=true 的键；
+    /// OR IGNORE 不覆盖库里已有的收藏时间；旧键保留不清（读路径永远走库，不回读旧键）
+    private static func migrateLegacyFavoritesIfNeeded(_ db: OpaquePointer?) {
+        let defaults = UserDefaults.standard
+        let flag = "DramaFavorites.legacyMigratedToSQLite"
+        guard !defaults.bool(forKey: flag) else { return }
+        defer { defaults.set(true, forKey: flag) }
+        let prefix = "DramaDetail.favorite."
+        var migrated = 0
+        for (key, value) in defaults.dictionaryRepresentation()
+        where key.hasPrefix(prefix) && (value as? Bool) == true {
+            let targetID = String(key.dropFirst(prefix.count))
+            // targetID = "<site>#<dramaID>"，site 内无 #，从右取第一个 # 拆分
+            guard let idx = targetID.lastIndex(of: "#") else { continue }
+            let site = String(targetID[targetID.startIndex..<idx])
+            let dramaID = String(targetID[targetID.index(after: idx)...])
+            guard !site.isEmpty, !dramaID.isEmpty else { continue }
+            let now = ISO8601DateFormatter().string(from: Date())
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO drama_favorites (site, drama_id, created_at) VALUES (?,?,?);",
+                                     -1, &stmt, nil) == SQLITE_OK else {
+                fail(db, "legacy favorite prepare \(targetID)")
+                continue
+            }
+            bind(stmt, 1, site)
+            bind(stmt, 2, dramaID)
+            bind(stmt, 3, now)
+            if sqlite3_step(stmt) == SQLITE_DONE { migrated += 1 }
+        }
+        if migrated > 0 {
+            print("CACHE OK[migrate] legacy dramaFavorites migrated=\(migrated)")
+        }
+    }
+
     private static func migrateLegacyUserDefaultsIfNeeded(_ db: OpaquePointer?) {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: legacyMigratedKey) else { return }
