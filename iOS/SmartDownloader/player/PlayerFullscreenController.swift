@@ -91,6 +91,20 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         performReorientation(to: angle)
     }
 
+    /// 全屏视频矩形：与片源同宽高比、长边铺满屏幕长边（横屏片源 → 874×(874/宽高比) 型）。
+    /// 旋转 90° 后足迹纵向满屏、横向溢出屏幕两侧（被裁掉 = fill 的轻微裁切）；fill 在
+    /// 同宽高比 bounds 上 = 精确铺满，无变形无裁切，分辨率整幅原生。
+    /// 片源尺寸未知时退回屏幕转置矩形（fill 旧路径）。
+    private static func fullscreenVideoRect(screen: CGSize, videoSize: CGSize) -> CGRect {
+        let long = max(screen.width, screen.height)
+        let short = min(screen.width, screen.height)
+        guard videoSize.width > 0, videoSize.height > 0 else {
+            return CGRect(origin: .zero, size: CGSize(width: long, height: short))
+        }
+        let aspect = videoSize.width / videoSize.height
+        return CGRect(origin: .zero, size: CGSize(width: long, height: long / aspect))
+    }
+
     /// 视频当前实际显示带：surface 框内按片源宽高比 fit 的居中矩形（窗口坐标）。
     /// 进/出全屏以它为起点/终点——起点与卡片画面逐像素重合、终点与 restore 后的
     /// fit 显示重合，两端都无裁切突变（「进入竖屏闪一下」的根因即 fill↔fit 跳变）。
@@ -120,9 +134,12 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         view.layer.add(anim, forKey: "fullscreen.\(keyPath)")
     }
 
-    /// 进入：容器 bounds 直接用横屏尺寸（模型先行落终态），起始 presentation 用
-    /// 非等比 scale + 零旋转对齐「视频实际显示带」，动画中连续变形到「旋转 90° 铺满」。
-    /// 起点与卡片画面逐像素重合（无裁切突变），终点轻微上下裁切（fill，设计如此）。
+    /// 进入：容器 bounds 取「视频横屏整幅矩形」（与片源同宽高比、长边铺满屏幕长边），
+    /// fill 恒等 = 精确铺满无裁切无变形；起始 presentation 用均匀 scale 对齐「视频显示带」，
+    /// 动画中均匀放大 + 旋转到全幅。起点与卡片画面逐像素重合、全程无不等比变形
+    /// （不等比缩放会把 fill 裁切内容压扁，读起来像「扭曲一下就转过去」）、
+    /// 模型终态=动画终态（终态帧与 restore 后的 fit 显示逐像素重合，无闪帧）。
+    /// 旋转/缩放走 CA 标量关键路径（矩阵整体插值有泵缩伪影）。
     private func performEnter() {
         guard container == nil, let window = surface.window else {
             print("PLAYER_DBG [Fullscreen] enter SKIP reason=noWindowOrAlready")
@@ -132,11 +149,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         rotationAngle = playback.fullscreenRotationAngle
         let band = videoBandFrame(in: window)
         let screenSize = window.bounds.size
-        let landscapeSize = CGSize(width: screenSize.height, height: screenSize.width)
-        let sx = landscapeSize.width > 0 ? band.width / landscapeSize.width : 1
-        let sy = landscapeSize.height > 0 ? band.height / landscapeSize.height : 1
-        let container = FullscreenPlayerView(frame: CGRect(origin: .zero, size: landscapeSize))
-        container.backgroundColor = .black
+        let fullRect = Self.fullscreenVideoRect(screen: screenSize, videoSize: playback.videoPixelSize)
+        let s0 = fullRect.width > 0 ? band.width / fullRect.width : 1
+        let container = FullscreenPlayerView(frame: fullRect)
+        container.backgroundColor = .clear
         container.clipsToBounds = true
 
         // videoLayer 搬家（唯一宿主切换）：动画前先落位到起点，无空帧
@@ -144,7 +160,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         container.videoLayer = surface.videoLayer
         container.layer.addSublayer(surface.videoLayer)
         surface.videoLayer.frame = container.bounds
-        surface.videoLayer.videoGravity = .resizeAspectFill   // 全程 fill：起点=视频带（无裁切），终点轻微上下裁切
+        surface.videoLayer.videoGravity = .resizeAspectFill   // bounds 与片源同宽高比：fill=精确铺满，无裁切无变形，分辨率整幅原生
 
         window.addSubview(container)
         self.container = container
@@ -165,8 +181,8 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         self.controls = controls
         installGestures(on: container)
 
-        print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") band=\(band) screen=\(screenSize)")
-        // 模型先行落终态：bounds=横屏尺寸、center 起点=视频带中心；scale 动画从带尺寸比例 → 1
+        print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") band=\(band) full=\(fullRect.size) screen=\(screenSize)")
+        // 模型先行落终态：center 起点=显示带中心；scale 动画从带比例 s0 → 1（均匀，无变形）
         container.center = CGPoint(x: band.midX, y: band.midY)
         let duration: TimeInterval = 0.3
         UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseInOut], animations: {
@@ -179,16 +195,15 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             self.controls?.showTransient()   // 进入全屏后呼出控制层，3s 自动收起
             self.flushPending()
         })
-        addScalarAnimation("transform.scale.x", from: sx, to: 1, duration: duration, on: container)
-        addScalarAnimation("transform.scale.y", from: sy, to: 1, duration: duration, on: container)
+        addScalarAnimation("transform.scale", from: s0, to: 1, duration: duration, on: container)
         addScalarAnimation("transform.rotation.z", from: 0, to: rotationAngle, duration: duration, on: container)
-        // 模型终态：只旋转（scale 1）。注意用实际转向角 rotationAngle，
+        // 模型终态=动画终态（只旋转 scale 1，足迹=全幅矩形）。注意用实际转向角 rotationAngle，
         // 写死 ±π/2 会让另一半转向进全屏内容上下倒置（de08f27 没修干净的那半）
         container.transform = CGAffineTransform(rotationAngle: rotationAngle)
     }
 
-    /// 退出：反向动画回「视频实际显示带」——终点与 restore 后的 fit 显示逐像素重合，
-    /// 无闪帧；完成后 videoLayer 搬回 surface。旋转/缩放走标量动画（同 enter）。
+    /// 退出：反向动画回「视频显示带」（均匀 scale 1 → s0 + 旋转回 0）——终点与 restore 后
+    /// 的 fit 显示逐像素重合；完成后 videoLayer 搬回 surface。
     private func performExit() {
         guard let container, let window = surface.window else {
             container?.removeFromSuperview()
@@ -197,9 +212,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         }
         isAnimating = true
         let band = videoBandFrame(in: window)
-        let landscapeSize = container.bounds.size
-        let sx = landscapeSize.width > 0 ? band.width / landscapeSize.width : 1
-        let sy = landscapeSize.height > 0 ? band.height / landscapeSize.height : 1
+        let s0 = container.bounds.width > 0 ? band.width / container.bounds.width : 1
         print("PLAYER_DBG [Fullscreen] exit to=\(band)")
         let duration: TimeInterval = 0.3
         UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseInOut], animations: {
@@ -215,9 +228,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             self.flushPending()
         })
         addScalarAnimation("transform.rotation.z", from: rotationAngle, to: 0, duration: duration, on: container)
-        addScalarAnimation("transform.scale.x", from: 1, to: sx, duration: duration, on: container)
-        addScalarAnimation("transform.scale.y", from: 1, to: sy, duration: duration, on: container)
-        container.transform = .identity   // 模型先行落终态，动画只管 presentation
+        addScalarAnimation("transform.scale", from: 1, to: s0, duration: duration, on: container)
+        // 模型终态=动画终态（scale s0，足迹=显示带）。绝不能落 identity——bounds 是横屏
+        // 整幅矩形，identity 足迹撑回整屏宽，动画结束帧与模型帧之间会闪出一次大画面
+        //（「回竖屏画面动一下」的根因）
+        container.transform = CGAffineTransform(scaleX: s0, y: s0)
     }
 
     private func restoreVideoLayer() {
