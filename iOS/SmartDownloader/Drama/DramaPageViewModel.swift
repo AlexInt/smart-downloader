@@ -192,6 +192,7 @@ final class DramaPageViewModel: ObservableObject {
     func toggleFavorite() {
         isFavorite.toggle()
         favorites.setFavorite(isFavorite, for: target.id)
+        AppHaptics.light()   // 收藏切换：动作确认（行业惯例）
         showToast(isFavorite ? "已加入收藏" : "已取消收藏")
     }
 
@@ -279,6 +280,7 @@ final class DramaPageViewModel: ObservableObject {
         }
         // 立即清空选择：连点「下载所选」不会二次提交同一批
         selected.removeAll()
+        AppHaptics.light()   // 入队确认：用户动作已被接受（行业惯例轻触）
         if chosen.count < requested {
             // 部分选中集因站点权限/重复被过滤：如实报告，不再静默丢弃
             print("PLAYER_DBG [CHECK] startDownload DROP-PARTIAL requested=\(requested) chosen=\(chosen.count)")
@@ -456,6 +458,7 @@ final class DramaPageViewModel: ObservableObject {
         let newlyDone = fresh.subtracting(downloadedSorts)
         downloadedSorts = fresh
         if initialLibraryApplied, let sort = newlyDone.min() {
+            AppHaptics.success()   // 单集下载完成：异步结果达成（成功触）
             showToast("第 \(sort) 集下载完成")
         }
     }

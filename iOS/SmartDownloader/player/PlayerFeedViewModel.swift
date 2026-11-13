@@ -110,6 +110,7 @@ final class PlayerFeedViewModel: ObservableObject {
                 self.showToast("第\(sort)集尚未下载 · 回剧集页下载后可看")
             } else if self.isLast(sort), !self.endToastShown {
                 self.endToastShown = true
+                AppHaptics.warning()   // 上滑到最后一集：到达边界（行业惯例警示触）
                 self.showToast("已经到底了")
             }
         }
