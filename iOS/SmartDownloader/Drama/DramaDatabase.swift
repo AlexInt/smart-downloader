@@ -110,8 +110,12 @@ enum DramaDatabase {
         if sqlite3_exec(db, schema, nil, nil, nil) != SQLITE_OK {
             fail(db, "base schema")
         }
-        // tags 列是历史追加列，沿用旧写法（列已存在时 ALTER 报错忽略）
-        sqlite3_exec(db, "ALTER TABLE drama_cache ADD COLUMN tags TEXT;", nil, nil, nil)
+        // tags 列是历史追加列：与 v2 补列同一套「先查再补」，不再每次启动打 duplicate column 报错
+        if !columnNames(db, table: "drama_cache").contains("tags") {
+            if sqlite3_exec(db, "ALTER TABLE drama_cache ADD COLUMN tags TEXT;", nil, nil, nil) != SQLITE_OK {
+                fail(db, "add column drama_cache.tags TEXT")
+            }
+        }
     }
 
     /// v2：详情接口整包落库需要的列。逐列查 table_info 再 ALTER，缺哪列补哪列

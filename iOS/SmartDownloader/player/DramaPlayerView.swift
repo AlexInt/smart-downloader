@@ -112,9 +112,14 @@ struct DramaPlayerView: View {
                 //    仍在 UIKit 层与系统分页共存 —— 卡片内禁止的只是连续手势。 ─
 
                 // ── ⑤ 控件层：竖屏 = 设计稿画布（390×840 contain）；横屏 = 专用布局 ──
+                // 横屏控制层只在活跃卡渲染：邻卡只留渐变占位——11 张卡每 pass 重建控件层是
+                // 旋转时主线程卡顿的大头（真机实测每次方向翻转 mainStall ~110-130ms ≈ 丢 7-8 帧），
+                // 且邻卡上多套顶栏/HUD 叠影本身就是错误 UX；竖屏邻卡维持画布（半遮挡预览可见）。
                 if screenIsLandscape {
-                    landscapeOverlay(size: geo.size, safeInsets: windowInsets)
-                        .frame(width: geo.size.width, height: geo.size.height)
+                    if isActive {
+                        landscapeOverlay(size: geo.size, safeInsets: windowInsets)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    }
                 } else {
                     designOverlay
                         .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
