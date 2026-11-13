@@ -131,23 +131,6 @@ struct DownloadsView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if vm.selectionMode {
-                    HStack {
-                        Button(vm.allSelected ? "全不选" : "全选") { vm.toggleSelectAll() }
-                            .buttonStyle(.bordered)
-                        Spacer()
-                        Button("删除所选 (\(vm.selected.count))", role: .destructive) {
-                            vm.deleteSelected()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(vm.selected.isEmpty)
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .background(.bar)
-                }
-            }
             .confirmationDialog(
                 "删除《\(vm.pendingDeleteSeries ?? "")》全部集及其文件？",
                 isPresented: Binding(
@@ -167,6 +150,29 @@ struct DownloadsView: View {
         }
         .onAppear { progressVM.refresh(manager.tasks) }
         .onChange(of: manager.tasks.count) { _, _ in progressVM.refresh(manager.tasks) }
+    }
+
+    /// 编辑模式底部工具条：挂在两个页面的 List 自身（List 对自身 safeAreaInset 精确避让，
+    /// 最后一行不被盖）。原先挂在 VStack 外层且在 safeAreaPadding(47) 之后，落点正好是
+    /// tab bar 预留区，被自定义 tab bar 盖住（真机反馈）；现在位置在预留区之上，紧贴 tab bar 顶
+    private var editBarInset: some View {
+        Group {
+            if vm.selectionMode {
+                HStack {
+                    Button(vm.allSelected ? "全不选" : "全选") { vm.toggleSelectAll() }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    Button("删除所选 (\(vm.selected.count))", role: .destructive) {
+                        vm.deleteSelected()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(vm.selected.isEmpty)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+        }
     }
 
     /// 左页：进行中（等待/解析/下载/保存/失败），左滑删除任务
@@ -189,6 +195,7 @@ struct DownloadsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .safeAreaInset(edge: .bottom) { editBarInset }
         }
     }
 
@@ -237,6 +244,7 @@ struct DownloadsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .safeAreaInset(edge: .bottom) { editBarInset }
         }
     }
 
