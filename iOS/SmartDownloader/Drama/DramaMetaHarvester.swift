@@ -33,6 +33,35 @@ let dramaMetaJS = """
       coverData = cv.toDataURL('image/jpeg', 0.85);
     }
   } catch (e) { coverData = ''; }
+  function idFromHref(h) {
+    if (!h) return '';
+    var parts = h.split('?')[0].split('#')[0].split('/').filter(function (x) { return x !== ''; });
+    for (var i = parts.length - 1; i >= 0; i--) {
+      if (/^\\d+$/.test(parts[i])) return parts[i];
+    }
+    return '';
+  }
+  var recCovers = {};
+  try {
+    var ownId = idFromHref(location.pathname);
+    var anchors = document.querySelectorAll('a[href*="/drama/detail/"]');
+    var recCount = 0;
+    for (var i = 0; i < anchors.length && recCount < 12; i++) {
+      var vid = idFromHref(anchors[i].getAttribute('href'));
+      if (!vid || vid === ownId || recCovers[vid]) continue;
+      var im = anchors[i].querySelector('img');
+      if (!im || !im.complete || !im.naturalWidth || im.naturalWidth < 60) continue;
+      try {
+        var w = Math.min(im.naturalWidth, 320);
+        var h = Math.round(im.naturalHeight * (w / im.naturalWidth));
+        var cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(im, 0, 0, w, h);
+        var durl = cv.toDataURL('image/jpeg', 0.8);
+        if (durl.indexOf('data:image') === 0) { recCovers[vid] = durl; recCount++; }
+      } catch (e2) {}
+    }
+  } catch (e) {}
   return JSON.stringify({
     url: location.href,
     title: document.title || '',
@@ -41,6 +70,7 @@ let dramaMetaJS = """
     keywords: q('meta[name="keywords"]'),
     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
     coverData: coverData,
+    recCovers: recCovers,
     imgs: imgs,
     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
   });
@@ -263,6 +293,12 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let target = pendingTarget else { return }
+        // 滚到底触发懒加载：推荐卡封面在折叠线以下，站点的懒加载不解不换 blob、
+        // 不滚永远 naturalWidth=1px 占位图（收割 JS 拿不到已解密图）
+        webView.evaluateJavaScript("""
+        window.scrollTo(0, document.body.scrollHeight);
+        document.querySelectorAll('img[loading="lazy"]').forEach(function (i) { i.loading = 'eager'; });
+        """, completionHandler: nil)
         // 主文档完整 HTML 一次性落盘：meta keywords / class 选择器的样本，
         // SSR 直出 tags 时也是兜底证据（不用靠 innerText 猜选择器）
         webView.evaluateJavaScript("document.documentElement.outerHTML") { html, _ in
@@ -308,19 +344,33 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                    let imgData = Data(base64Encoded: String(cd[cd.index(after: comma)...])) {
                     DramaCoverCache.storeImageData(site: target.site, dramaID: target.dramaID, data: imgData)
                 }
+                // 推荐卡封面：同一张密文图床，站点已解密成 blob —— 逐卡 canvas 导出后
+                // 按「推荐剧自己的 id」落缓存（后续进该剧页时 applyCover 直接命中）
+                if let recs = d["recCovers"] as? [String: String], !recs.isEmpty {
+                    var stored = 0
+                    for (vid, dataURL) in recs {
+                        guard dataURL.hasPrefix("data:image"), let comma = dataURL.firstIndex(of: ","),
+                              let imgData = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])) else { continue }
+                        DramaCoverCache.storeImageData(site: target.site, dramaID: vid, data: imgData)
+                        stored += 1
+                    }
+                    print("PLAYER_DBG [Entry] harvest recCovers stored=\(stored)/\(recs.count)")
+                }
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
                 let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"
                 let coverDataLen = (d["coverData"] as? String ?? "").count
-                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen)")
+                let recCount = (d["recCovers"] as? [String: String] ?? [:]).count
+                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen) rec=\(recCount)")
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
-                // 收尾条件：拿到封面解密数据（优先，blob canvas 需要图片加载完成，
-                // round>=1 再判）或 og/desc 已到手且至少 poll 过两轮（canvas 可能因
-                // 跨域污染导出失败，不能为等封面拖满 5 轮）
+                // 收尾条件：主封面 + 推荐封面齐了才早收（推荐图有懒加载，早收会漏）；
+                // 一直不齐则 og/desc 拿到且三轮后兜底收尾（25s 超时仍在）
                 let hasCoverData = (d["coverData"] as? String ?? "").hasPrefix("data:image")
                 let hasOgOrDesc = !(d["ogImage"] as? String ?? "").isEmpty || !(d["desc"] as? String ?? "").isEmpty
-                if (hasCoverData && round >= 1) || (hasOgOrDesc && round >= 2) {
+                let expectedRelated = min(self.apiDetail?.relatedList?.count ?? 0, 12)
+                let recsComplete = expectedRelated > 0 && recCount >= expectedRelated
+                if (hasCoverData && recsComplete) || (hasOgOrDesc && round >= 3) {
                     self.finish()
                 } else {
                     self.nextRound(webView: webView, target: target, round: round)

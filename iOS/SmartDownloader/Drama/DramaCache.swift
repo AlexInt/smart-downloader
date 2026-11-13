@@ -604,19 +604,29 @@ enum DramaCache {
         DramaDatabase.bind(stmt, 1, site)
         DramaDatabase.bind(stmt, 2, dramaID)
         var result: [RecommendedDrama] = []
+        var localCoverHits = 0
         while sqlite3_step(stmt) == SQLITE_ROW {
             let tags = (DramaDatabase.text(stmt, 3) ?? "").split(separator: " ").map(String.init)
+            let videoID = Int(sqlite3_column_int64(stmt, 0))
+            var cover = DramaDatabase.text(stmt, 2)
+            // 封面列存的是密文图床 URL（站点 JS 解密后才能展示），AsyncImage 直连必败：
+            // 收割器已把解密后的图按推荐剧 id 落了本地缓存，命中则换成本地文件 URL
+            if let remote = cover, !remote.isEmpty,
+               let local = DramaCoverCache.validLocalURL(site: site, dramaID: String(videoID)) {
+                cover = local.absoluteString
+                localCoverHits += 1
+            }
             result.append(RecommendedDrama(
-                videoID: Int(sqlite3_column_int64(stmt, 0)),
+                videoID: videoID,
                 title: DramaDatabase.text(stmt, 1),
-                cover: DramaDatabase.text(stmt, 2),
+                cover: cover,
                 tags: tags,
                 playCount: Int(sqlite3_column_int64(stmt, 4)),
                 playCountText: DramaDatabase.text(stmt, 5),
                 serializeStatusText: DramaDatabase.text(stmt, 6),
                 contentAccessType: DramaDatabase.text(stmt, 7)))
         }
-        print("CACHE OK[relatedDramas] \(site)#\(dramaID) rows=\(result.count)")
+        print("CACHE OK[relatedDramas] \(site)#\(dramaID) rows=\(result.count) coverLocal=\(localCoverHits)/\(result.count)")
         return result
     }
 

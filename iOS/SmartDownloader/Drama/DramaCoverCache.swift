@@ -79,6 +79,11 @@ final class DramaCoverCache {
     /// 收割 JS 已在站点 WebView 里解密好的封面（blob → canvas → dataURL）按剧集 id 落盘。
     /// 主线程调用（同步写，~几百 KB 原子替换）；与 fetch() 互不覆盖，过期逻辑共用。
     static func storeImageData(site: String, dramaID: String, data: Data) {
+        // 已有未过期缓存不重写：推荐卡封面每轮 poll 都会重复导出，落一次即可
+        if validLocalURL(site: site, dramaID: dramaID) != nil {
+            print("PLAYER_DBG [Entry] cover cache STORE SKIP reason=fresh id=\(dramaID)")
+            return
+        }
         guard UIImage(data: data) != nil else {
             print("PLAYER_DBG [Entry] cover cache HARVEST STORE FAIL id=\(dramaID) err=badData bytes=\(data.count)")
             return
