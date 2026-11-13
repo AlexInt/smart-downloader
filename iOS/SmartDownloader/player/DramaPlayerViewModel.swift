@@ -54,6 +54,7 @@ final class DramaPlayerViewModel: ObservableObject {
         didSet {
             preferences.isMuted = isMuted
             player.isMuted = isMuted
+            AppHaptics.light()   // 静音切换：用户拍板 2026-11-13（卡片/全屏控制层共用本 didSet，init 恢复不触发）
             // 持久化写路径日志：与 init 的读路径日志（VM init muted=）成对，
             // 真机上可完整核对「切换静音 → 落盘 → 重开恢复」链路
             print("PLAYER_DBG [Playback] muted=\(isMuted) → persist + applyPlayer")
@@ -64,6 +65,7 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published var isCleanScreen = false {
         didSet {
             preferences.isCleanScreen = isCleanScreen
+            AppHaptics.light()   // 清屏切换：用户拍板 2026-11-13（卡片/全屏控制层共用本 didSet，init 恢复不触发）
             print("PLAYER_DBG [Playback] cleanScreen=\(isCleanScreen) → persist")
             // 开启清屏（含 init 恢复）时让进度条+时间闪现 1.5s：盲操作前给一次
             // 「带在哪」的空间参照——用户不知道往哪儿按，带外起点整批静默拒绝
