@@ -78,6 +78,10 @@ struct DramaDetailView: View {
     @State private var edgeDragWidth: CGFloat = 0
     /// 简介两行测量：文字实际渲染超过两行才允许出现「展开/收起」（用户拍板 2026-11-13）
     @State private var introOverflow = false
+    /// 截断态文本：前缀使「前缀 + … 展开」恰好 ≤2 行（内联尾部，用户拍板 2026-11-13）——nil = 不溢出
+    @State private var collapsedIntro: String?
+    /// 实测简介文本高度：展开态「收起」按钮的落位依据
+    @State private var introTextHeight: CGFloat = 0
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -395,74 +399,109 @@ struct DramaDetailView: View {
     private var descriptionBlock: some View {
         ZStack(alignment: .topLeading) {
             let height = 36 + descShift
-            Text(vm.intro ?? "")
-                .font(DWFont.cn(13))
-                .lineSpacing(5)
-                .foregroundStyle(DWColor.textBody)
-                .lineLimit(vm.isDescriptionExpanded ? nil : 2)
-                .frame(width: 350, height: height, alignment: .topLeading)
-                .clipped()
-                .designFrame(20, 386, 350, height, alignment: .topLeading)
-                .animation(motion, value: vm.isDescriptionExpanded)
-
-            if !vm.isDescriptionExpanded {
+            if vm.isDescriptionExpanded {
+                Text(vm.intro ?? "")
+                    .font(DWFont.cn(13))
+                    .lineSpacing(5)
+                    .foregroundStyle(DWColor.textBody)
+                    .frame(width: 350, height: height, alignment: .topLeading)
+                    .designFrame(20, 386, 350, height, alignment: .topLeading)
+                    .animation(motion, value: vm.isDescriptionExpanded)
                 if introOverflow {
-                    LinearGradient(colors: [.clear, DWColor.background.opacity(0.95)],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .designFrame(262, 404, 108, 18)
-                        .allowsHitTesting(false)
+                    // 收起：紧跟实测文本底部（原固定 y=471 会压在展开后的文字上）
                     Button { vm.toggleDescription() } label: {
                         HStack(spacing: 2) {
-                            Text("… 展开")
-                            Image(systemName: "chevron.down")
+                            Text("收起")
+                            Image(systemName: "chevron.up")
                         }
                         .font(DWFont.cn(12, .medium))
                         .foregroundStyle(DWColor.gold)
-                        .frame(width: 72, height: 44)
-                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .designFrame(280, 391, 72, 44)
+                    .designFrame(302, 386 + introTextHeight + 4, 68, 24)
                 }
-            } else if introOverflow {
-                Button { vm.toggleDescription() } label: {
-                    HStack(spacing: 2) {
-                        Text("收起")
-                        Image(systemName: "chevron.up")
-                    }
-                    .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.gold)
-                    .frame(width: 68, height: 44)
+            } else if let prefix = collapsedIntro {
+                // 截断态（用户拍板 2026-11-13）：第一行填满换行，第二行行尾内联「… 展开」——
+                // 金色展开与前缀同段排版，恰好落在第二行行尾；点任意处展开；渐隐遮罩/钉死按钮废弃
+                collapsedIntroText(prefix)
+                    .font(DWFont.cn(13))
+                    .lineSpacing(5)
+                    .frame(width: 350, height: height, alignment: .topLeading)
+                    .designFrame(20, 386, 350, height, alignment: .topLeading)
                     .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .designFrame(296, 471, 68, 44)
+                    .onTapGesture { vm.toggleDescription() }
+                    .animation(motion, value: vm.isDescriptionExpanded)
+            } else {
+                // ≤2 行：完整文本，无任何按钮
+                Text(vm.intro ?? "")
+                    .font(DWFont.cn(13))
+                    .lineSpacing(5)
+                    .foregroundStyle(DWColor.textBody)
+                    .frame(width: 350, height: height, alignment: .topLeading)
+                    .designFrame(20, 386, 350, height, alignment: .topLeading)
             }
         }
         .frame(width: 390, height: 840)
-        .onAppear { measureIntroOverflow(vm.intro ?? "") }
+        .onAppear { measureIntro(vm.intro ?? "") }
         .onChange(of: vm.intro) { _, new in
-            measureIntroOverflow(new ?? "")
+            measureIntro(new ?? "")
             // 简介变短（含换集）后不再溢出时自动收回：按钮已隐藏，展开位移不能悬空
             if !introOverflow, vm.isDescriptionExpanded { vm.isDescriptionExpanded = false }
         }
     }
 
-    /// 简介两行溢出测量（View 层职责：渲染度量不走 VM）：与实际渲染同参数
-    ///（宽 350 / 字号 13 / 行距 5），高度超过两行（含行距）即溢出。
-    /// 字体对齐 DWFont.cn 的默认映射（.system → UIFont.systemFont）
-    private func measureIntroOverflow(_ text: String) {
+    /// 截断态渲染：前缀（正文色）+「… 展开」（金色）同段内联
+    private func collapsedIntroText(_ prefix: String) -> Text {
+        let tail = "… 展开"
+        var attr = AttributedString(prefix + tail)
+        attr.foregroundColor = DWColor.textBody
+        if let range = attr.range(of: tail), range.upperBound == attr.endIndex {
+            attr[range].foregroundColor = DWColor.gold
+        }
+        return Text(attr)
+    }
+
+    /// 简介两行溢出测量 + 截断前缀计算（View 层职责：渲染度量不走 VM）：与实际渲染同参数
+    ///（宽 350 / 字号 13 / 行距 5）。溢出时二分求最大前缀使「前缀 + … 展开」恰好 ≤2 行
+    private func measureIntro(_ text: String) {
         let uiFont = UIFont.systemFont(ofSize: 13)
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 5
+        let attrs: [NSAttributedString.Key: Any] = [.font: uiFont, .paragraphStyle: style]
         let bounds = (text as NSString).boundingRect(
             with: CGSize(width: 350, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: uiFont, .paragraphStyle: style],
-            context: nil)
-        let twoLineHeight = uiFont.lineHeight * 2 + 5 + 1   // 两行行高 + 行距 + 容差
-        introOverflow = bounds.height > twoLineHeight
-        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) h=\(Int(bounds.height)) twoLine=\(Int(twoLineHeight)) len=\(text.count)")
+            attributes: attrs, context: nil)
+        let step = uiFont.lineHeight + 5
+        let lineCount = max(1, Int((bounds.height + 2) / step) + 1)
+        introTextHeight = ceil(bounds.height)
+        introOverflow = lineCount > 2
+        if introOverflow {
+            collapsedIntro = Self.truncatedIntroPrefix(text, tail: "… 展开", width: 350, attrs: attrs, step: step)
+        } else {
+            collapsedIntro = nil
+        }
+        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) lines=\(lineCount) h=\(Int(bounds.height)) collapsedLen=\(collapsedIntro.map { $0.count } ?? 0) len=\(text.count)")
+    }
+
+    /// 二分最大前缀长度 L：lines(prefix(L) + tail) ≤ 2。行数按 boundingRect 高度 / 行步进估算
+    private static func truncatedIntroPrefix(_ text: String, tail: String, width: CGFloat,
+                                          attrs: [NSAttributedString.Key: Any], step: CGFloat) -> String {
+        func lines(_ s: String) -> Int {
+            let b = (s as NSString).boundingRect(
+                with: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attrs, context: nil)
+            return max(1, Int((b.height + 2) / step) + 1)
+        }
+        guard lines(text + tail) > 2 else { return text }
+        var lo = 0, hi = text.count, best = 0
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let idx = text.index(text.startIndex, offsetBy: mid, limitedBy: text.endIndex) ?? text.endIndex
+            if lines(String(text[..<idx]) + tail) <= 2 { best = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        return String(text.prefix(best))
     }
 
     // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）
