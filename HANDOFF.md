@@ -48,6 +48,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 横滑结束误暂停修复（11-13） | 调查实证：seekPan `cancelsTouchesInView=false` 且纯横滑时系统分页 pan 不 begin，触摸全程不被取消，SwiftUI tap 收到完整序列，抬手即 TAP→暂停（竖滑那轮已实证同机制，当时只挡了纵向起手）。修复：`endSeekGesture` 开 250ms 吞单击窗（VM `tapSuppressionDeadline`，与长按松手的 `suppressTapUntil` 同机制），卡片 onTapGesture 查询；手势仲裁规则（先起者独占）不变 | 构建 0 error / 0 warning，**待真机回归**（日志锚点：`TAP SKIP reason=justEndedSeek`） |
 | 播放页按片源方向渲染（11-13） | 竖屏持机时横屏片源不再拉满裁切：`AVPlayerItem.presentationSize`（同步非废弃，不新增 async 岛）→ VM `videoIsLandscape`（ready + 周期 tick 刷新，0×0 未知按竖屏处理维持 fill 现状）；`PlayerSurfaceView` 增加 `videoGravity` 参数，片源与持屏方向一致 fill、错配 fit 完整显示（黑边） | 同上（日志锚点：`videoOrientation landscape=true/false`） |
 | 播放器横屏专用控件布局（11-13） | 横屏不再沿用 390×840 画布 contain 缩放（会缩到 ~0.47 控件过小）：新增 `DramaPlayerView.landscapeOverlay`（安全区感知：顶部返回/集数/清屏/静音横排 + 底部进度条横贯 + 2x/toast/加载/错误/未下载居中）；竖屏画布的信息区/点赞收藏/上滑提示横屏不渲染；返回/静音/清屏/集数胶囊/2x/加载/错误/未下载抽成可复用组件两套布局共用，竖屏视觉与坐标不变 | 同上 |
+| 横屏安全区改取窗口值（11-13） | 真机反馈横屏布局混乱：卡片经 UIHostingController + UIScrollView(.never) 宿主链，`geo.safeAreaInsets` 横屏下不可信（0/过期），兜底 10–16pt 远小于灵动岛两侧 47–59pt → 控件压系统区。修复：横屏控件层 insets 改读 keyWindow 的 `safeAreaInsets`（与宿主链无关，旋转由 UIKit 统一更新）；日志 `landscapeInsets` 对账 geo/window 两值定案 | 构建 0 error / 0 warning，**待真机回归**（锚点：`PLAYER_DBG [UIScroll] landscapeInsets … MATCH/MISMATCH`） |
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
