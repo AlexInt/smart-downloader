@@ -78,8 +78,6 @@ struct DramaDetailView: View {
     @State private var edgeDragWidth: CGFloat = 0
     /// 简介两行测量：文字实际渲染超过两行才允许出现「展开/收起」（用户拍板 2026-11-13）
     @State private var introOverflow = false
-    /// 截断态前缀：使「前缀 + … 展开」≤2 行且预留 2 字符漂移余量（用户拍板 2026-11-14）——nil = 不溢出
-    @State private var collapsedIntro: String?
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -402,12 +400,18 @@ struct DramaDetailView: View {
                 .lineSpacing(5)
                 .foregroundStyle(DWColor.textBody)
                 .lineLimit(vm.isDescriptionExpanded ? nil : 2)
-                // 截断态且已算出内联尾部时隐藏底本，避免与上层前缀文本叠影
-                .opacity(vm.isDescriptionExpanded || collapsedIntro == nil ? 1 : 0)
                 .frame(width: 350, height: height, alignment: .topLeading)
                 .clipped()
                 .designFrame(20, 386, 350, height, alignment: .topLeading)
                 .animation(motion, value: vm.isDescriptionExpanded)
+                // 截断态行尾胶囊（用户拍板 2026-11-14）：lineLimit(2) 自然截断时「…」必在
+                // 第二行行尾右缘，胶囊（左缘渐隐 + 金色「… 展开」）覆盖其上 —— 锚定 frame 角、
+                // 零字体度量依赖，不可能漂移；无箭头、渐隐只发生在胶囊左缘 20pt 内
+                .overlay(alignment: .bottomTrailing) {
+                    if !vm.isDescriptionExpanded, introOverflow {
+                        introTailPill
+                    }
+                }
 
             if vm.isDescriptionExpanded {
                 if introOverflow {
@@ -424,19 +428,6 @@ struct DramaDetailView: View {
                     .buttonStyle(.plain)
                     .designFrame(296, 471, 68, 44)
                 }
-            } else if let prefix = collapsedIntro {
-                // 截断态（用户拍板 2026-11-14）：第二行被文字填满，行尾「… 展开」为文字流收尾——
-                // 省略号紧贴最后一个可见字（前缀二分截断 + 2 字符漂移余量），无渐隐遮罩、无箭头图标；
-                // lineLimit(2)+clipped 兑底：估算与渲染有分毫偏差时最多省略号位置微移，不破版
-                collapsedIntroText(prefix)
-                    .font(DWFont.cn(13))
-                    .lineSpacing(5)
-                    .lineLimit(2)
-                    .frame(width: 350, height: height, alignment: .topLeading)
-                    .clipped()
-                    .designFrame(20, 386, 350, height, alignment: .topLeading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { vm.toggleDescription() }
             }
         }
         .frame(width: 390, height: 840)
@@ -448,15 +439,18 @@ struct DramaDetailView: View {
         }
     }
 
-    /// 截断态渲染：前缀（正文色）+「… 展开」（金色）同段内联，尾部即第二行行尾
-    private func collapsedIntroText(_ prefix: String) -> Text {
-        let tail = "… 展开"
-        var attr = AttributedString(prefix + tail)
-        attr.foregroundColor = DWColor.textBody
-        if let range = attr.range(of: tail), range.upperBound == attr.endIndex {
-            attr[range].foregroundColor = DWColor.gold
-        }
-        return Text(attr)
+    /// 截断态行尾胶囊：左缘 20pt 渐隐过渡到背景色，露出「… 展开」；仅自身可点
+    private var introTailPill: some View {
+        Text("… 展开")
+            .font(DWFont.cn(12, .medium))
+            .foregroundStyle(DWColor.gold)
+            .padding(.leading, 22)
+            .padding(.trailing, 3)
+            .frame(height: 18)
+            .background(LinearGradient(colors: [.clear, DWColor.background, DWColor.background],
+                                       startPoint: .leading, endPoint: .trailing))
+            .contentShape(Rectangle())
+            .onTapGesture { vm.toggleDescription() }
     }
 
     /// 简介两行溢出测量（View 层职责：渲染度量不走 VM）：与实际渲染同参数
@@ -473,35 +467,7 @@ struct DramaDetailView: View {
             context: nil)
         let twoLineHeight = uiFont.lineHeight * 2 + 5 + 1   // 两行行高 + 行距 + 容差
         introOverflow = bounds.height > twoLineHeight
-        if introOverflow {
-            collapsedIntro = Self.truncatedIntroPrefix(text, tail: "… 展开", width: 350,
-                                                       font: uiFont, paragraphStyle: style)
-        } else {
-            collapsedIntro = nil
-        }
-        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) h=\(Int(bounds.height)) twoLine=\(Int(twoLineHeight)) collapsedLen=\(collapsedIntro.map { $0.count } ?? 0) len=\(text.count)")
-    }
-
-    /// 二分最大前缀 L：lines(prefix(L) + tail) ≤ 2（行数按 boundingRect 高度/行步进估算），
-    /// 结果回退 2 字符作渲染漂移安全余量——尾部距行尾最多差两个字宽，仍读作「第二行行尾」
-    private static func truncatedIntroPrefix(_ text: String, tail: String, width: CGFloat,
-                                             font: UIFont, paragraphStyle: NSParagraphStyle) -> String {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraphStyle]
-        func lines(_ s: String) -> Int {
-            let b = (s as NSString).boundingRect(
-                with: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: attrs, context: nil)
-            return max(1, Int((b.height + 2) / (font.lineHeight + 5)) + 1)
-        }
-        guard lines(text + tail) > 2 else { return text }
-        var lo = 0, hi = text.count, best = 0
-        while lo <= hi {
-            let mid = (lo + hi) / 2
-            let idx = text.index(text.startIndex, offsetBy: mid, limitedBy: text.endIndex) ?? text.endIndex
-            if lines(String(text[..<idx]) + tail) <= 2 { best = mid; lo = mid + 1 } else { hi = mid - 1 }
-        }
-        return String(text.prefix(max(0, best - 2)))
+        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) h=\(Int(bounds.height)) twoLine=\(Int(twoLineHeight)) len=\(text.count)")
     }
 
     // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）
