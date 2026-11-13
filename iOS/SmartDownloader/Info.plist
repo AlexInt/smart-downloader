@@ -38,11 +38,11 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- 锁竖屏：全屏横播由播放器容器 transform 自转实现（抖音/ZFPlayer 同款路线），
+	     系统界面方向永不翻转——旋转布局振荡/跳变整类问题随之消失 -->
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>
