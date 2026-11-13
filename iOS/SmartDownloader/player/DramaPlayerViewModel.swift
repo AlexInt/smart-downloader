@@ -15,6 +15,12 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 置位点 = seekPan .began（起手约 10pt 位移），不是首个有效 .changed（见 beginSeekGesture）。
     /// 非渲染状态，故意不用 @Published（避免每次 seek 触发无意义的视图刷新）
     private(set) var isSeekGestureActive = false
+    /// seek 独占的触摸抬手后的吞单击窗口（与卡片长按松手的 250ms 抑制窗同机制）：
+    /// seekPan 在 UIKit 层识别且 `cancelsTouchesInView = false`，纯横向滑动时系统分页 pan
+    /// 不 begin、触摸全程不被取消，SwiftUI tap 会收到完整触摸序列——抬手即 TAP → 误暂停
+    /// （横滑结束大概率暂停的调查结论，2026-11-13）。endSeekGesture 开窗，卡片 onTapGesture 查询。
+    /// 非渲染状态，故意不用 @Published。
+    private(set) var tapSuppressionDeadline: Date = .distantPast
     /// 清屏下的瞬态进度 HUD：seek 实际生效时置 true（进度条+时间淡入），抬手后停留
     /// 800ms 再淡出（新 seek 会取消旧的淡出任务）。与 isSeekGestureActive 分开——
     /// 那是手势仲裁闸门（非渲染），这是纯 UI 显示状态，必须 @Published 驱动视图。
@@ -238,6 +244,9 @@ final class DramaPlayerViewModel: ObservableObject {
     func endSeekGesture() {
         guard isSeekGestureActive else { return }
         isSeekGestureActive = false
+        // seek 独占过的触摸抬手：开吞单击窗，吞掉 SwiftUI tap 在横滑抬手时的误触发
+        //（不设窗则每次横滑结束大概率误暂停，调查结论见 tapSuppressionDeadline 注释）
+        tapSuppressionDeadline = Date().addingTimeInterval(0.25)
         scheduleScrubLinger()
         // 拖完就落盘：拖到片尾直接退出也应当记住位置（未起手势时为空操作）
         progressTracker?.flush()

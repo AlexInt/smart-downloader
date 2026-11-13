@@ -132,6 +132,16 @@ struct DramaPlayerView: View {
                 print("PLAYER_DBG [CHECK] TAP SKIP reason=justEndedLongPress")
                 return
             }
+            // seek 独占的触摸（横滑）抬手：吞掉紧随的单击，否则每次横滑结束大概率误暂停
+            //（调查结论：seekPan cancelsTouchesInView=false，纯横滑时触摸不被取消，tap 全程存活）
+            if Date() < playback.tapSuppressionDeadline {
+                print("PLAYER_DBG [CHECK] TAP SKIP reason=justEndedSeek")
+                return
+            }
+            if playback.isSeekGestureActive {
+                print("PLAYER_DBG [CHECK] TAP SKIP reason=seekGestureActive")
+                return
+            }
             print("PLAYER_DBG [CHECK] TAP → togglePlayback")
             playback.togglePlayback()
         }
