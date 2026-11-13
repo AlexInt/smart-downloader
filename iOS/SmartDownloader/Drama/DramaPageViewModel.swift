@@ -12,6 +12,8 @@ final class DramaPageViewModel: ObservableObject {
     private let favorites = DramaFavorites()
     /// 缓存路径打开的页面没有 session：下载/刷新时现建（每集下载前仍会重调接口取新鲜直链）
     private var session: DramaSession?
+    /// 封面远程 URL（缓存命中的展示 URL 是本地文件，重试拉取需要记住远程源头）
+    private var remoteCoverURL: URL?
 
     @Published private(set) var loading = true
     @Published private(set) var loadError: String?
@@ -23,6 +25,29 @@ final class DramaPageViewModel: ObservableObject {
     @Published private(set) var fromCache = false
     /// 触发 onChange 重载的版本号（重试按钮）
     @Published private(set) var reloadID = UUID()
+    /// 封面展示路径（用户拍板 2026-11-13）：按剧集 id 的本地缓存（≤15 天）直接用文件 URL
+    /// 不联网；无缓存时远程 URL 兕底展示并后台拉取落盘，成功后切到本地文件；
+    /// 拉取失败保留兕底/旧文件。三个赋值点（缓存预填/收割回填/刷新）统一走这里。
+    private func applyCover(_ remoteString: String?) {
+        guard let remoteString, let remote = URL(string: remoteString) else { return }
+        remoteCoverURL = remote
+        if let local = DramaCoverCache.validLocalURL(site: target.site, dramaID: target.dramaID) {
+            if coverURL != local {
+                print("PLAYER_DBG [Entry] cover use cache id=\(target.dramaID)")
+                coverURL = local
+            }
+            return
+        }
+        if coverURL != remote {
+            coverURL = remote
+        }
+        DramaCoverCache.fetch(site: target.site, dramaID: target.dramaID, remote: remote) { [weak self] local in
+            guard let self, let local else { return }
+            self.coverURL = local
+            self.coverReloadToken += 1   // 换 id 重建 AsyncImage 指向本地文件
+        }
+    }
+
     /// 头部元数据（缓存 + 后台收割）
     @Published private(set) var coverURL: URL?
     @Published private(set) var intro: String?
@@ -159,10 +184,10 @@ final class DramaPageViewModel: ObservableObject {
         showToast(isFavorite ? "已加入收藏" : "已取消收藏")
     }
 
-    /// 封面占位「点击重试」：有 URL 时换 token 让 AsyncImage 重建；
-    /// 连 URL 都没有时清掉进程内去重，重新收割元数据再回填头部
+    /// 封面占位「点击重试」：重新走一次封面缓存拉取（有本地旧文件时拉取失败也保留旧图）；
+    /// 连远程 URL 都没有时清掉进程内去重，重新收割元数据再回填头部
     func retryCover() {
-        guard coverURL != nil else {
+        guard let remote = remoteCoverURL else {
             DramaMetaHarvester.harvestedKeys.remove(target.id)
             DramaMetaHarvester.harvest(target: target) { [weak self] in
                 self?.preloadHeaderFromCache()
@@ -170,6 +195,11 @@ final class DramaPageViewModel: ObservableObject {
             return
         }
         coverReloadToken += 1
+        DramaCoverCache.fetch(site: target.site, dramaID: target.dramaID, remote: remote) { [weak self] local in
+            guard let self, let local else { return }
+            self.coverURL = local
+            self.coverReloadToken += 1   // 换 id 重建 AsyncImage，指向本地文件
+        }
     }
 
     /// 2 秒后自动消失（用户指定）。取消旧 WorkItem + UUID 令牌：连续提示时旧任务
@@ -196,8 +226,8 @@ final class DramaPageViewModel: ObservableObject {
     /// 重试按钮：换 reload 版本号触发 onChange 重新加载
     func reload() { reloadID = UUID() }
 
-    /// ↻ 强制更新：走网络拉取并按集 ID 合并新集（保留下载标记）
-    func refresh() { fetchAndCache() }
+    /// ↻ 强制更新：走网络拉取并按集 ID 合并新集（保留下载标记）；详情采集也强制重抓
+    func refresh() { fetchAndCache(forceHarvest: true) }
 
     func selectAll() { selected = Set(selectableEpisodes.map(\.id)) }
     func clearSelection() { selected.removeAll() }
@@ -330,7 +360,7 @@ final class DramaPageViewModel: ObservableObject {
     /// 缓存里已有的封面/简介/标签先上头部（无网络也能显示）
     func preloadHeaderFromCache() {
         if let entry = DramaCache.load(site: target.site, dramaID: target.dramaID) {
-            if let cover = entry.cover, let url = URL(string: cover) { coverURL = url }
+            applyCover(entry.cover)
             if let introText = entry.intro, !introText.isEmpty { intro = introText }
             // 空串 = 采集失败，不是「已缓存」：归 nil 才能让 harvestIfNeeded 继续收割
             tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
@@ -352,7 +382,7 @@ final class DramaPageViewModel: ObservableObject {
         }
     }
 
-    private func fetchAndCache() {
+    private func fetchAndCache(forceHarvest: Bool = false) {
         loading = true
         loadError = nil
         let session = DramaSession(target: target)
@@ -366,7 +396,7 @@ final class DramaPageViewModel: ObservableObject {
                 DramaCache.saveInfo(site: self.target.site, dramaID: self.target.dramaID, info: info)
                 self.applyLibraryState(for: info)
                 self.refreshRecommendations()
-                self.harvestIfNeeded()
+                self.harvestIfNeeded(force: forceHarvest)
             case .failure(let error):
                 // 有缓存时网络失败不白屏：回退缓存继续用
                 if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID),
@@ -401,20 +431,27 @@ final class DramaPageViewModel: ObservableObject {
             ?? info.episodes.first?.sort
     }
 
-    /// 每次进剧集页都后台抓一次详情接口并整包落库（不再只在缺封面/简介时抓）：
-    /// 播放量/点赞数/推荐剧/服务端观看进度这些字段只有重抓才会更新。
+    /// 每次进剧集页的后台采集闸门（用户拍板 2026-11-13）：详情整包 15 天内抓过就不再
+    /// 重抓（cover/intro/推荐/档案全在本地库，离线可用）——不再「每次进页都请求」；
+    /// 过期或从未抓过才触发；↻ 刷新按钮 force 绕过闸门强制更新。
     /// 同一次访问内只抓一次（缓存分支与网络分支都会调到这里）。
-    private func harvestIfNeeded() {
+    private func harvestIfNeeded(force: Bool = false) {
         guard !hasHarvestedThisVisit else {
             print("PLAYER_DBG [Entry] harvest SKIP reason=alreadyThisVisit")
             return
         }
         hasHarvestedThisVisit = true
-        print("PLAYER_DBG [Entry] harvest trigger reason=pageEntry cover=\(coverURL != nil) intro=\(intro != nil) tags=\(tags != nil)")
+        if !force, let fetchedAt = DramaCache.detailFetchedAt(site: target.site, dramaID: target.dramaID),
+           Date().timeIntervalSince(fetchedAt) < DramaCoverCache.maxAge {
+            let days = Int(Date().timeIntervalSince(fetchedAt) / 86400)
+            print("PLAYER_DBG [Entry] harvest SKIP reason=fresh \(days)d<=15d")
+            return
+        }
+        print("PLAYER_DBG [Entry] harvest trigger reason=\(force ? "forceRefresh" : "staleOrMissing") cover=\(coverURL != nil) intro=\(intro != nil) tags=\(tags != nil)")
         DramaMetaHarvester.harvest(target: target) { [weak self] in
             guard let self else { return }
             if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID) {
-                if let cover = entry.cover, let url = URL(string: cover) { self.coverURL = url }
+                applyCover(entry.cover)
                 if let introText = entry.intro, !introText.isEmpty { self.intro = introText }
                 self.tags = entry.tags.flatMap { $0.isEmpty ? nil : $0 }
                 self.tagsSource = entry.tagsSource

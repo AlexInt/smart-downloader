@@ -76,6 +76,8 @@ struct DramaDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 左缘右滑返回的跟手位移（系统 pop 手势在导航栏隐藏时失效，这里自己补）
     @State private var edgeDragWidth: CGFloat = 0
+    /// 简介两行测量：文字实际渲染超过两行才允许出现「展开/收起」（用户拍板 2026-11-13）
+    @State private var introOverflow = false
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -404,23 +406,25 @@ struct DramaDetailView: View {
                 .animation(motion, value: vm.isDescriptionExpanded)
 
             if !vm.isDescriptionExpanded {
-                LinearGradient(colors: [.clear, DWColor.background.opacity(0.95)],
-                               startPoint: .leading, endPoint: .trailing)
-                    .designFrame(262, 404, 108, 18)
-                    .allowsHitTesting(false)
-                Button { vm.toggleDescription() } label: {
-                    HStack(spacing: 2) {
-                        Text("… 展开")
-                        Image(systemName: "chevron.down")
+                if introOverflow {
+                    LinearGradient(colors: [.clear, DWColor.background.opacity(0.95)],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .designFrame(262, 404, 108, 18)
+                        .allowsHitTesting(false)
+                    Button { vm.toggleDescription() } label: {
+                        HStack(spacing: 2) {
+                            Text("… 展开")
+                            Image(systemName: "chevron.down")
+                        }
+                        .font(DWFont.cn(12, .medium))
+                        .foregroundStyle(DWColor.gold)
+                        .frame(width: 72, height: 44)
+                        .contentShape(Rectangle())
                     }
-                    .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.gold)
-                    .frame(width: 72, height: 44)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .designFrame(280, 391, 72, 44)
                 }
-                .buttonStyle(.plain)
-                .designFrame(280, 391, 72, 44)
-            } else {
+            } else if introOverflow {
                 Button { vm.toggleDescription() } label: {
                     HStack(spacing: 2) {
                         Text("收起")
@@ -436,6 +440,29 @@ struct DramaDetailView: View {
             }
         }
         .frame(width: 390, height: 840)
+        .onAppear { measureIntroOverflow(vm.intro ?? "") }
+        .onChange(of: vm.intro) { _, new in
+            measureIntroOverflow(new ?? "")
+            // 简介变短（含换集）后不再溢出时自动收回：按钮已隐藏，展开位移不能悬空
+            if !introOverflow, vm.isDescriptionExpanded { vm.isDescriptionExpanded = false }
+        }
+    }
+
+    /// 简介两行溢出测量（View 层职责：渲染度量不走 VM）：与实际渲染同参数
+    ///（宽 350 / 字号 13 / 行距 5），高度超过两行（含行距）即溢出。
+    /// 字体对齐 DWFont.cn 的默认映射（.system → UIFont.systemFont）
+    private func measureIntroOverflow(_ text: String) {
+        let uiFont = UIFont.systemFont(ofSize: 13)
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 5
+        let bounds = (text as NSString).boundingRect(
+            with: CGSize(width: 350, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: uiFont, .paragraphStyle: style],
+            context: nil)
+        let twoLineHeight = uiFont.lineHeight * 2 + 5 + 1   // 两行行高 + 行距 + 容差
+        introOverflow = bounds.height > twoLineHeight
+        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) h=\(Int(bounds.height)) twoLine=\(Int(twoLineHeight)) len=\(text.count)")
     }
 
     // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）

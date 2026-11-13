@@ -191,6 +191,27 @@ enum DramaCache {
                      tagsSource: tagsSource, episodes: episodes, fetchedAt: fetchedAt)
     }
 
+    /// 详情整包最近一次抓取时间（detail_fetched_at 列，ISO8601）；从未抓过/列为空返回 nil。
+    /// 新鲜度判定用：15 天内不重抓详情（用户拍板 2026-11-13）， harvesting 据此闸门
+    static func detailFetchedAt(site: String, dramaID: String) -> Date? {
+        guard let db = openDB() else { return nil }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        let sql = "SELECT detail_fetched_at FROM drama_cache WHERE site=? AND drama_id=?;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return nil
+        }
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
+        var date: Date?
+        if sqlite3_step(stmt) == SQLITE_ROW, let raw = DramaDatabase.text(stmt, 0) {
+            date = ISO8601DateFormatter().date(from: raw)
+        }
+        sqlite3_finalize(stmt)
+        return date
+    }
+
     // MARK: 写 —— 剧集信息 + 集数列表（合并式 upsert，保留下载状态）
 
     /// 网络刷新返回的剧集信息落库；集数按集 ID 合并式 upsert：
