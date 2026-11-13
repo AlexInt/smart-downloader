@@ -97,6 +97,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 3 | 相邻卡片首帧海报（渐变占位 → AVAssetImageGenerator + 磁盘缓存，可复用预热池 asset） | 中 |
 | 4 | 本地推荐算法（接入点已留 §4.6） | 按需 |
 | 5 | 「长按 2x 中途继续上滑切集」手势竞争观察（离散手势回卡片后未专测此组合） | 低 |
+| 6 | **播放器视图壳 UIKit+Combine 化**（已立项，用户拍板后续有时间做）：范围=仅视图壳（PlayerFeedView / PlayerPagingScrollView / DramaPlayerView / PlayerSurfaceView / DramaPlayerContainer，约 1100 行）换成 UIKit；手势走原生 UIGestureRecognizer（delegate 链显式可控），安全区走 safeAreaLayoutGuide，每卡省一个 UIHostingController。**VM/Service/Model（GCD + ObservableObject/Combine）零改动**，UIKit 直接订阅同一批 @Published。代价：重新挣回 6 条手势仲裁约束 + 清屏/HUD/toast/秒开行为等价、designFrame/DWColor 出 UIColor/UIFont 适配层、AGENTS 加「player 视图层 UIKit」例外约定；动工时用 propose 模式出方案再实施 | 中 |
 
 ## 6. 待查 / 已知问题
 
