@@ -35,6 +35,10 @@ final class DramaPlayerViewModel: ObservableObject {
     /// spinner 延迟显示：加载超过 800ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
     /// （800ms 依真机实测定：HIT 就绪 642–871ms、入口 MISS 1008–1177ms，原 300ms 每滑必闪）
     @Published private(set) var isLoadingSlow = false
+    /// 当前集视频画面方向：true = 横屏（宽>高）。来源 `AVPlayerItem.presentationSize`
+    /// （同步、非废弃 API，HLS 首帧解码后有效）；0×0 = 未知，保持 false 按竖屏处理（维持拉满现状）。
+    /// 渲染 gravity 由卡片按「片源方向与持屏方向是否一致」选择（DramaPlayerView.surfaceGravity）。
+    @Published private(set) var videoIsLandscape = false
 
     @Published var isMuted = false {
         didSet {
@@ -344,6 +348,7 @@ final class DramaPlayerViewModel: ObservableObject {
             case .ready:
                 self.isReady = true
                 self.cancelSpinnerDelay()
+                self.refreshVideoOrientation(reason: "ready")
                 // 就绪即尝试续播（时长未稳时跟踪器会在首个 tick 再试一次）
                 _ = self.progressTracker?.resumeIfNeeded()
                 let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -470,6 +475,7 @@ final class DramaPlayerViewModel: ObservableObject {
         durationText = Self.format(total)
         remainingTimeText = "-" + Self.format(max(0, total - seconds))
         progress = min(max(seconds / total, 0), 1)
+        refreshVideoOrientation(reason: "tick")
         // 每 2 秒确认一次播放器确实在推进，区分「没播」和「画面没刷新」
         let second = Int(seconds)
         if second % 2 == 0, second != lastLoggedSecond {
@@ -479,10 +485,23 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     private func resetTimes() {
+        // 新 item 方向未知：先按竖屏（fill 现状），presentationSize 就绪后由 refreshVideoOrientation 修正
+        videoIsLandscape = false
         currentTimeText = "00:00"
         durationText = "00:00"
         remainingTimeText = "-00:00"
         progress = 0
+    }
+
+    /// 片源方向刷新：presentationSize 有效（宽高 > 0）才更新，未知不动。
+    /// 读取点 = ready 与 0.25s 周期回调；横屏片源在竖屏持机要 fit 完整显示（用户要求：不统一竖屏拉满）。
+    private func refreshVideoOrientation(reason: String) {
+        let size = player.currentItem?.presentationSize ?? .zero
+        guard size.width > 0, size.height > 0 else { return }
+        let landscape = size.width > size.height
+        guard landscape != videoIsLandscape else { return }
+        videoIsLandscape = landscape
+        print("PLAYER_DBG [Playback] videoOrientation landscape=\(landscape) size=\(Int(size.width))x\(Int(size.height)) reason=\(reason)")
     }
 
     private static func format(_ seconds: Double) -> String {

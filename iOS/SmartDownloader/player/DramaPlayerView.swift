@@ -53,10 +53,13 @@ struct DramaPlayerView: View {
             // UI 层用 contain：宁可留一点相对空隙，也不把返回按钮 / 底部提示裁出屏幕
             let scale = min(geo.size.width / DWLayout.designWidth,
                             geo.size.height / DWLayout.designHeight)
+            // 持屏方向（宽>高 = 横屏）：决定渲染 gravity 与（横屏适配后）控件布局分支
+            let screenIsLandscape = geo.size.width > geo.size.height
 
             ZStack(alignment: .topLeading) {
-                // ── ① 视频：只有当前页绑定播放器 ───────────────
-                PlayerSurfaceView(player: isActive ? player : nil)
+                // ── ① 视频：只有当前页绑定播放器；gravity 见 surfaceGravity ──
+                PlayerSurfaceView(player: isActive ? player : nil,
+                                  videoGravity: surfaceGravity(screenIsLandscape: screenIsLandscape))
                     .opacity(isActive && playback.isReady ? 1 : 0)
                     .animation(.easeOut(duration: 0.15), value: playback.isReady)
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -508,6 +511,13 @@ struct DramaPlayerView: View {
         // 从底部上升 + 由浅变深：隐藏态下偏 12pt，显示时归零，与透明度共用同一动画
         .offset(y: isProgressVisible ? 0 : 12)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
+    }
+
+    /// 渲染 gravity：片源方向与持屏方向一致才拉满（fill），错配则完整显示（fit，留黑边）。
+    /// 竖屏片源 + 竖屏持机 / 横屏片源 + 横屏持机 = fill；错配 = fit。
+    /// presentationSize 未知（0×0）时 videoIsLandscape=false，与竖屏片源同等对待 → 竖屏持机保持 fill 现状。
+    private func surfaceGravity(screenIsLandscape: Bool) -> AVLayerVideoGravity {
+        playback.videoIsLandscape == screenIsLandscape ? .resizeAspectFill : .resizeAspect
     }
 }
 
