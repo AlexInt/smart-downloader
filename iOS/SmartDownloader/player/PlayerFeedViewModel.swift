@@ -24,6 +24,8 @@ final class PlayerFeedViewModel: ObservableObject {
     private var settleGeneration = 0
     private var configured = false
     private var endToastShown = false
+    /// 姿态判稳触发器（横屏片源稳定转横自动进全屏），configure 创建、stop 停止
+    private var orientationTrigger: PlayerOrientationTrigger?
 
     init() {
         playback = DramaPlayerViewModel(playerService: playerService)
@@ -54,6 +56,10 @@ final class PlayerFeedViewModel: ObservableObject {
             print("PLAYER_DBG [VM] preload entry sort=\(current.sort) neighbors=\(neighbors.map(\.sort))")
         }
         print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil")")
+        // 姿态触发：设备稳定转横自动进全屏（仅横屏片源），稳定回竖自动退出
+        let trigger = PlayerOrientationTrigger(playback: playback)
+        trigger.start()
+        orientationTrigger = trigger
     }
 
     /// 滚动停稳防抖入口（View 的 onAppear/onChange 转发）：
@@ -150,6 +156,9 @@ final class PlayerFeedViewModel: ObservableObject {
 
     func stop() {
         print("PLAYER_DBG [VM] stop current=\(currentSort.map(String.init) ?? "nil") slots=\(slots.count)")
+        // 姿态触发随播放页销毁停止
+        orientationTrigger?.stop()
+        orientationTrigger = nil
         // 停稳防抖与在飞加载一并作废
         settleWork?.cancel()
         settleWork = nil
