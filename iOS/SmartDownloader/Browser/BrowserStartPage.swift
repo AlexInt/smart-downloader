@@ -2,9 +2,11 @@ import Foundation
 
 /// 浏览区起始页决策 + 「上次访问页」持久化（Browser 域 Service：只做读写与纯决策）。
 ///
-/// 优先级：**设置页选中的默认快捷站点 > 上次访问页 > 空白页**。
-/// 默认站点按 `QuickLink.id` 查当前列表，所以编辑网址后下次启动自动跟随新地址、
-/// 条目被删后自动回落，不会留下指向旧条目的悬空地址。
+/// 优先级：**默认快捷站点 > 上次访问页 > 空白页**。
+/// 默认站点由 `QuickLinkStore.resolvedDefaultID(in:)` 解析：用户从没点过设置页的圆圈时
+/// **自动选中列表第一项**，显式取消后才回落到「恢复上次访问页」。
+/// 按 `QuickLink.id` 查当前列表，所以编辑网址后下次启动自动跟随新地址、
+/// 显式选中的条目被删后不猜别的站点，不留悬空地址。
 ///
 /// 抽到这里之后 `BrowserView` / `WebViewContainer.Coordinator` 不再直接碰 UserDefaults
 /// （AGENTS.md「iOS 架构约定」第 5 条：View 层不得出现 `UserDefaults.standard`）。

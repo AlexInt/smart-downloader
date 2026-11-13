@@ -763,7 +763,7 @@ ALTER TABLE drama_cache ADD COLUMN tags TEXT;</code></pre>
     <tr><th>键</th><th>值类型</th><th>内容</th><th>维护方</th></tr>
     <tr><td class="name">Settings.launchTab</td><td class="type">Int</td><td>启动落在哪个 tab（MainTab.rawValue：0 浏览 / 1 下载 / 2 设置），缺省 = 下载</td><td>AppLaunchPreferences</td></tr>
     <tr><td class="name">Settings.quickLinks</td><td class="type">Data(JSON)</td><td>浏览页快捷站点数组 <code>[{id: UUID, name: key, url: value}]</code>；从未配置时回落内置默认一项，删空则保持空</td><td>QuickLinkStore</td></tr>
-    <tr><td class="name">Settings.defaultQuickLinkID</td><td class="type">String</td><td>被选为「浏览区默认加载」的快捷站点 UUID 字符串；缺省 / 删除 = 未设默认，回落恢复上次访问页。单独存 id 而非往列表 JSON 塞布尔值：编辑网址不改 id、删条目自动失效、旧数据无需迁移</td><td>QuickLinkStore</td></tr>
+    <tr><td class="name">Settings.defaultQuickLinkID</td><td class="type">String</td><td>被选为「浏览区默认加载」的快捷站点 UUID 字符串。<b>三态</b>：<code>key 不存在</code> = 用户从没点过圆圈，<b>自动选中列表第一项</b>；<code>空串</code> = 点过又取消（显式无默认），回落恢复上次访问页；<code>合法 UUID</code> = 显式选中。取消时写空串而非删 key，否则两种 nil 无法区分。单独存 id 而非往列表 JSON 塞布尔值：编辑网址不改 id、删条目不猜别的站点、旧数据无需迁移</td><td>QuickLinkStore</td></tr>
     <tr><td class="name">DramaPlayer.muted</td><td class="type">Bool</td><td>播放器静音（全局开关）</td><td>PlayerPreferences</td></tr>
     <tr><td class="name">DramaPlayer.cleanScreen</td><td class="type">Bool</td><td>清屏模式（全局开关）</td><td>PlayerPreferences</td></tr>
     <tr><td class="name">DramaPlayer.showRemainingTime</td><td class="type">Bool</td><td>进度条右侧显示剩余时间还是总时长（全局开关）</td><td>PlayerPreferences</td></tr>

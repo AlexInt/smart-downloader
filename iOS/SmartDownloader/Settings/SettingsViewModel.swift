@@ -13,7 +13,9 @@ final class SettingsViewModel: ObservableObject {
     /// 浏览页网址栏下方的快捷站点，数组顺序即 label 显示顺序；改完由浏览页切回时重新读取
     @Published private(set) var links: [QuickLink]
 
-    /// 被选为「浏览区默认加载」的站点 id（单选；nil = 未设默认，回落恢复上次访问页）
+    /// **当前生效**的默认站点 id（用于 UI 勾选态）：
+    /// 用户从没点过圆圈时自动等于列表第一项，显式取消后为 nil。
+    /// 与存储里的 `QuickLinkStore.defaultLinkID`（显式选择）不是一回事，勿混用。
     @Published private(set) var defaultLinkID: UUID?
 
     /// 编辑器草稿：非 nil 即弹出新增/编辑 sheet，取消或完成都置回 nil
@@ -28,26 +30,33 @@ final class SettingsViewModel: ObservableObject {
         // init 内的赋值不触发 didSet，不会把刚读出来的值再写回去
         self.launchTab = launchPreferences.launchTab
         self.links = linkStore.load()
-        self.defaultLinkID = linkStore.defaultLinkID
+        // 从没点过圆圈时，这里解析出的就是列表第一项（UI 第一行的圆圈直接是选中态）
+        self.defaultLinkID = linkStore.resolvedDefaultID(in: links)
     }
 
     // MARK: - 默认加载站点
 
     func isDefault(_ link: QuickLink) -> Bool { defaultLinkID == link.id }
 
-    /// 单选：点别的直接覆盖，点已默认的那条则取消（回落恢复上次访问页）。
-    /// 选中的条目就是下次浏览区加载的网页页面（见 Browser/BrowserStartPage.swift）。
+    /// 单选：点别的直接覆盖，点已默认的那条 = 显式取消（回落恢复上次访问页）。
+    /// 「显式取消」和「从没点过」必须分开：后者会自动选中第一项。
     func toggleDefault(_ link: QuickLink) {
         let next: UUID? = defaultLinkID == link.id ? nil : link.id
         defaultLinkID = next
         linkStore.defaultLinkID = next
     }
 
-    /// 默认条目被删 / 列表被重置后清掉悬空 id，避免下次启动静默回落到旧页面
-    private func clearStaleDefaultIfNeeded() {
-        guard let id = defaultLinkID, !links.contains(where: { $0.id == id }) else { return }
-        defaultLinkID = nil
-        linkStore.defaultLinkID = nil
+    /// 列表变化后重算生效默认：
+    /// - 从没配置过 → 自动跟随新的第一项；
+    /// - 显式选中的条目被删 → 清成「显式无默认」，避免以后列表变化又冒出一个默认；
+    /// - 显式取消 / 选中项仍在 → 保持。
+    private func refreshEffectiveDefault() {
+        if linkStore.hasConfiguredDefault,
+           let id = linkStore.defaultLinkID,
+           !links.contains(where: { $0.id == id }) {
+            linkStore.defaultLinkID = nil
+        }
+        defaultLinkID = linkStore.resolvedDefaultID(in: links)
     }
 
     // MARK: - 意图
@@ -76,6 +85,8 @@ final class SettingsViewModel: ObservableObject {
             links.append(draft)
         }
         persistLinks()
+        // 列表从空变非空时，从没配置过的用户应自动把新增的第一项当默认
+        refreshEffectiveDefault()
         self.draft = nil
     }
 
@@ -89,7 +100,7 @@ final class SettingsViewModel: ObservableObject {
     func remove(_ link: QuickLink) {
         links.removeAll { $0.id == link.id }
         persistLinks()
-        clearStaleDefaultIfNeeded()
+        refreshEffectiveDefault()
     }
 
     /// 恢复内置默认列表（用户删空/改乱后的一键回退入口）。
@@ -97,7 +108,7 @@ final class SettingsViewModel: ObservableObject {
     func restoreDefaults() {
         links = QuickLinkStore.defaultLinks
         persistLinks()
-        clearStaleDefaultIfNeeded()
+        refreshEffectiveDefault()
     }
 
     // MARK: - 私有
