@@ -165,12 +165,14 @@ View → ViewModel → Service → 系统能力 / Model
 - 新 Swift 文件放进 `SmartDownloader/` 自动参与编译；资源目录（Media.xcassets）同理。
 - **Info.plist 在同步文件夹内**：pbxproj 已用 `PBXFileSystemSynchronizedBuildFileExceptionSet` 排除它，否则与 `INFOPLIST_FILE` 冲突报 "Multiple commands produce Info.plist"。
 - App 图标：`ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`。**只有一个 universal 槽位（`sd.png`，1024×1024、无 alpha、无圆角）**，圆角与遮罩全部交给系统；不要再拆 dark/tinted 变体（设计稿只出一版）。
+  **成图是「整幅纸」而不是设计稿节点原样**：设计稿 `19:278` 里有墨底 `#14171A` 描边纸面板（r160），直接导出会得到「深角 + 圆角纸面」，套上系统遮罩就是双重圆角。正确做法是把 720² 纸面板整块放大铺满 1024²（k = 1024/720 ≈ 1.4222），笔触、朱砂印、印文全部按同一 k 跟随纸面等比放大——**只放大不改摆位**，印与记号、印与纸边的关系才和设计稿一致。按此规则出的图：印面 836→939，距边 85，方印右下角到遮罩弧心 (795,795) 约 204 < 229，完整不被切。合成工序在 `docs/design/appicon-src/compose_paper_icon.swift`（同目录存三个 scale=2 导出的图层，`swift compose_paper_icon.swift <out.png>` 可逐字节复现 `sd.png`）。
 - **品牌资产的唯一来源是设计稿**（Ardot 文件 `746972112461422`）：App Icon = 节点 `19:278 App Icon · 1024×1024`（墨底 `#14171A` + 纸面板 `19:363` r160 + 一笔墨主体 `19:364` + 朱砂小印 `19:367`/印文「观」`19:368`）；品牌符号 = 节点 `19:356 一笔墨 · 品牌符号`。改图先改设计稿，再 `export_nodes`（scale 1 导出即 1024）；`19:363` 只是那块纸面板，单导它是张空白纸。**禁止在代码里重画记号**——曾用脚本自绘了一个「下箭头」图标，与设计稿的一笔墨完全不是一回事，返工一次。
-- 启动屏分两层：系统层是 `UILaunchScreen → UIColorName = LaunchBackground`（颜色资源，纸底 `#F2F0EA`）；应用层 `iOS/LaunchSplashView.swift` 在同一纸底上把 `LaunchLogo` 淡入。`LaunchLogo` 由 `19:356` 导出后**只做取景不改图形**（裁到 alpha 包围盒、居中放进 1024 方画布，图形高度占 78%），保留 alpha。**不要退回整屏 PNG 启动图**：固定分辨率铺不满所有机型，边缘会露白。
-- App 显示名在 `Info.plist` 的 `CFBundleDisplayName`，改这一个字符串即可，不动工程名/bundle id。注意设计稿朱砂印上的印文是「观」（产品名「观影」），当前显示名为 `DramaWave` —— 两者未对齐，待用户定名。
+- 启动屏分两层：系统层是 `UILaunchScreen → UIColorName = LaunchBackground`（颜色资源，纸底 `#F2F0EA`）；应用层 `iOS/LaunchSplashView.swift` 在同一纸底上把 `LaunchLogo` 淡入。`LaunchLogo` 由 `19:356` 导出后**只做取景不改图形**（裁到 alpha 包围盒、居中放进 1024 方画布，图形高度占 72%，对齐设计稿 86/120），保留 alpha。**不要退回整屏 PNG 启动图**：固定分辨率铺不满所有机型，边缘会露白。
+- App 显示名在 `Info.plist` 的 `CFBundleDisplayName`，改这一个字符串即可，不动工程名/bundle id。当前为 `观影`，与设计稿 `19:359` 应用名、`19:368` 朱砂印文一致。
 - 底部 tab bar 是 `App.swift` 里的 `MainTabBar`（独立 View，不是 App 内联）。**`colorScheme` 必须由 View 树内的 View 读取**：写在 `App`/Scene 层读到的是初始值，实测深色外观下仍判成 light，栏会一直停在纸底。
 - iOS 26 符号集没有 `compass` SF Symbol；三个 tab 统一线稿（`safari` / `arrow.down.circle` / `person`），别把浏览换回 `safari.fill`（实心图标与另两个不同重，底部会一头沉）。`webView.downloadDelegate` 是 macOS-only，iOS 上 delegate 挂在 `WKDownload` 对象上。
 - 真机自动冒烟：`xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader -autoTestDownload "<m3u8URL>"`。
+- **模拟器换 App 图标不会立刻刷新**：SpringBoard 缓存旧图标，`simctl install` 覆盖装也刷不掉。必须 `simctl uninstall` → `simctl shutdown` → `simctl boot` → 再 `install`，否则主屏截图里看到的还是上一版（曾据此误判成合成出错）。图标本身对不对，直接看构建产物 `SmartDownloader.app/AppIcon60x60@2x.png` 最快。
 
 ## 文档与提交
 
