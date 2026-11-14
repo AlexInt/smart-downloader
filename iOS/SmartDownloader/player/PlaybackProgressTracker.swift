@@ -71,6 +71,12 @@ final class PlaybackProgressTracker {
     /// 关键时机落库：暂停 / 拖完 seek / 进后台。值与上次落库相同就不写库（避免空转）
     func flush() {
         guard let value = current() else { return }
+        if let old = pending, abs(old.seconds - value.seconds) >= 0.5 {
+            print("PLAYER_DBG [Playback] flush pending(\(Int(old.seconds))s) → 现读(\(Int(value.seconds))s) 同步落库")
+        }
+        // 现读值回写内存：deinit 时 player 已被 detach 置 nil、只能退 pending，
+        // 不同步会把 deinit 的兜底 flush 拉回旧值（seek 后 1 秒内暂停+退出的窄窗口）
+        pending = value
         if let lastFlushed, abs(lastFlushed.seconds - value.seconds) < 0.5 { return }
         EpisodeActionsStore.savePosition(seconds: value.seconds, total: value.total, for: identity)
         lastFlushed = value
@@ -100,13 +106,14 @@ final class PlaybackProgressTracker {
         pending = PlaybackProgress(seconds: value, total: total)
     }
 
-    /// 当前可落库的位置：优先内存值（tick 更新过），没有就现读播放器
+    /// 当前可落库的位置：优先现读播放器——pending 只由 1Hz tick 更新，拖完 seek 立即
+    /// flush 时它还是拖动前的旧值（2026-11-14 真机实证：拖到 324s 却落库 s=0，覆盖了
+    /// 上次的 423/423 完播记录）；player 不可用（detach 后 deinit）或现读无效时退回内存值
     private func current() -> PlaybackProgress? {
-        if let pending { return pending }
-        guard let player else { return nil }
+        guard let player else { return pending }
         let value = CMTimeGetSeconds(player.currentTime())
         let total = duration(player)
-        guard value.isFinite, value >= 0, total > 0 else { return nil }
+        guard value.isFinite, value >= 0, total > 0 else { return pending }
         return PlaybackProgress(seconds: value, total: total)
     }
 
