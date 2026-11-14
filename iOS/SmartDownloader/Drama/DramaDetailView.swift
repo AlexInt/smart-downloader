@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreText
 
 // MARK: - 剧集详情页（DramaWave · 390×840 设计稿 + 可滚动扩展）
 //
@@ -78,6 +79,8 @@ struct DramaDetailView: View {
     @State private var edgeDragWidth: CGFloat = 0
     /// 简介两行测量：文字实际渲染超过两行才允许出现「展开/收起」（用户拍板 2026-11-13）
     @State private var introOverflow = false
+    /// 简介第二行实际渲染宽度（CoreText 量出，含系统省略号）：截断态胶囊贴行尾用
+    @State private var introSecondLineWidth: CGFloat = 0
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -404,14 +407,15 @@ struct DramaDetailView: View {
                 .clipped()
                 .designFrame(20, 386, 350, height, alignment: .topLeading)
                 .animation(motion, value: vm.isDescriptionExpanded)
-                // 截断态行尾胶囊（用户拍板 2026-11-14）：lineLimit(2) 自然截断时「…」必在
-                // 第二行行尾右缘，胶囊（左缘渐隐 + 金色「… 展开」）覆盖其上 —— 锚定 frame 角、
-                // 零字体度量依赖，不可能漂移；无箭头、渐隐只发生在胶囊左缘 20pt 内
-                .overlay(alignment: .bottomTrailing) {
-                    if !vm.isDescriptionExpanded, introOverflow {
-                        introTailPill
-                    }
-                }
+
+            // 截断态行尾胶囊（用户拍板 2026-11-14）：位置按**第二行实际渲染宽度**落位，
+            // 不能钉 frame 右缘——简介带换行符或第二行较短时文字行尾缩在中间，
+            // 胶囊会孤零零停在最右侧（真机实证「跑到垂直中心靠右」）。宽度来自
+            // measureIntroOverflow 的 CoreText 两行排版（与 Text 同字体/同宽/同截断规则）
+            if !vm.isDescriptionExpanded, introOverflow {
+                introTailPill
+                    .designFrame(introPillX, introPillY, introPillWidth, 18)
+            }
 
             if vm.isDescriptionExpanded {
                 if introOverflow {
@@ -453,21 +457,63 @@ struct DramaDetailView: View {
             .onTapGesture { vm.toggleDescription() }
     }
 
-    /// 简介两行溢出测量（View 层职责：渲染度量不走 VM）：与实际渲染同参数
-    ///（宽 350 / 字号 13 / 行距 5），高度超过两行（含行距）即溢出。
-    /// 字体对齐 DWFont.cn 的默认映射（.system → UIFont.systemFont）
+    // MARK: 简介行尾胶囊几何（全部来自渲染度量，勿凭目测调）
+
+    /// 简介正文行高（13pt 系统字体，与 Text 渲染一致）
+    private var introLineHeight: CGFloat { UIFont.systemFont(ofSize: 13).lineHeight }
+
+    /// 胶囊总宽 = 文案实测 + 左 22（渐隐过渡）+ 右 3
+    private var introPillWidth: CGFloat {
+        let font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        let textWidth = ("… 展开" as NSString).size(withAttributes: [.font: font]).width
+        return ceil(textWidth) + 25
+    }
+
+    /// 胶囊左上角 x：贴第二行行尾（左移一个「…」宽度压住系统省略号）；
+    /// 行尾太靠右时右对齐收进文本框（20…370）
+    private var introPillX: CGFloat {
+        let lineEnd = 20 + min(introSecondLineWidth, 350)
+        let preferred = lineEnd - 13
+        return max(20, min(preferred, 370 - introPillWidth))
+    }
+
+    /// 胶囊左上角 y：第二行垂直居中（386 + 首行行高 + 行距 + (行高-胶囊高)/2）
+    private var introPillY: CGFloat {
+        let lh = introLineHeight
+        return 386 + lh + 5 + (lh - 18) / 2
+    }
+
+    /// 简介两行测量（View 层职责：渲染度量不走 VM）：用 CoreText 按实际渲染参数
+    ///（宽 350 / 13pt / 行距 5 / 尾部截断）排两行，一次拿到两个量：
+    ///  - introOverflow：第三行放不下（末行 range 未达文末）→ 需要「展开」
+    ///  - introSecondLineWidth：第二行实际绘制宽度（含系统省略号）→ 胶囊贴行尾用
     private func measureIntroOverflow(_ text: String) {
         let uiFont = UIFont.systemFont(ofSize: 13)
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 5
-        let bounds = (text as NSString).boundingRect(
-            with: CGSize(width: 350, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: uiFont, .paragraphStyle: style],
-            context: nil)
-        let twoLineHeight = uiFont.lineHeight * 2 + 5 + 1   // 两行行高 + 行距 + 容差
-        introOverflow = bounds.height > twoLineHeight
-        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) h=\(Int(bounds.height)) twoLine=\(Int(twoLineHeight)) len=\(text.count)")
+        style.lineBreakMode = .byTruncatingTail
+        let attr = NSAttributedString(string: text,
+                                      attributes: [.font: uiFont, .paragraphStyle: style])
+        let framesetter = CTFramesetterCreateWithAttributedString(attr)
+        let twoLineHeight = uiFont.lineHeight * 2 + 5
+        let path = CGPath(rect: CGRect(x: 0, y: 0, width: 350, height: twoLineHeight + 1),
+                          transform: nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+        let lines = CTFrameGetLines(frame) as? [CTLine] ?? []
+        var overflow = false
+        if let last = lines.last {
+            let range = CTLineGetStringRange(last)
+            overflow = Int(range.location + range.length) < (text as NSString).length
+        } else {
+            overflow = !text.isEmpty
+        }
+        var secondLineWidth: CGFloat = 0
+        if lines.count >= 2 {
+            secondLineWidth = CGFloat(CTLineGetTypographicBounds(lines[1], nil, nil, nil))
+        }
+        introSecondLineWidth = min(secondLineWidth, 350)
+        introOverflow = overflow
+        print("PLAYER_DBG [Entry] introOverflow=\(overflow) lines=\(lines.count) line2W=\(Int(secondLineWidth)) len=\(text.count)")
     }
 
     // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）
