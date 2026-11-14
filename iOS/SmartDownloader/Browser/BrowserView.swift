@@ -246,6 +246,15 @@ struct WebViewContainer: UIViewRepresentable {
         )
         controller.add(context.coordinator, name: "adClean")
 
+        // 滑动网页收键盘：SPA 在内部容器滚动时 keyboardDismissMode 不生效，
+        // 改由页面手势上报（见 KeyboardDismissScript）
+        controller.addUserScript(
+            WKUserScript(source: KeyboardDismissScript.source,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
+        controller.add(context.coordinator, name: "keyboardDismiss")
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
         // 键盘弹出后，下滑网页即可把键盘带走（Safari 同行为）。用 .interactive 而不是
@@ -280,11 +289,18 @@ struct WebViewContainer: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        // WebKit 在某些加载阶段会把 scrollView 的 keyboardDismissMode 重置，
+        // 每次更新补一次（文档本身可滚的站点靠它，内部容器滚动靠 KeyboardDismissScript）
+        if uiView.scrollView.keyboardDismissMode != .interactive {
+            uiView.scrollView.keyboardDismissMode = .interactive
+        }
+    }
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "sniffer")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "adClean")
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "keyboardDismiss")
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -304,6 +320,19 @@ struct WebViewContainer: UIViewRepresentable {
                                    didReceive message: WKScriptMessage) {
             if message.name == "adClean", let text = message.body as? String {
                 print("BROWSER: adClean \(text)")
+                return
+            }
+            if message.name == "keyboardDismiss" {
+                // 页面里滑动带走键盘：只收 webview 内的第一响应者，
+                // 万一 webview 内没有被收（内容层在别的 responder）再走全局兜底
+                let kind = (message.body as? String) ?? "?"
+                let webView = parent.store.webView
+                let dismissed = webView?.endEditing(true) ?? false
+                if !dismissed {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                }
+                print("BROWSER: keyboardDismiss from \(kind) ok=\(dismissed)")
                 return
             }
             guard message.name == "sniffer", let urlString = message.body as? String else { return }

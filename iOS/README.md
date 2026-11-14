@@ -118,7 +118,7 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`）/ `MainTab`（tab 条目与图标唯一定义点）/ `PlaybackProgress` / `QuickLink` |
 | `SmartDownloader/Drama/` | 剧集域：`DramaDetailData`（接口 DTO）、`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`（Service）、`DramaPageViewModel`（VM）、`DramaDetailView`（View）、`DramaNativePage`（组装根） |
 | `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
-| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS） |
+| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS）、`KeyboardDismissScript`（滑动网页收键盘的手势上报 JS） |
 | `SmartDownloader/Settings/` | 设置域：`QuickLinkStore` / `AppLaunchPreferences` / `DramaRoutePreferences`（Service）、`SettingsViewModel`（VM）、`SettingsView` + `QuickLinkEditorSheet`（View） |
 | `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF）、`KeyboardObserver`（键盘显隐，弹起时收起 tab bar 与浏览页底部工具条） |
 | `SmartDownloader/player/` | 播放域，五层齐全（详见 `HANDOFF.md` §3） |
