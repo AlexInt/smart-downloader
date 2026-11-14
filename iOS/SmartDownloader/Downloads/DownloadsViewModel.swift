@@ -8,6 +8,7 @@ import Combine
 /// 主线程约定：本类全部状态只在主线程访问（GCD 版，无线程标注）
 final class DownloadsViewModel: ObservableObject {
     private let manager: DownloadManager
+    private var sortPreferences = DownloadsSortPreferences()
 
     /// 编辑模式：点行勾选（剧行勾选整剧），底部栏全选/批量删除；跨两个区域一起生效
     @Published private(set) var selectionMode = false
@@ -19,9 +20,9 @@ final class DownloadsViewModel: ObservableObject {
     /// 播放入口（普通模式点击已完成任务 → AVKit sheet，沿用旧行为）
     @Published var playerRequest: PlayerItem?
 
-    /// 排序偏好（init 从 UserDefaults 恢复，修改即落盘）
+    /// 排序偏好（持久化走 Service，AGENTS 第 5 条；init 从 Service 恢复，修改即落盘）
     @Published var sortOrder: DownloadSortOrder {
-        didSet { UserDefaults.standard.set(sortOrder.rawValue, forKey: "DownloadsView.sortOrder") }
+        didSet { sortPreferences.sortOrder = sortOrder }
     }
     /// 每部剧的磁盘占用（字节；未计算到的剧不在字典里）：副剧行右侧 label 用
     @Published private(set) var seriesSizes: [String: Int64] = [:]
@@ -40,8 +41,7 @@ final class DownloadsViewModel: ObservableObject {
 
     init(manager: DownloadManager) {
         self.manager = manager
-        let raw = UserDefaults.standard.string(forKey: "DownloadsView.sortOrder")
-        self.sortOrder = raw.flatMap(DownloadSortOrder.init(rawValue:)) ?? .newestFirst
+        self.sortOrder = sortPreferences.sortOrder
         // 任务的任何变化（新增/完成/删除）都可能改变磁盘占用 → 去抖后重算；
         // 指纹在计算时取最新值，进度 tick（id/done 不变）算完发现指纹相同自然跳过
         managerObservation = manager.objectWillChange

@@ -89,10 +89,10 @@ let dramaMetaJS = """
 /// 只放页面公开内容（DOM 提取结果）；带账号凭据的接口原始 dump 仍由
 /// dumpDramaMeta 启动参数门控（见 DramaAPI），不从这里走。
 enum DramaMetaDump {
-    /// 文件名 sanitize：site 形如 https://yeguodj.com，直接拼进文件名时
-    /// 斜杠会让 write 把它当子路径解析（真机日志实证：文件夹“yeguodj.com_4094.json”不存在）；
+    /// 文件名 sanitize：site 形如 https://<站点域名>，直接拼进文件名时
+    /// 斜杠会让 write 把它当子路径解析（真机日志实证：文件夹“<站点域名>_剧ID.json”不存在）；
     /// 仅替换路径非法字符，保留点号与连字符——否则 .json 扩展名也变 _json，文件无法直接打开
-    ///（真机实证：harvest_https___yeguodj_com_4073_json）
+    ///（真机实证：harvest_https___<站点域名>_剧ID_json，域名中的点号保留）
     static func sanitized(_ raw: String) -> String {
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
         return String(raw.map { allowed.contains($0) ? $0 : "_" })

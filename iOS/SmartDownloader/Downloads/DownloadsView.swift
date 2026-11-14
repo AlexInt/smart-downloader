@@ -335,8 +335,15 @@ struct SeriesDetailView: View {
     @State private var confirmDelete = false
     /// 「播到哪」只读状态：进入本页 / 播放入口关闭时刷新
     @StateObject private var progressVM = PlaybackProgressViewModel()
-    /// 与下载页共用同一个排序偏好，两个页面的先后顺序一致
-    @AppStorage("DownloadsView.sortOrder") private var sortOrder: DownloadSortOrder = .newestFirst
+    /// 与下载页共用同一个排序偏好（Service 读取，AGENTS 第 5 条：View 不碰 UserDefaults/@AppStorage；
+    /// 推入期间偏好不会变化，进入时读一次即可）
+    @State private var sortOrder: DownloadSortOrder = .newestFirst
+
+    init(manager: DownloadManager, seriesName: String) {
+        self.manager = manager
+        self.seriesName = seriesName
+        _sortOrder = State(initialValue: DownloadsSortPreferences().sortOrder)
+    }
 
     private var episodes: [DownloadTask] {
         sortOrder.order(manager.tasks.filter { $0.seriesName == seriesName })
