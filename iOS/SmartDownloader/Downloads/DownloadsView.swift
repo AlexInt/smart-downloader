@@ -252,11 +252,12 @@ struct DownloadsView: View {
             }
 
             if isFailed(task) {
-                // 失败行给「重试」：圆环 + 刷新箭头，与取消按钮同一形状语言
+                // 失败行给「重试」：圆环 + 刷新箭头，与取消按钮同一形状语言。
+                // 刷新图元是实心填充形（画布 22:332），必须 .fill——用 .stroke 会得到
+                // 「一条弧带的轮廓」，13pt 下糊成一团。
                 circleButton(stroke: DWColor.paperInkSub) {
                     PaperReloadShape()
-                        .stroke(DWColor.paperIcon,
-                                style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                        .fill(DWColor.paperIcon)
                         .frame(width: 13, height: 13)
                 } action: {
                     manager.run(task)

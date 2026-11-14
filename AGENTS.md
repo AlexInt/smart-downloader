@@ -116,6 +116,9 @@ View → ViewModel → Service → 系统能力 / Model
 5. **几何常量**：`DWLayout.edge = 20`（设置页/我的页）、`DWLayout.pageEdge = 22`（浏览页/下载页，画布左右边距就是 22）、`MainTab.barReservedHeight = 62`（bar 自身 `padding(.top, 10).padding(.bottom, 6)` + 内容 46）。下载页行高 82 / 封面 60×82 r5 / 组内 gap 12、浏览页地址栏行 52（输入框 34，描边 1pt `paperFieldLine.opacity(0.8)`）/ 快捷站点行 44（胶囊 26）/ 底部工具条 54。
 6. **纸本轨 token 全在 `DWColor`**：`paper` `#F2F0EA` / `paperInk` `#1C1E1F` / `paperInkSub` `#8C9190` / `paperIcon` `#5A5F60` / `paperCinnabar` `#A05243` / `paperChipSel` `#E2DED5` / `paperChipIdle` `#EAE7DF` / `paperHairline` `#E0DBD1` / `paperDivider` `#DDD9D0` / `paperRule` `#E4E0D6` / `paperLineIdle` `#B9BCB9` / `paperSwitchOff` `#C9CCC9` / `paperKnob` `#F7F5F0` / `paperField` `#E7E4DE` / `paperFieldLine` `#C2BFB8` / `paperCanvas` `#EDEAE2` / `paperTrack` `#C4C7C3` / `paperTrackFill` `#35393B` / `paperFaint` `#A2A6AD`。**新色必须先在画布上量出来再进 `DWColor`**，不要在 View 里写裸 `Color(hex:)`。
 7. **列表类页面用 `List` 时必须把系统观感剥干净**：`.listStyle(.plain)` + `scrollContentBackground(.hidden)` + 行 `.listRowBackground(Color.clear)` / `.listRowSeparator(.hidden)` / `.listRowInsets(...)`。**行距要算上 List 自己给的 12pt**——`DownloadsView.paperRow(vertical:)` 默认 6 叠在 12 上会得到 24，画布要的是 12，所以相邻行用 `paperListRow()`（vertical 0）。
+8. **画布节点的 width/height 有两种口径，照抄前必须先分清**：**描边图元报的是几何框（不含描边）**，例如 22:329 后退 6.5×13 是中心线尺寸，加 1.2 描边后墨迹约 7.7×14.2；**填充图元报的是墨迹框**，例如 22:332 刷新 12.764×12.8 就是可见范围。两者混用会得到「图标大了 20%」或「描边套描边」。判据：`strokes` 有值且无 `fills` → 几何框；有 `fills` → 墨迹框。
+9. **图标类图元照画布原样落地，不做「看起来差不多」的再创作**：`export_nodes(format: "svg")` 拿到精确路径后，**填充形就用 `.fill`、描边形才用 `.stroke`**（22:332 刷新是填充形，早先按 1.2pt 描边圆还原，实机看着像「圈里插了根斜杠」，返工一次）。落地后必须验证：把图元按画布真实几何排成 mock（本地 CoreGraphics 渲染 + `export_nodes` 导出的画布 PNG 垫纸底）做**像素 diff**，红像素只剩抗锯齿边才算过；本项目的验收值是 3 图标 · 110×54pt · 4x 下 **< 0.4%**。**这条链路也是浏览页图标的唯一验收手段**——浏览页禁止截图（见「硬性禁止」），不能靠实机截图对图标。
+10. **描边类图标常有光学偏移，别默认居中**：画布把后退/前进各向外偏 0.75（后退中心线 x=6、前进 x=7.5，框心居中会是 6.75）。少这 0.75 与画布 diff 会整条笔画错位。居中只是默认假设，量过再定。
 
 ### 具体约定
 

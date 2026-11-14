@@ -197,14 +197,16 @@ struct BrowserView: View {
 
     // MARK: - ④ 底部工具栏（画布 22:327，h54 / pad 10 / gap 18）
 
-    /// 上传/后退/刷新是 20×20 命中框里的 1pt 线稿；不可点时转纸本最弱一档（画布 22:331）
+    /// 后退/前进是 20×20 命中框里的 1pt 线稿；不可点时转纸本最弱一档（画布 22:331）。
+    /// 刷新不走 navGlyph：画布 22:332 是**实心填充**形（见 PaperReloadShape 注释），
+    /// 用 .stroke 描一遍会得到一圈细线，与设计稿的粗弧带完全不是一个东西。
     private var bottomBar: some View {
         HStack(spacing: 18) {
             navGlyph(PaperChevronShape(pointsLeft: true), size: CGSize(width: 6.5, height: 13),
-                     enabled: store.canGoBack) { store.goBack() }
+                     xOffset: -0.75, enabled: store.canGoBack) { store.goBack() }
             navGlyph(PaperChevronShape(pointsLeft: false), size: CGSize(width: 6.5, height: 13),
-                     enabled: store.canGoForward) { store.goForward() }
-            navGlyph(PaperReloadShape(), size: CGSize(width: 20, height: 20), enabled: true) { store.reload() }
+                     xOffset: 0.75, enabled: store.canGoForward) { store.goForward() }
+            reloadGlyph
 
             Spacer(minLength: 0)
 
@@ -246,13 +248,31 @@ struct BrowserView: View {
         }
     }
 
-    private func navGlyph<S: Shape>(_ shape: S, size: CGSize, enabled: Bool,
+    /// 刷新（画布 22:332）：实心填充形，20×20 就是画布原始坐标，不要再套 frame 缩放
+    private var reloadGlyph: some View {
+        Button { store.reload() } label: {
+            PaperReloadShape()
+                .fill(DWColor.paperInk)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 后退/前进：20×20 命中框里的 1pt 线稿，不可点时转纸本最弱一档（画布 22:331）。
+    ///
+    /// `size` 是**中心线框**（画布节点对描边图元报的就是几何框，不是墨迹框）：6.5×13 加
+    /// 1.2 描边后墨迹约 7.7×14.2，与设计稿实测的 8.0×14.5（含抗锯齿）对得上。
+    /// `xOffset` 是设计稿的光学居中：两个箭头各向外偏 0.75（后退中心线 x=6、前进 x=7.5，
+    /// 而框心居中会是 6.75）——去掉这 0.75 与画布做像素 diff 会整条笔画错位。
+    private func navGlyph<S: Shape>(_ shape: S, size: CGSize, xOffset: CGFloat = 0, enabled: Bool,
                                     action: @escaping () -> Void) -> some View {
         Button(action: action) {
             shape
                 .stroke(enabled ? DWColor.paperInk : DWColor.paperFaint,
                         style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
                 .frame(width: size.width, height: size.height)
+                .offset(x: xOffset)
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
         }
