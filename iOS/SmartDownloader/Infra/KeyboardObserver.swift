@@ -68,10 +68,14 @@ final class KeyboardObserver {
         for (_, handler) in Array(handlers) { handler(next) }
     }
 
-    /// 主屏高度（键盘 frame 用的是屏幕坐标）：取当前活跃 windowScene 的坐标系
+    /// 主屏高度（键盘 frame 用的是屏幕坐标）：取当前活跃 windowScene 的坐标系。
+    /// `UIWindowScene.coordinateSpace` 在 iOS 26 已废弃，改用 `effectiveGeometry.coordinateSpace`
+    ///（iOS 26 SDK 提示：Use effectiveGeometry.coordinateSpace instead）；工程最低版本就是 26.0，
+    /// 不需要 @available 分支。取不到 scene 时返回 0 —— 调用处据此跳过出屏判定
+    ///（键盘离屏也会收到 willHide，功能不受影响）。
     private var screenHeight: CGFloat {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-        return scene?.coordinateSpace.bounds.height ?? 0
+        return scene?.effectiveGeometry.coordinateSpace.bounds.height ?? 0
     }
 }

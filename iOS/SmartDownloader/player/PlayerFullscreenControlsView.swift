@@ -271,7 +271,7 @@ final class PlayerFullscreenControlsView: UIView {
         // 一次性布局对账日志（排障用，按约定保留）
         if !didLogLayout {
             didLogLayout = true
-            print("PLAYER_DBG [CHECK] fullscreenControls bounds=\(bounds) spill=\(spill) cleanBtn=\(cleanButton.frame) cleanRect=\(cleanRect.frame) slashBounds=\(cleanSlash.bounds) screenScale=\(UIScreen.main.scale)")
+            print("PLAYER_DBG [CHECK] fullscreenControls bounds=\(bounds) spill=\(spill) cleanBtn=\(cleanButton.frame) cleanRect=\(cleanRect.frame) slashBounds=\(cleanSlash.bounds) screenScale=\(traitCollection.displayScale)")
         }
     }
 
