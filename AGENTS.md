@@ -119,6 +119,7 @@ View → ViewModel → Service → 系统能力 / Model
 
 13. **剧集页加载编排 = SWR（用户拍板 2026-11-13）**：进页先用缓存渲染（零等待），同时后台拉下载接口对账（`DramaPageViewModel.revalidateIfNeeded`）——失败静默保留缓存；成功先做**本地状态归一化**（downloaded/folder 并回 fresh，接口不带本地下载态，不归一化必假 diff），与内存 info 对比，**有 diff 才落库+刷新，无 diff 不写库不重绘**。同一页面实例 60s 内存 TTL 节流。WebView 详情收割不纳入 SWR（整页加载开销大，仍走 15 天闸门 + `coverMissing` 补救），↻ 刷新按钮 = force 强制重收割。别改回「缓存优先永不联网」——陈旧 playable 假拒绝下载就是这么来的。
 14. **用 CoreText 量文本（简介两行溢出、行尾胶囊）两条铁律**，违反必静默错判：①**测量绝不能给 paragraphStyle 设 `.byTruncatingTail`**——CoreText 会把整段当**单行**做尾部截断（实测 `lines` 恒为 1、末行 range 覆盖全文），溢出判定永远 false，按钮直接消失；截断是渲染阶段的事，测量只看 `.byWordWrapping` 的自然换行。②**给文本容器算高度时行高要 `ceil`**——CoreText 把行高向上取整（13pt 系统字体 15.31→16），两行需要 `16×2+5=37`，手算 `15.31×2+5≈35.6` 硬编码 36 会少 1pt，SwiftUI 判定第二行放不下、**只画一行**。纵向落位同理，用 `CTFrameGetLineOrigins` 的基线差（13pt+5 行距实测 21）比"行高+行距"手算准。
+15. **给「Text + SF Symbol」算固定宽度时，符号宽度必须实测**（`NSImage(systemSymbolName:).withSymbolConfiguration(.init(pointSize:))`，12pt 的 `chevron.up` 是 **14×8**，按 12 估就差 2pt）。宽度少 1–2pt 时 SwiftUI 不会报错，而是把中文**压成竖排**（「收起」→ 收在上、起在下，真机实证）。所有这类自定义容器一律加 `.lineLimit(1)` + `.fixedSize(horizontal: true, vertical: false)`，让宽度只由内容决定，容器宽度仅用于落位。
 
 ### 并发与线程（GCD 约定，2026-11-12 全量迁移）
 

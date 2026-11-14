@@ -431,10 +431,13 @@ struct DramaDetailView: View {
                     Button { vm.toggleDescription() } label: {
                         HStack(spacing: 2) {
                             Text("收起")
+                                .lineLimit(1)
                             Image(systemName: "chevron.up")
                         }
                         .font(DWFont.cn(12, .medium))
                         .foregroundStyle(DWColor.gold)
+                        // fixedSize：宽度只由内容决定，永不因容器窄了而换行/竖排
+                        .fixedSize(horizontal: true, vertical: false)
                         .frame(width: collapseWidth, height: 44, alignment: .trailing)
                         .contentShape(Rectangle())
                     }
@@ -456,6 +459,8 @@ struct DramaDetailView: View {
     private var introTailPill: some View {
         Text("… 展开")
             .font(DWFont.cn(12, .medium))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(DWColor.gold)
             .padding(.leading, 22)
             .padding(.trailing, 3)
@@ -483,11 +488,12 @@ struct DramaDetailView: View {
         ceil(introLineHeight) * 2 + introLineSpacing + 1
     }
 
-    /// 胶囊总宽 = 文案实测 + 左 22（渐隐过渡）+ 右 3
+    /// 胶囊总宽 = 文案实测 38 + 左 22（渐隐过渡）+ 右 3（宽度只用于落位，文案本身
+    /// 已 fixedSize + lineLimit(1)，不会再因差 1pt 而换行）
     private var introPillWidth: CGFloat {
         let font = UIFont.systemFont(ofSize: 12, weight: .medium)
         let textWidth = ("… 展开" as NSString).size(withAttributes: [.font: font]).width
-        return ceil(textWidth) + 25
+        return ceil(textWidth) + 22 + 3
     }
 
     /// 胶囊左上角 x：贴第二行行尾（左移一个「…」宽度压住系统省略号）；
@@ -511,11 +517,13 @@ struct DramaDetailView: View {
         return f.ascender - f.descender
     }
 
-    /// 「收起」按钮宽 = 「收起」实测 + 间距 2 + chevron 估算 12（SF Symbol 12pt ≈ 11~12）
+    /// 「收起」按钮宽 = 「收起」实测 24 + 间距 2 + chevron 实测 14（SF Symbol 12pt = 14×8）+ 容差 2。
+    /// 曾按 chevron≈12 估成 38，比实际 intrinsic（40）窄 2pt → Text 被压缩后
+    /// **「收起」两个字竖排**（收在上、起在下，真机实证）。
     private var collapseWidth: CGFloat {
         let font = UIFont.systemFont(ofSize: 12, weight: .medium)
         let textWidth = ("收起" as NSString).size(withAttributes: [.font: font]).width
-        return ceil(textWidth) + 2 + 12
+        return ceil(textWidth) + 2 + 14 + 2
     }
 
     /// 「收起」是否与末行同行（行尾还剩 ≥ 按钮宽 + 6pt 的空间）
