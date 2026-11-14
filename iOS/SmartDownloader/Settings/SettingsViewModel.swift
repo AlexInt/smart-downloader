@@ -110,9 +110,14 @@ final class SettingsViewModel: ObservableObject {
         refreshEffectiveDefault()
     }
 
-    /// 恢复内置默认列表（用户删空/改乱后的一键回退入口）。
+    /// 恢复出厂：三项设置一起回默认值（导航栏那颗「恢复默认」按钮的语义是整个页面，
+    /// 只重置站点会让「恢复默认」名不副实）。
+    /// 默认值口径与各 Service 的注释保持一致：启动 tab = `.downloads`（沿用设置页出现前的行为）、
+    /// 剧集页 = 原生（false）。
     /// 注意 defaultLinks 每次构造都是新 UUID，恢复后旧的默认 id 必然失效。
     func restoreDefaults() {
+        launchTab = .downloads
+        useWebDramaPage = false
         links = QuickLinkStore.defaultLinks
         persistLinks()
         refreshEffectiveDefault()

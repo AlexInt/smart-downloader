@@ -78,6 +78,16 @@ extension DWColor {
     static let paperChipIdle = Color(hex: "#EAE7DF")
     /// 纸本轨栏底顶部的发丝分隔线（与白底网页交界处才不会糊成一片）
     static let paperHairline = Color(hex: "#E0DBD1")
+    /// 导航栏下方分隔线（画布 24:67，比组间细线深一档）
+    static let paperDivider  = Color(hex: "#DDD9D0")
+    /// 分组之间的细线（画布 30:11 / 30:19）
+    static let paperRule     = Color(hex: "#E4E0D6")
+    /// 最弱的一档线：行尾箭头（30:9）、未选圆圈、页脚版本号（30:37）
+    static let paperLineIdle = Color(hex: "#B9BCB9")
+    /// 开关关闭态轨道（画布 30:16）；开启态复用朱砂 `paperCinnabar`
+    static let paperSwitchOff = Color(hex: "#C9CCC9")
+    /// 开关钮 / 勾选反白（画布 30:17）
+    static let paperKnob     = Color(hex: "#F7F5F0")
 }
 
 // MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）
