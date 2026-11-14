@@ -107,7 +107,7 @@ View → ViewModel → Service → 系统能力 / Model
 
 ### 纸本单轨视觉（2026-11-14 起全 App 唯一视觉轨）
 
-浏览（画布 `22:284`）/ 下载（`2:2` `19:272` `34:1`）/ 我的（`19:63`）/ 设置（`24:43`）**四页都已是宣纸底纸本视觉**，全 App 视觉单轨化完成。深色墨本轨只残留在 `DramaDetailView` 与播放页。
+浏览（画布 `22:284`）/ 下载（`2:2` `19:272` `34:1`）/ 我的（`19:63`）/ 设置（`24:43`）/ 剧集详情（`22:163` `30:104`，2026-11-14）**五页都已是宣纸底纸本视觉**，全 App 视觉单轨化完成。深色墨本轨只残留在播放页。
 
 1. **栏底恒为纸**：`MainTabBar` 已删掉 `forcePaper` 参数与 `@Environment(\.colorScheme)` 双轨判定。页面色值全是写死的十六进制，深色外观下照样是宣纸底，「深色外观压墨」只会造成一屏里深浅两截。**不要再加回双轨**，也不要在 Scene 层加 `preferredColorScheme(.light)`（`DramaDetailView` 与播放页会跟着变浅）。
 2. **纸底统一上提到 App 容器**（`App.swift`）：`.background(DWColor.paper.ignoresSafeArea())` 只写一次。**各页不要自己 `ignoresSafeArea()` 铺纸底**——那会连**顶部**安全区一起吃掉，页面根视图于是多拿一个状态栏高度、底边溢出到 tab bar 后面（浏览页底部工具条整行被盖，就是这么丢的）。
@@ -119,6 +119,9 @@ View → ViewModel → Service → 系统能力 / Model
 8. **画布节点的 width/height 有两种口径，照抄前必须先分清**：**描边图元报的是几何框（不含描边）**，例如 22:329 后退 6.5×13 是中心线尺寸，加 1.2 描边后墨迹约 7.7×14.2；**填充图元报的是墨迹框**，例如 22:332 刷新 12.764×12.8 就是可见范围。两者混用会得到「图标大了 20%」或「描边套描边」。判据：`strokes` 有值且无 `fills` → 几何框；有 `fills` → 墨迹框。
 9. **图标类图元照画布原样落地，不做「看起来差不多」的再创作**：`export_nodes(format: "svg")` 拿到精确路径后，**填充形就用 `.fill`、描边形才用 `.stroke`**（22:332 刷新是填充形，早先按 1.2pt 描边圆还原，实机看着像「圈里插了根斜杠」，返工一次）。落地后必须验证：把图元按画布真实几何排成 mock（本地 CoreGraphics 渲染 + `export_nodes` 导出的画布 PNG 垫纸底）做**像素 diff**，红像素只剩抗锯齿边才算过；本项目的验收值是 3 图标 · 110×54pt · 4x 下 **< 0.4%**。**这条链路也是浏览页图标的唯一验收手段**——浏览页禁止截图（见「硬性禁止」），不能靠实机截图对图标。
 10. **描边类图标常有光学偏移，别默认居中**：画布把后退/前进各向外偏 0.75（后退中心线 x=6、前进 x=7.5，框心居中会是 6.75）。少这 0.75 与画布 diff 会整条笔画错位。居中只是默认假设，量过再定。
+11. **剧集页（`DramaDetailView`）转纸本时只换材质、不动几何**：原文件是按 390 宽设计稿逐节点 `designFrame` 落位的，纸本化只改颜色/字体/卡片材质，**尺寸预算（`DetailLayout` / `PageLayout`）、区块顺序、`descShift` 位移一律不动**。深色轨 → 纸本轨的对应关系：`background`→`paper`、`surface`→`paperChipIdle`/`paperCanvas`、`primary`(#FF5A5F)→`paperCinnabar`、`gold`(#F5C451)→`paperCinnabar`（动作文字）/`paperTrackFill`（进度）、`textBody`→`paperInk`、`textHint`→`paperInkSub` 或 `paperFaint`、`posterTop/Mid/Bottom`(紫渐变)→`paperInkTop/Mid/Bottom`（墨块）。
+12. **简介展开/折叠块（`DramaDetailView.swift:398–625`）是用户点名的禁区**：逻辑、几何、CoreText 测量（`introOverflow` / `introLastLineWidth` / `introLastLineDelta` / `introCollapsedHeight`）、胶囊贴行尾的落位规则一律不许动，纸本化时**只改颜色**（正文 `textBody`→`paperInk`、两个动作 `gold`→`paperCinnabar`、胶囊渐隐底 `background`→`paper`，共 4 处）。改别处的配色时要回头确认这 4 处还在。
+13. **海报是纸本页里唯一的"墨"**：剧名/标签是白字压在底部 scrim 上，所以无封面时的占位**必须是墨色**（`paperInkPlate` / `paperInkTop…Bottom`），不能顺手改成纸色——纸色会让白字直接消失。同一页的顶栏要跟着换底：海报还盖着顶栏 → 墨色 scrim + 白图标；滚过去 → 纸底 + 0.5 细线 + 墨图标（`onScrollGeometryChange` 判 `contentOffset.y + 96*scale < 376*scale`）。**别把深色轨那层顶部 scrim 直接留在纸面上**，滚到选集以后会是一条灰雾。
 
 ### 具体约定
 
@@ -230,6 +233,8 @@ cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader 
 | `-startEditMode` | 下载页直接进编辑模式 |
 | `-autoTestDownload <URL>` | 启动即自动下载（真机蜂窝链路冒烟） |
 | `-perfLog` | Release 启用主线程卡顿探针（Debug 常开） |
+| `-dramaPreview` | 直接弹剧集页纸本样张（注入固定 30 集 + 推荐 + 档案，全程不联网） |
+| `-dramaPreviewBottom` | 配合上一条：内容直接落到页底，用于看档案区与「滚过海报后的顶栏」 |
 
 例：`xcrun simctl launch booted com.firefish.smartdownloader -startDownloadedPage -startEditMode`。
 
