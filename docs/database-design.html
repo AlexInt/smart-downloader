@@ -198,7 +198,7 @@ footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
     <tr><td>打开方式</td><td><code>sqlite3_open_v2(path, READWRITE | CREATE)</code>，每次调用开一次、用完 <code>sqlite3_close</code></td></tr>
     <tr><td>事务</td><td>批量写包在 <code>DramaDatabase.transaction</code> 里（<code>saveDetail</code> 一次事务写整包 + 提升列 + 每集元数据 + 推荐快照；<code>saveInfo</code> 一次事务写剧信息 + 集清单合并）；单条写各自 autocommit。事务不查中间语句结果、失败不 ROLLBACK（缓存场景可接受，失败形态是部分提交）</td></tr>
     <tr><td>索引</td><td>只有主键自带的索引，<strong>没有额外 CREATE INDEX</strong>；按 <code>name</code> 反查剧是全表扫（剧数量级小）</td></tr>
-    <tr><td>日志模式</td><td>默认（未开 WAL）；未设 busy_timeout</td></tr>
+    <tr><td>日志模式</td><td>默认（未开 WAL）；busy_timeout=100ms（2026-11-14，后台批量读并发时防 SQLITE_BUSY）</td></tr>
     <tr><td>外键</td><td>未声明 FOREIGN KEY，未开 <code>PRAGMA foreign_keys</code>；一致性由代码保证</td></tr>
     <tr><td>时间字段</td><td>一律 <code>ISO8601DateFormatter().string(from: Date())</code> 的 TEXT，非 Unix 时间戳</td></tr>
     <tr><td>布尔字段</td><td>SQLite 无 BOOLEAN，用 <code>INTEGER</code> 0/1</td></tr>

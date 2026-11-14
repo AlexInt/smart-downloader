@@ -24,7 +24,8 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 4. 点「下载」页看进度（多集调度最多 2 集并行，每集内部 6 并发切片）；下载页按剧分组：
    正在下载 / 剧集（点进二级页看集列表）/ 散装条目；剧详情页点集即播、左滑删单集、右上角删全剧
 5. 点击已完成条目**直接播放**；左滑删除（同时删除沙盒文件）
-6. 文件位置：App 沙盒 `Documents/Downloads/`。选集下载按剧分目录：`Downloads/<剧名>/第NN集/playlist.m3u8`；
+6. 播放页（沉浸式）：上下滑切集；**播完自动连播下一集**（末集播完停在末帧，点按不从头重播——重看拖进度条回带）；横屏片源稳定转横自动全屏；左缘右滑返回；末页再往滑一次提示「已经到底了」
+7. 文件位置：App 沙盒 `Documents/Downloads/`。选集下载按剧分目录：`Downloads/<剧名>/第NN集/playlist.m3u8`；
    散装下载仍是 `Downloads/<标题>/`。已开启文件共享，iPhone 连 Mac 时 Finder 左侧可看到并拷出
 
 ## 三、架构
@@ -44,11 +45,13 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
   URLSession 被掐(连接层错误)时自动降级 WebKitFetcher(WKDownload, Safari 同源 TLS 栈,
   经由浏览页那个附加在视图树上的 WKWebView 发起——隐藏 webview 在真机上会直接 DownloadFailed)
 「播放」LocalMediaServer (127.0.0.1 回环 HTTP) + AVPlayer 原生 HLS
+  沉浸式播放页: UIKit 原生分页上下滑切集(停稳防抖后切 item) + 播完自动连播下一集
+  + 横屏片源 CoreMotion 判稳自动全屏(锁竖屏 + 视频层搬运容器 transform 自转, 系统永不旋转)
 ```
 
 **为什么播放要绕本地 HTTP 服务**：AVFoundation 无法直接播文件版 m3u8，也无法播裸 TS 合并文件（iOS 上没有 ffmpeg）。本地回环 HTTP + 重写播放列表是 iOS 离线 HLS 的标准做法；切片下载时已解密，播放列表去掉了 KEY 行。
 
-与 Python 版同源能力：AES-128 解密（缺省 IV 按 media sequence 规范推导，修正了 Python 版全 0 的 bug）、多级列表、`EXT-X-BYTERANGE`（Python 版未支持）、fMP4 init 段、同名加 (1) 后缀。切片失败即任务失败，不做缺洞合并。
+与 Python 版同源能力：AES-128 解密（缺省 IV 按 media sequence 规范推导）、多级列表（最多 3 层）、`EXT-X-BYTERANGE`（含缺省 offset 接续）、fMP4 init 段、同名加 (1) 后缀。切片失败即任务失败，不做缺洞合并。Python 侧下载核心已全量同步这些能力与 IP 直连降级（2026-11-14，见根目录 README）。
 
 ## 四、已知限制（MVP）
 
@@ -110,10 +113,11 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | 文件 | 职责 |
 |---|---|
 | `SmartDownloader/App.swift` | 入口，启动时预启本地媒体服务（根目录只留这一个 Swift 文件） |
-| `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`） |
+| `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`）/ `MainTab`（tab 条目与图标唯一定义点）/ `PlaybackProgress` / `QuickLink` |
 | `SmartDownloader/Drama/` | 剧集域：`DramaDetailData`（接口 DTO）、`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`（Service）、`DramaPageViewModel`（VM）、`DramaDetailView`（View）、`DramaNativePage`（组装根） |
 | `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
 | `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS） |
+| `SmartDownloader/Settings/` | 设置域：`QuickLinkStore` / `AppLaunchPreferences` / `DramaRoutePreferences`（Service）、`SettingsViewModel`（VM）、`SettingsView` + `QuickLinkEditorSheet`（View） |
 | `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF） |
 | `SmartDownloader/player/` | 播放域，五层齐全（详见 `HANDOFF.md` §3） |
 | `SmartDownloader/Components/` | 全局通用 UI（`ToastView`） |

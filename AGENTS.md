@@ -149,6 +149,7 @@ View → ViewModel → Service → 系统能力 / Model
   - Mac 网络：python requests / curl 被掐，URLSession、WKWebView 可过
   - iOS 5G 蜂窝网络：CDN 还会按 **SNI 域名**在握手期 RST，URLSession、WKWebView、网页内视频全部失败
 - iOS 下载降级链：URLSession → **IP 直连**（域名解析成 IP 直连，不带 SNI，`Host` 头回填原域名，证书由 TrustAll 兜底；成功后该域名进程内 sticky）→ `WebKitFetcher`（WKDownload）。IP 直连已实测解决蜂窝网络下的真机下载失败。
+- Python 侧已同步 IP 直连降级（`core/downloader.py` `_ip_direct_fetch`，2026-11-14）：连接层失败（SSLError/ConnectionError/Timeout）时解析 IP 直连 + Host 回填，成功进程级 sticky；TLS 指纹拦截仍无解（Python 无 WebKit 通道），失败消息提示换网。
 - **真机上 WKDownload 必须经由附加在视图树里的真实 WKWebView 发起**（浏览页 makeUIView 注册 host）；隐藏 webview 在真机直接 DownloadFailed（Mac 上却可用，勿被 Mac 冒烟误导）。
 - 冒烟开关 `SMARTDOWNLOADER_FORCE_WEBKIT=1` 强制走 WebKit 兜底通道验证。
 
