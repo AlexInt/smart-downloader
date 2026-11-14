@@ -86,7 +86,9 @@ enum AdCleanerScript {
             } catch (e) {}
           }
         }
-        // 2) 空浮层启发式（只看 body 直接子节点，成本可控且劫持层几乎都挂在这）
+         // 2) 空浮层启发式（只看 body 直接子节点，成本可控且劫持层几乎都挂在这）
+         //    首见立刻视觉隐藏（用户第一时间就看不到），但 DOM 留 2s 观察：
+        //    若期间填了真实内容（登录框水合）就恢复显示，仍空才删节点。
         var vw = window.innerWidth, vh = window.innerHeight;
         var kids;
         try { kids = document.body ? document.body.children : []; } catch (e) { return; }
@@ -102,11 +104,24 @@ enum AdCleanerScript {
             var seen = parseInt(f.getAttribute('data-dwseen') || '0', 10);
             if (!seen) {
               f.setAttribute('data-dwseen', String(now));
-              say('candidate', f, 'fullsize-fixed(首见,2s后仍空才删)');
+              // 立刻隐藏（不占屏、不拦点击），DOM 保留观察 2s
+              f.setAttribute('data-dwhidden', '1');
+              f.style.setProperty('visibility', 'hidden', 'important');
+              f.style.setProperty('pointer-events', 'none', 'important');
+              say('candidate', f, 'fullsize-fixed(已隐藏,2s后仍空才删)');
+              continue;
+            }
+            if (hasRealContent(f)) {
+              // 水合填入了真实内容（登录框等）：撤销隐藏，交还页面
+              if (f.getAttribute('data-dwhidden')) {
+                f.removeAttribute('data-dwhidden');
+                f.style.removeProperty('visibility');
+                f.style.removeProperty('pointer-events');
+                say('restored', f, 'fullsize-fixed(填入真实内容)');
+              }
               continue;
             }
             if (now - seen < 1800) continue;
-            if (hasRealContent(f)) continue;
             f.parentNode.removeChild(f);
             say('removed', f, 'fullsize-fixed(空浮层,存活' + (now - seen) + 'ms)');
           } catch (e) {}
