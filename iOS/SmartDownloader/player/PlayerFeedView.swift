@@ -42,8 +42,14 @@ struct PlayerFeedView: View {
         }
         .background(DWColor.background.ignoresSafeArea())
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-            // 进后台是落库的关键时机之一：用户可能直接划掉 App，内存值不落盘就丢
-            vm.flushProgress()
+            // 进后台是落库的关键时机之一（用户可能直接划掉 App，内存值不落盘就丢），
+            // 同时记下播放意图：无 background audio 权限，进程挂起后播放器连接必断
+            vm.playback.applicationDidEnterBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            // 回前台恢复：本地回环服务可能已被系统回收、item 可能已 failed——
+            // VM 判断需要时重启服务并重建 item（连接仍健康则只恢复播放，不打断画面）
+            vm.playback.applicationWillEnterForeground()
         }
     }
 

@@ -23,19 +23,29 @@ final class PlaybackPlayerService {
 
     /// 本地 HLS 回环地址 → AVPlayerItem；未下载或本地服务未启动时回调 nil。
     /// 命中预热池 → 用已解析过清单的资产直接构建 item（秒开路径）。
+    /// forceFresh = true 跳过预热池（前后台恢复 / 失败重试用：池里的资产可能指向已被
+    /// 系统回收的旧端口，HIT 到它只会把「重连」变成「必然失败」）。
     /// completion 统一在主线程回调（HIT 路径同步落地，也走 completion）。
-    func makeItem(for episode: PlayableEpisode, completion: @escaping (AVPlayerItem?) -> Void) {
+    func makeItem(for episode: PlayableEpisode, forceFresh: Bool = false,
+                  completion: @escaping (AVPlayerItem?) -> Void) {
         guard let playlist = episode.playlistURL else {
             print("PLAYER_DBG [Service] makeItem FAIL reason=noLocalPlaylist sort=\(episode.sort)")
             completion(nil)
             return
         }
-        if let asset = preloadedAssets.removeValue(forKey: episode.sort) {
-            let item = AVPlayerItem(asset: asset)
-            item.preferredForwardBufferDuration = 1
-            print("PLAYER_DBG [CHECK] makeItem HIT sort=\(episode.sort) pooled=\(preloadedAssets.count)")
-            completion(item)
-            return
+        if !forceFresh, let asset = preloadedAssets.removeValue(forKey: episode.sort) {
+            // 端口一致性校验：本地服务重启后端口会变，池里的旧 URL 必然连不上。
+            // 校验失败按 MISS 处理并重新解析（不是错误——重启后本来就该重建 URL）。
+            let livePort = LocalMediaServer.shared.portSnapshot
+            let assetPort = asset.url.port.map { UInt16($0) } ?? 0
+            if livePort != 0, assetPort == livePort {
+                let item = AVPlayerItem(asset: asset)
+                item.preferredForwardBufferDuration = 1
+                print("PLAYER_DBG [CHECK] makeItem HIT sort=\(episode.sort) port=\(livePort) pooled=\(preloadedAssets.count)")
+                completion(item)
+                return
+            }
+            print("PLAYER_DBG [Service] makeItem STALE sort=\(episode.sort) assetPort=\(assetPort) livePort=\(livePort) → 丢弃池资产重新解析")
         }
         LocalMediaServer.shared.playbackURL(forFolder: playlist.deletingLastPathComponent()) { url in
             guard url.scheme == "http" else {
@@ -48,6 +58,16 @@ final class PlaybackPlayerService {
             print("PLAYER_DBG [Service] makeItem MISS sort=\(episode.sort) url=\(url.absoluteString)")
             completion(item)
         }
+    }
+
+    /// 作废全部预热资产（服务重启 / 回前台恢复时调用）：旧端口的资产再也连不上，
+    /// 留着只会让后续 makeItem HIT 到失效 URL。在飞预热的回调会因标记被移除而自行丢弃。
+    func invalidatePreloaded() {
+        let assetCount = preloadedAssets.count
+        let inflightCount = preloadingSorts.count
+        preloadedAssets.removeAll()
+        preloadingSorts.removeAll()
+        print("PLAYER_DBG [Service] invalidatePool assets=\(assetCount) inflight=\(inflightCount)")
     }
 
     /// 预热一组集（调用方必须传「当前集 + 相邻集」：wanted 里没有当前集，

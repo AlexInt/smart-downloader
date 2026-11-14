@@ -92,6 +92,15 @@ final class DramaPlayerViewModel: ObservableObject {
     private var timeObserver: Any?
     /// 当前集的行为数据归属；load 成功后才有值（未下载占位卡为 nil）
     private var currentIdentity: MediaIdentity?
+    /// 当前加载的集（回前台重建 item 需要完整槽位：playlistURL / identity / sort）
+    private var currentEpisode: PlayableEpisode?
+    /// 进后台那一刻是否在播：回前台只续「用户期望在播」的状态，不替已暂停的用户点播放
+    private var wasPlayingBeforeBackground = false
+    /// item 网络失败自动重试过的集号（每集最多一次；就绪即清空）——防「失败→重建→再失败」死循环
+    private var autoRetriedSorts: Set<Int> = []
+    /// 用户播放意图（不跟随系统中断态）：load(autoplay:) / togglePlayback 维护。
+    /// item 失败自动重试沿用它，避免「用户暂停着，重试却把画面自动播起来」
+    private var userWantsPlayback = false
     /// 回填本集已存状态期间置位： didSet 不能把刚读出来的值再写回库
     private var isRestoringActions = false
     private var lastLoggedSeek: Double = -1
@@ -118,9 +127,10 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 滚动停稳后才调用：单播放器常驻，切集只换 item。
     /// 就绪判定为事件驱动（KVO 直挂 + 主线程判定）：status 一变立刻翻转 isReady，
     /// 无轮询量化误差；4s 看门狗兜底；取消安全（代际令牌使迟到事件失效）。
+    /// autoplay = false 用于「回前台重建」：只恢复画面与位置，不替已暂停的用户继续播。
     /// completion 在加载落地（就绪/失败/超时/取消）后于主线程回调。
-    func load(episode: PlayableEpisode, completion: (() -> Void)? = nil) {
-        print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable)")
+    func load(episode: PlayableEpisode, autoplay: Bool = true, completion: (() -> Void)? = nil) {
+        print("PLAYER_DBG [Playback] load begin sort=\(episode.sort) available=\(episode.isAvailable) autoplay=\(autoplay)")
         // 先把上一集的位置落盘再换 item：detach 后旧跟踪器不再碰播放器
         progressTracker?.detach()
         progressTracker = nil
@@ -138,12 +148,14 @@ final class DramaPlayerViewModel: ObservableObject {
 
         guard episode.playlistURL != nil else {
             print("PLAYER_DBG [Playback] load ABORT reason=episodeNotDownloaded sort=\(episode.sort)")
+            currentEpisode = nil
             playerService.clear()
             completion?()
             return
         }
         ensureObserver()
 
+        currentEpisode = episode
         currentIdentity = episode.identity
         isRestoringActions = true
         let stored = EpisodeActionsStore.actions(for: episode.identity)
@@ -174,7 +186,12 @@ final class DramaPlayerViewModel: ObservableObject {
             }
             self.player.replaceCurrentItem(with: item)
             self.player.isMuted = self.isMuted
-            self.player.play()
+            self.userWantsPlayback = autoplay
+            if autoplay {
+                self.player.play()
+            } else {
+                print("PLAYER_DBG [Playback] load holdPaused sort=\(episode.sort) reason=autoplay=false")
+            }
             self.beginSpinnerDelay()
             self.watchStatus(item: item, episode: episode, generation: generation,
                              startedAt: Date(), completion: completion)
@@ -190,10 +207,12 @@ final class DramaPlayerViewModel: ObservableObject {
         scheduleScrubLinger(ms: 3000)
         if wasPlaying {
             player.pause()
+            userWantsPlayback = false
             // 暂停点就是用户看到的位置，不等 5 秒边界立即落盘
             progressTracker?.flush()
             return
         }
+        userWantsPlayback = true
         if let duration = player.currentItem?.duration,
            CMTimeGetSeconds(duration).isFinite,
            CMTimeGetSeconds(player.currentTime()) >= CMTimeGetSeconds(duration) - 0.2 {
@@ -207,6 +226,68 @@ final class DramaPlayerViewModel: ObservableObject {
         guard let progressTracker else { return }
         progressTracker.flush()
         print("PLAYER_DBG [Playback] progressFlush reason=external")
+    }
+
+    // MARK: 前后台生命周期（回前台恢复）
+
+    /// App 进后台：本 App 无 background audio 权限，系统会挂起进程、播放器连接随之断开。
+    /// 记录「进后台前是否在播」并主动暂停 + 落盘进度（回前台只续用户期望的播放状态）。
+    func applicationDidEnterBackground() {
+        wasPlayingBeforeBackground = player.timeControlStatus == .playing
+        userWantsPlayback = wasPlayingBeforeBackground
+        if wasPlayingBeforeBackground {
+            player.pause()
+        }
+        progressTracker?.flush()
+        print("PLAYER_DBG [Lifecycle] background wasPlaying=\(wasPlayingBeforeBackground) item=\(itemStatusDescription())")
+    }
+
+    /// App 回前台：本地回环服务可能已被系统回收（监听 socket 失效、端口号却还是旧值），
+    /// item 也可能在后台期间连接全失败进入 .failed（错误文案即系统本地化的「无法连接服务器」）。
+    /// 两种情况都要重建：重启服务（端口可能变化）→ 作废预热池 → 新 URL 重建 item → 续播原位。
+    /// 连接仍健康时只恢复播放，不打断画面。
+    func applicationWillEnterForeground() {
+        let status = player.currentItem?.status ?? .unknown
+        print("PLAYER_DBG [Lifecycle] foreground item=\(itemStatusDescription()) rate=\(player.rate) control=\(player.timeControlStatus.rawValue) loadError=\(loadError ?? "nil") wasPlaying=\(wasPlayingBeforeBackground)")
+        guard let episode = currentEpisode else {
+            print("PLAYER_DBG [Lifecycle] foreground SKIP reason=noCurrentEpisode")
+            return
+        }
+        let needsRebuild = player.currentItem == nil || status == .failed || loadError != nil
+        guard needsRebuild else {
+            if wasPlayingBeforeBackground, player.timeControlStatus != .playing {
+                player.play()
+                print("PLAYER_DBG [Lifecycle] foreground resumeOnly rate=\(player.rate)")
+            }
+            return
+        }
+        rebuildCurrentItem(episode: episode, autoplay: wasPlayingBeforeBackground, reason: "foreground")
+    }
+
+    /// 本地服务重启 + item 重建（前后台恢复 / item 网络失败自动重试共用）。
+    /// restart 会在 stateQueue 上回调端口（可能变化），回主线程再 load（load 只碰主线程状态）。
+    private func rebuildCurrentItem(episode: PlayableEpisode, autoplay: Bool, reason: String) {
+        let position = player.currentTime().seconds
+        playerService.invalidatePreloaded()
+        print("PLAYER_DBG [Lifecycle] rebuild begin reason=\(reason) sort=\(episode.sort) at=\(String(format: "%.1f", position.isFinite ? position : 0))s autoplay=\(autoplay)")
+        LocalMediaServer.shared.restart { [weak self] port in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                print("PLAYER_DBG [Lifecycle] rebuild serverPort=\(port)")
+                // 进度跟踪器会按库里已 flush 的位置续播（进后台时与暂停时都落过盘）
+                self.load(episode: episode, autoplay: autoplay)
+            }
+        }
+    }
+
+    private func itemStatusDescription() -> String {
+        guard let item = player.currentItem else { return "nil" }
+        switch item.status {
+        case .unknown: return "unknown"
+        case .readyToPlay: return "ready"
+        case .failed: return "failed(\(item.error?.localizedDescription ?? "?"))"
+        @unknown default: return "unknown"
+        }
     }
 
     /// 点按右侧时长 label：总时长 ↔ 剩余时间（负值）切换，本地持久化（PlayerPreferences）
@@ -396,6 +477,7 @@ final class DramaPlayerViewModel: ObservableObject {
             switch event {
             case .ready:
                 self.isReady = true
+                self.autoRetriedSorts.removeAll()
                 self.cancelSpinnerDelay()
                 self.refreshVideoOrientation(reason: "ready")
                 // 就绪即尝试续播（时长未稳时跟踪器会在首个 tick 再试一次）
@@ -406,6 +488,13 @@ final class DramaPlayerViewModel: ObservableObject {
                 self.loadError = message
                 self.cancelSpinnerDelay()
                 print("PLAYER_DBG [Playback] load FAIL reason=itemFailed error=\(message)")
+                // 网络类失败（本地服务被系统回收 / 切网）重建一次：重启服务 → 新端口 → 新 URL。
+                // 每集只重试一次，就绪即清空；重试仍失败就保持错误提示（不无限重试）
+                if !self.autoRetriedSorts.contains(episode.sort) {
+                    self.autoRetriedSorts.insert(episode.sort)
+                    self.rebuildCurrentItem(episode: episode, autoplay: self.userWantsPlayback,
+                                            reason: "itemFailed")
+                }
             case .timeout:
                 self.loadError = "视频加载超时"
                 self.cancelSpinnerDelay()

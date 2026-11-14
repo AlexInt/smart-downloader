@@ -12,6 +12,10 @@ final class LocalMediaServer {
     private let stateQueue = DispatchQueue(label: "LocalMediaServer.state")
     private var listener: NWListener?
     private var port: UInt16 = 0
+    /// 现役端口的跨队列快照（主线程可读）：只给「已构建 URL 是否仍指向现役服务」的校验用
+    /// （预热池命中前比对端口）。写入在 stateQueue、读在主线程——短暂不一致可接受且方向安全：
+    /// 不一致只会让调用方落到 MISS 重新解析 URL；反过来用旧值才会 HIT 到失效端口。
+    private(set) var portSnapshot: UInt16 = 0
     /// 启动中的等待者（可能多个）：ready 时统一回调真实端口
     private var startCompletions: [(UInt16) -> Void] = []
     private var started = false
@@ -20,59 +24,107 @@ final class LocalMediaServer {
     static var rootDirectory: URL { DownloadEngine.downloadsDir }
 
     /// 启动监听（幂等），completion 返回端口（0 = 启动失败）；在 stateQueue 上回调。
-    /// 已就绪（port != 0）直接回真实端口；未就绪时登记等待，ready 时统一回调。
+    /// 已就绪（listener 真的 ready 且 port != 0）直接回真实端口；未就绪时登记等待，ready 时统一回调。
     /// 切勿未就绪就回 port=0：App 预启服务与首次 playbackURL 并发，listener 还没 ready 时
     /// 拼出 http://127.0.0.1:0 会让播放器偶现「无法连接服务器」。
+    ///
+    /// 健康判据必须带上 listener.state：长期后台后系统会静默回收监听 socket，此时 port
+    /// 可能仍是旧值，只看端口会把失效服务当成可用（回前台重连必被拒）。
     func start(completion: @escaping (UInt16) -> Void) {
         stateQueue.async {
-            if self.port != 0 {
+            if self.isReadyLocked(), self.port != 0 {
                 completion(self.port)
                 return
             }
             self.startCompletions.append(completion)
             if self.started { return }   // 正在启动，等 finishStart 统一回调
-            self.started = true
-            do {
-                let parameters = NWParameters.tcp
-                parameters.allowLocalEndpointReuse = true
-                // 仅绑定回环地址，避免监听局域网
-                parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
-                let listener = try NWListener(using: parameters)
-                self.listener = listener
-                listener.newConnectionHandler = { [weak self] connection in
-                    guard let self else { return }
-                    let handler = HTTPConnectionHandler(connection: connection, root: Self.rootDirectory)
-                    handler.onFinished = { [weak self, weak handler] in
-                        guard let self, let handler else { return }
-                        self.stateQueue.async {
-                            self.handlers.removeValue(forKey: ObjectIdentifier(handler))
-                        }
-                    }
+            self.beginListening()
+        }
+    }
+
+    /// 强制重建监听（回前台恢复用）：不信任 port / state —— 系统静默回收 socket 后
+    /// NWListener.state 可能仍报 ready，但连接已经连不上。cancel 旧 listener 重新 bind，
+    /// 端口可能变化，调用方必须用返回的端口重建播放 URL（预热池资产同时作废）。
+    func restart(completion: @escaping (UInt16) -> Void) {
+        stateQueue.async {
+            print("PLAYER_DBG [Server] restart fromPort=\(self.port) state=\(String(describing: self.listener?.state))")
+            self.startCompletions.append(completion)
+            // 先摘掉引用再 cancel：旧 listener 的 .cancelled 回调据此识别为已替换并忽略
+            let old = self.listener
+            self.listener = nil
+            self.port = 0
+            self.portSnapshot = 0
+            self.started = false
+            old?.cancel()
+            self.beginListening()
+        }
+    }
+
+    /// 仅在 stateQueue 上调用：listener 状态是否真的 ready（State 带关联值，不能用 ==）
+    private func isReadyLocked() -> Bool {
+        guard let listener else { return false }
+        if case .ready = listener.state { return true }
+        return false
+    }
+
+    /// 建监听并启动（只在 stateQueue 上调用）
+    private func beginListening() {
+        started = true
+        do {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            // 仅绑定回环地址，避免监听局域网
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
+            let listener = try NWListener(using: parameters)
+            self.listener = listener
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                let handler = HTTPConnectionHandler(connection: connection, root: Self.rootDirectory)
+                handler.onFinished = { [weak self, weak handler] in
+                    guard let self, let handler else { return }
                     self.stateQueue.async {
-                        self.handlers[ObjectIdentifier(handler)] = handler
+                        self.handlers.removeValue(forKey: ObjectIdentifier(handler))
                     }
-                    handler.start()
                 }
-                listener.stateUpdateHandler = { [weak self] state in
-                    guard let self else { return }
+                self.stateQueue.async {
+                    self.handlers[ObjectIdentifier(handler)] = handler
+                }
+                handler.start()
+            }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, let listener else { return }
+                self.stateQueue.async {
+                    // 已被 restart 替换的旧 listener：忽略其迟到状态（cancel 会触发 .cancelled）
+                    guard self.listener === listener else { return }
                     switch state {
                     case .ready:
-                        self.stateQueue.async { self.finishStart(port: listener.port?.rawValue ?? 0) }
-                    case .failed:
-                        self.stateQueue.async { self.finishStart(port: 0) }
+                        let value = listener.port?.rawValue ?? 0
+                        print("PLAYER_DBG [Server] listener ready port=\(value)")
+                        self.finishStart(port: value)
+                    case .failed(let error):
+                        print("PLAYER_DBG [Server] listener failed error=\(error)")
+                        self.finishStart(port: 0)
+                    case .cancelled:
+                        print("PLAYER_DBG [Server] listener cancelled")
+                        self.finishStart(port: 0)
+                    case .waiting(let error):
+                        print("PLAYER_DBG [Server] listener waiting error=\(error)")
                     default:
                         break
                     }
                 }
-                listener.start(queue: DispatchQueue(label: "LocalMediaServer.connections"))
-            } catch {
-                self.finishStart(port: 0)
             }
+            listener.start(queue: DispatchQueue(label: "LocalMediaServer.connections"))
+            print("PLAYER_DBG [Server] listening start")
+        } catch {
+            print("PLAYER_DBG [Server] listening FAIL error=\(error)")
+            finishStart(port: 0)
         }
     }
 
     private func finishStart(port value: UInt16) {
         port = value
+        portSnapshot = value
         if value == 0 { started = false }   // 失败复位，允许下次 start 重试
         let completions = startCompletions
         startCompletions = []
