@@ -92,6 +92,18 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                     surface?.concealForReveal()
                 }
             }
+        // 自动连播：单集播完 → FeedVM 置 autoAdvanceSort → 这里动画滚到下一页并把信号
+        // 置回 nil。翻页后的 currentSort 回写靠 scrollViewDidEndScrollingAnimation → report
+        // → scrollID → schedulePageSettle → pageSettled（预热池/autoplay 全复用既有管线）。
+        // 用户触摸打断动画则走 didEndDragging 既有管线接管，本 sink 不再干预
+        context.coordinator.autoAdvanceCancellable = playback.$autoAdvanceSort
+            .removeDuplicates()
+            .sink { [weak coordinator = context.coordinator, weak scroll] sort in
+                guard let coordinator, let scroll, let sort else { return }
+                print("PLAYER_DBG [CHECK] autoAdvance consume sort=\(sort)")
+                coordinator.scrollToSort(sort, in: scroll, animated: true, reason: "autoAdvance")
+                coordinator.parent.playback.autoAdvanceSort = nil
+            }
         // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
         context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
         print("PLAYER_DBG [UIScroll] fullscreen controller installed surface=\(surface.bounds)")
@@ -116,6 +128,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         coordinator.fullscreenController?.teardown()
         coordinator.gravityCancellable = nil
         coordinator.readyCancellable = nil
+        coordinator.autoAdvanceCancellable = nil
         coordinator.surfaceView?.stopRevealProbe(reason: "dismantle")
         print("PERF_DBG exit t=\(PERF.ms()) phase=pagingDismantle done")
     }
@@ -153,6 +166,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         var gravityCancellable: AnyCancellable?
         /// isReady → 视频条带延迟首显（与卡片渐变淡出错开，防黑屏空档/突现）
         var readyCancellable: AnyCancellable?
+        /// 自动连播：playback.autoAdvanceSort → 动画滚动到下一页（信号消费后置回 nil）
+        var autoAdvanceCancellable: AnyCancellable?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
@@ -399,6 +414,24 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             print("PLAYER_DBG [CHECK] realignOffset sort=\(start) y=\(Int(oldY))→\(Int(offset))")
         }
 
+        /// 连播翻页：动画滚到目标 sort 对应页（页面 frame 已随 slots 布好，不等 SwiftUI update）。
+        /// 结束回写由 scrollViewDidEndScrollingAnimation 接管——realign 的 animated=false
+        /// 不触发那条 delegate，无串扰。
+        func scrollToSort(_ sort: Int, in scroll: UIScrollView, animated: Bool, reason: String) {
+            guard let index = parent.slots.firstIndex(where: { $0.sort == sort }) else {
+                print("PLAYER_DBG [CHECK] scrollTo SKIP reason=noSlot sort=\(sort) by=\(reason)")
+                return
+            }
+            let height = scroll.bounds.height
+            guard height > 0 else {
+                print("PLAYER_DBG [CHECK] scrollTo SKIP reason=zeroBounds sort=\(sort) by=\(reason)")
+                return
+            }
+            let target = CGPoint(x: 0, y: CGFloat(index) * height)
+            print("PLAYER_DBG [CHECK] scrollTo sort=\(sort) index=\(index) y=\(Int(target.y)) animated=\(animated) by=\(reason)")
+            scroll.setContentOffset(target, animated: animated)
+        }
+
         func applyStartOffsetIfNeeded(in scroll: PagingScrollView) {
             guard !startApplied else { return }
             var reason = ""
@@ -473,6 +506,15 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             print("PLAYER_DBG [CHECK] endDrag y=\(Int(scrollView.contentOffset.y)) willDecel=\(decelerate)")
             if !decelerate { report(scrollView) }
+        }
+
+        /// 程序化 setContentOffset(animated:) 的结束回调（animated=false 不触发，realign 无串扰）。
+        /// 目前唯一来源是连播动画——用户拖拽走 endDragging/endDecelerating。
+        /// 连播滚完必须回写 currentSort：否则 scrollID 不变、schedulePageSettle 不触发、
+        /// 下一集永远不加载（连播管线复用的关键接点）
+        func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            print("PLAYER_DBG [CHECK] endScrollingAnimation y=\(Int(scrollView.contentOffset.y))")
+            report(scrollView)
         }
 
         private func report(_ scroll: UIScrollView) {

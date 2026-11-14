@@ -49,6 +49,13 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 保证内容与物理握持一致——写死单方向会让另一半转向的内容上下倒置（返回 icon
     /// 跑到对角、进度条翻到顶部）。控制器进/出动画与控制层安全区映射都用它。
     @Published private(set) var fullscreenRotationAngle: CGFloat = .pi / 2
+    /// 自动连播信号（2026-11-14）：单集播完 → PlayerFeedViewModel（持有 queue/slots）
+    /// 算出下一集写入这里 → PlayerPagingScrollView 的 Coordinator 订阅并动画翻页 → 置回 nil。
+    /// 本类只发播完信号（onPlaybackEnded），不持有队列/槽位知识——下一集计算归 FeedVM，
+    /// 加载复用既有停稳管线（pageSettled），不另立加载链路。
+    @Published var autoAdvanceSort: Int?
+    /// 播完回调（FeedVM 在 init 接线）：didPlayToEnd 且事件对象 === 当前 item 时主线程调用
+    var onPlaybackEnded: (() -> Void)?
 
     @Published var isMuted = false {
         didSet {
@@ -90,6 +97,9 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 当前集的播放进度跟踪（落盘 + 下次续播）：随 load 换人，stop 时摘掉
     private var progressTracker: PlaybackProgressTracker?
     private var timeObserver: Any?
+    /// 播完通知观察令牌（AVPlayerItem.didPlayToEnd）：object 传 nil——currentItem 随切集
+    /// 更换，一次性挂接会失效；「事件对象 === 当前 item」的同一性判定放回调内，deinit 摘除
+    private var endItemObserver: Any?
     /// 当前集的行为数据归属；load 成功后才有值（未下载占位卡为 nil）
     private var currentIdentity: MediaIdentity?
     /// 当前加载的集（回前台重建 item 需要完整槽位：playlistURL / identity / sort）
@@ -121,6 +131,22 @@ final class DramaPlayerViewModel: ObservableObject {
         isCleanScreen = preferences.isCleanScreen
         showRemainingTime = preferences.showRemainingTime
         ensureObserver()
+        // 播完观察（自动连播信号源）：通知线程不定，回主线程判「事件对象 === 当前 item」
+        // 再碰状态（GCD 约定）——同一性判定天然过滤旧 item 的迟到事件（防快滑/切集竞态）
+        endItemObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: nil
+        ) { [weak self] note in
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let item = note.object as? AVPlayerItem,
+                      item === self.player.currentItem else {
+                    print("PLAYER_DBG [Playback] itemDidPlayToEnd SKIP reason=staleItem")
+                    return
+                }
+                print("PLAYER_DBG [Playback] itemDidPlayToEnd sort=\(self.currentEpisode?.sort ?? -1) → signal onPlaybackEnded")
+                self.onPlaybackEnded?()
+            }
+        }
         print("PLAYER_DBG [Playback] VM init muted=\(isMuted) cleanScreen=\(isCleanScreen) remaining=\(showRemainingTime)")
     }
 
@@ -417,6 +443,10 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     deinit {
+        // 播完通知观察随 VM 释放摘除（object: nil 的令牌式观察必须显式移除）
+        if let endItemObserver {
+            NotificationCenter.default.removeObserver(endItemObserver)
+        }
         // 退出探针：fullScreenCover 销毁时机 = VM（连带 AVPlayer）释放点。
         // 5.2s 冻结疑似落在 deinit 前后（AVFoundation 远端 teardown / SwiftUI 收尾），
         // 时间戳与 mainStall 对照即可钉出冻结段归属

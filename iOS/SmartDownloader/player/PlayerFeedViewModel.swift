@@ -29,6 +29,10 @@ final class PlayerFeedViewModel: ObservableObject {
 
     init() {
         playback = DramaPlayerViewModel(playerService: playerService)
+        // 连播接线（2026-11-14）：播完信号 → 本类算下一集（持有 queue/slots）→
+        // 置 playback.autoAdvanceSort 交给滚动层动画翻页 → 复用既有停稳管线加载。
+        // 本类不直接 load：翻页照常走分页容器，refreshAvailability/预热池/autoplay 全在 pageSettled
+        playback.onPlaybackEnded = { [weak self] in self?.playbackDidEnd() }
     }
 
     var seriesName: String { queue?.seriesName ?? "" }
@@ -150,6 +154,26 @@ final class PlayerFeedViewModel: ObservableObject {
         AppHaptics.warning()   // 上滑到最后一集再滑一次仍翻不出去：到达边界（行业惯例警示触）
         showToast("已经到底了")
         print("PLAYER_DBG [CHECK] pullBeyondEnd → toast「已经到底了」")
+    }
+
+    /// 单集播完（DramaPlayerViewModel 的 didPlayToEnd 信号）→ 自动连播下一集。
+    /// 职责边界：本方法只算下一集并置信号（playback.autoAdvanceSort）——动画翻页归
+    /// PlayerPagingScrollView 的 Coordinator，加载复用 pageSettled（refreshAvailability /
+    /// 预热池 / autoplay 全在既有管线里，连播下一集大概率 HIT 预热池秒开）。
+    /// 末集播完不跳（hasNext false，停在末帧）；下一集未下载照常跳占位页
+    ///（pageSettled 自带「尚未下载」toast）；拖 seek 到片尾触发连播视为合理。
+    func playbackDidEnd() {
+        guard let current = currentSort else {
+            print("PLAYER_DBG [CHECK] playbackDidEnd SKIP reason=noCurrentSort")
+            return
+        }
+        guard hasNext(after: current), let i = slots.firstIndex(where: { $0.sort == current }) else {
+            print("PLAYER_DBG [CHECK] playbackDidEnd SKIP reason=lastEpisode sort=\(current)")
+            return
+        }
+        let next = slots[i + 1]
+        print("PLAYER_DBG [VM] playbackDidEnd current=\(current) → autoAdvance=\(next.sort) available=\(next.isAvailable)")
+        playback.autoAdvanceSort = next.sort
     }
 
     /// 2 秒后自动消失（用户指定）。取消旧 WorkItem + UUID 令牌：连续提示时旧任务
