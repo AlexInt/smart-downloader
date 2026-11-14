@@ -116,6 +116,8 @@ struct DramaDetailView: View {
                                    alignment: .topLeading)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
+                    // 顶栏（返回 / 收藏）钉在屏幕顶部：**不随页面滚动**，用户拍板 2026-11-14
+                    .overlay(alignment: .topLeading) { pinnedHeader(scale: scale) }
                     // 左缘右滑时整屏跟手，露出左侧底层，模拟系统返回观感
                     .offset(x: edgeDragWidth)
                     // toast 改屏幕悬浮：画布变长后不能再钉在 y690
@@ -209,13 +211,13 @@ struct DramaDetailView: View {
     // MARK: - 屏内画布
 
     /// 层序与设计稿一致：海报 → 光晕/scrim → 占位 → 文字 → 内容组 → 推荐 → 档案
+    /// 顶栏（返回 / 收藏）**不在画布里**——它钉在 ScrollView 之上（body 里的 pinnedHeader）
     @ViewBuilder
     private func canvas(_ info: DramaInfo, layout: PageLayout) -> some View {
         ZStack(alignment: .topLeading) {
             DWColor.background
                 .frame(width: DWLayout.designWidth, height: layout.totalHeight)
             coverLayer
-            headerBar
             titleAndTags(info)
             descriptionBlock
             contentGroup(info)
@@ -260,7 +262,6 @@ struct DramaDetailView: View {
                             DWColor.coverPlaceholder
                         }
                         if case .success = phase { glowLayer }
-                        scrimTop
                         scrimBottom
                         switch phase {
                         case .empty: loadingPlaceholder
@@ -274,7 +275,6 @@ struct DramaDetailView: View {
             } else {
                 ZStack(alignment: .topLeading) {
                     DWColor.coverPlaceholder
-                    scrimTop
                     scrimBottom
                     failurePlaceholder
                 }
@@ -294,6 +294,8 @@ struct DramaDetailView: View {
             .allowsHitTesting(false)
     }
 
+    /// 顶部压暗渐变：现在由 `pinnedHeader` 常驻渲染（不再属于海报层），
+    /// 保证顶栏图标在任何滚动位置都有对比度
     private var scrimTop: some View {
         LinearGradient(colors: [.black.opacity(0.45), .clear],
                        startPoint: .top, endPoint: .bottom)
@@ -348,7 +350,22 @@ struct DramaDetailView: View {
         .frame(width: 390, height: DetailLayout.posterHeight)
     }
 
-    // MARK: ② 顶栏
+    // MARK: ② 顶栏（钉在屏幕顶部，不随滚动）
+
+    /// 固定顶栏层：与画布同一套设计坐标（390 宽），在 body 里按 scale 缩放后叠在
+    /// ScrollView 之上。高度只取 100（顶栏内容全部落在 y44…88），不铺满整屏，
+    /// 这样它不会挡住下方的滚动区域。
+    private func pinnedHeader(scale: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            // 顶部压暗渐变随顶栏一起常驻：滚动后图标下面可能是任意内容（含亮色封面），
+            // 没有这层会看不清。原先它挂在海报层里，滚动就跟着跑了。
+            scrimTop
+            headerBar
+        }
+        .frame(width: DWLayout.designWidth, height: 100)
+        .scaleEffect(scale, anchor: .topLeading)
+        .frame(width: DWLayout.designWidth * scale, height: 100 * scale, alignment: .topLeading)
+    }
 
     /// 视觉盒 32×32 @ (16,50)/(334,50)，命中区外扩到 44×44（设计稿 ::after 规则）
     private var headerBar: some View {
@@ -375,7 +392,7 @@ struct DramaDetailView: View {
             .designFrame(328, 44, 44, 44)
             .accessibilityLabel(vm.isFavorite ? "取消收藏" : "收藏")
         }
-        .frame(width: 390, height: 840)
+        .frame(width: 390, height: 100)
     }
 
     // MARK: ③ 标题 / 标签 / 简介（不随展开位移）
