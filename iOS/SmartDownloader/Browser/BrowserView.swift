@@ -248,6 +248,10 @@ struct WebViewContainer: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
+        // 键盘弹出后，下滑网页即可把键盘带走（Safari 同行为）。用 .interactive 而不是
+        // .onDrag：键盘跟手一起下落，松手没过半会弹回，手感更接近系统网页；
+        // 键盘收起时 KeyboardObserver 会自动把 tab bar / 底部工具条恢复
+        webView.scrollView.keyboardDismissMode = .interactive
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         store.webView = webView

@@ -45,22 +45,33 @@ final class KeyboardObserver {
     }
 
     private func handle(_ note: Notification) {
-        // keyboardFrameEndUserInfoKey 给出结束窗口坐标：高度 0 即键盘收起
+        // keyboardFrameEndUserInfoKey 给出结束时的窗口坐标：光看高度不够——
+        // 交互式下滑收起（UIScrollView.keyboardDismissMode = .interactive）时键盘是
+        // 整体移出屏幕、高度仍是全高，必须按 minY 是否还在屏内判定
         var height: CGFloat = 0
+        var offScreen = false
         if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
             height = frame.height
+            offScreen = screenHeight > 0 && frame.minY >= screenHeight - 1
         }
         let next: Bool
         switch note.name {
         case UIResponder.keyboardWillHideNotification:
             next = false
         default:
-            next = height > 0
+            next = height > 0 && !offScreen
         }
         guard next != isVisible else { return }
         isVisible = next
         print("UI_DBG keyboard \(next ? "show" : "hide") h=\(Int(height)) subscribers=\(handlers.count)")
         // 快照遍历：回调里可能取消订阅（自己把自己摘掉），不能边遍历边改字典
         for (_, handler) in Array(handlers) { handler(next) }
+    }
+
+    /// 主屏高度（键盘 frame 用的是屏幕坐标）：取当前活跃 windowScene 的坐标系
+    private var screenHeight: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.coordinateSpace.bounds.height ?? 0
     }
 }
