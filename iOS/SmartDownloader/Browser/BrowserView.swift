@@ -27,12 +27,19 @@ struct BrowserView: View {
     /// 键盘可见时收起底部工具条（App 级 tab bar 同理由 KeyboardObserver 收起）
     @State private var keyboardVisible = KeyboardObserver.shared.isVisible
     @State private var keyboardCancel: (() -> Void)?
+    /// 顶部两行（地址栏 + 快捷站点）是否已随网页下滑收起（用户 2026-11-14 方案 B）。
+    /// 判定在 `ScrollCollapsePolicy`，这里只存视觉状态。
+    @State private var chromeCollapsed = false
+    /// 地址栏焦点：正在输入时不收起（收走地址栏会打断输入），聚焦即展开
+    @FocusState private var addressFocused: Bool
+    /// 收起/展开后的静默窗口：栏位高度变化会让 WebKit 重排并吐回一条 scroll 事件，
+    /// 不压住会和这次收起对着干（连点式抽动）。用 systemUptime 毫秒，与 PERF 同坐标系
+    @State private var chromeQuietUntil: TimeInterval = 0
 
     var body: some View {
         NavigationStack {
         VStack(spacing: 0) {
-            addressRow
-            quickLinkRow
+            topChrome
 
             if let loadError = store.loadError {
                 errorLine(loadError)
@@ -41,13 +48,17 @@ struct BrowserView: View {
             // ③ 内容区：WKWebView 本体（外部页面配色不可控，纸本轨只保证周边与占位是同色系）
             WebViewContainer(manager: manager, store: store, address: $address,
                              onDramaLinkClick: { pushDramaPage($0) },
-                             onDramaURLDetected: { detectDrama($0, undoSPA: $1) })
+                             onDramaURLDetected: { detectDrama($0, undoSPA: $1) },
+                             onScrollReport: { handleScrollReport($0, top: $1, container: $2) },
+                             onPageCommit: { expandChrome(reason: "pageCommit") })
                 .background(DWColor.paperCanvas)
 
-            if !keyboardVisible {
+            if !keyboardVisible && (!chromeCollapsed || bottomBarPinned) {
                 // 键盘弹起时整行收起：把这 54pt 让给网页输入区（Safari 同行为）。
-                // 不收起的话它和 App 级 tab bar 会一起被顶到键盘上方，白占两层高度
+                // 不收起的话它和 App 级 tab bar 会一起被顶到键盘上方，白占两层高度。
+                // 网页下滑时也收起（只留网页）；一旦嗅到可下载视频就钉住不收。
                 bottomBar
+                    .transition(.opacity)
             }
         }
         // App 层 tab bar 是 safeAreaInset 注入的，但系统只把它自带的 34pt 底部安全区
@@ -83,6 +94,14 @@ struct BrowserView: View {
         .onChange(of: dramaPageTarget) { _, target in
             detailActive = (target != nil)
         }
+        .onChange(of: addressFocused) { _, focused in
+            // 聚焦地址栏 = 用户要输入：必须先把两行展开（收起状态下地址栏是 0 高）
+            if focused { expandChrome(reason: "addressFocused") }
+        }
+        .onChange(of: keyboardVisible) { _, visible in
+            // 键盘弹起时若两行是收起的，展开（不然屏幕上下都空着却看不见地址栏）
+            if visible { expandChrome(reason: "keyboardShown") }
+        }
         .onChange(of: address) { _, newValue in
             if let target = DramaTarget.parse(newValue) {
                 detectDrama(target, undoSPA: false)
@@ -105,6 +124,59 @@ struct BrowserView: View {
         }
     }
 
+    // MARK: - 顶部两行（画布 22:284 地址栏 52 + 22:304 快捷站点 44）
+
+    /// 画布 22:284 地址行 52 + 22:304 快捷站点行 44：收起联动的整块高度。
+    /// 改画布几何时这里要同步（`addressRow` / `quickLinkRow` 的 frame 与它一起改）。
+    static let topChromeHeight: CGFloat = 52 + 44
+
+    /// 网页下滑时整块收到 0 高（省 96pt），上滑 / 回顶 / 换页再展开。
+    ///
+    /// 用「固定高度 + clipped」而不是 `if` 插拔：`if` 会让 addressRow 连同 TextField
+    /// 一起被销毁重建，正在输入的地址会被打断（失焦、文字跳动）。
+    private var topChrome: some View {
+        VStack(spacing: 0) {
+            addressRow      // ① 地址栏行
+            quickLinkRow    // ② 快捷站点行
+        }
+        .frame(height: chromeCollapsed ? 0 : Self.topChromeHeight, alignment: .top)
+        .clipped()
+        .allowsHitTesting(!chromeCollapsed)   // 收到 0 高后别留一条看不见的命中区
+        .background(DWColor.paper)
+    }
+
+    // MARK: - 滚动收起联动（用户 2026-11-14 方案 B）
+
+    /// 工具条钉住条件：嗅到可下载视频时不让它跟手收起。
+    /// `foundURLs` 是**会话级**列表（换页不清空），所以一旦本会话嗅到过 m3u8，
+    /// 工具条就不再收起——这是刻意的：那时「下载视频 (n)」是可用操作，
+    /// 不该让用户为了点它先往上滑一下。
+    private var bottomBarPinned: Bool { !manager.foundURLs.isEmpty }
+
+    /// 网页滚动方向上报 → 收起/展开顶部两行与底部工具条。
+    /// 判据在 `ScrollCollapsePolicy`（纯函数），这里只落状态与日志。
+    private func handleScrollReport(_ direction: ScrollCollapsePolicy.Direction,
+                                    top: CGFloat, container: String) {
+        // 正在输入地址 / 键盘弹着时不收：收走地址栏会打断输入
+        guard !addressFocused, !keyboardVisible else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= chromeQuietUntil else { return }   // 刚收起/展开，等 WebKit 重排的回声过去
+        guard let next = ScrollCollapsePolicy.resolve(collapsed: chromeCollapsed,
+                                                      direction: direction, top: top),
+              next != chromeCollapsed else { return }
+        print("BROWSER: chrome collapsed=\(next) dir=\(direction.rawValue) top=\(Int(top)) container=\(container) pinned=\(bottomBarPinned)")
+        chromeQuietUntil = now + 0.35
+        withAnimation(.easeOut(duration: 0.22)) { chromeCollapsed = next }
+    }
+
+    /// 展开（换页 / 聚焦地址栏时用）：已展开则什么都不做，不刷多余日志
+    private func expandChrome(reason: String) {
+        guard chromeCollapsed else { return }
+        print("BROWSER: chrome collapsed=false reason=\(reason)")
+        chromeQuietUntil = ProcessInfo.processInfo.systemUptime + 0.35
+        withAnimation(.easeOut(duration: 0.22)) { chromeCollapsed = false }
+    }
+
     // MARK: - ① 地址栏行（画布 22:296，h52 / pad 10 / gap 8）
 
     /// 输入框 34 高 + 访问按钮 54×34，两侧各留 9 → 行高 52（画布 22:296 固定 52）
@@ -125,6 +197,7 @@ struct BrowserView: View {
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                     .submitLabel(.go)
+                    .focused($addressFocused)
                     .onSubmit { store.load(address) }
             }
             .padding(.horizontal, 10)
@@ -398,6 +471,11 @@ struct WebViewContainer: UIViewRepresentable {
     var onDramaLinkClick: (DramaTarget) -> Void = { _ in }
     /// URL 变为剧集页（SPA pushState 或提交完成）时回调 (target, undoSPA)
     var onDramaURLDetected: (DramaTarget, Bool) -> Void = { _, _ in }
+    /// 网页滚动方向上报（滚动收起联动）：由 `ScrollCollapseScript` 经 browserScroll 回传
+    ///（方向 / 该容器当前 top / doc|inner）
+    var onScrollReport: (ScrollCollapsePolicy.Direction, CGFloat, String) -> Void = { _, _, _ in }
+    /// 主帧提交（换页 / 刷新）：宿主据此把地址栏两行展开（新页面从顶部开始，必须有地址栏）
+    var onPageCommit: () -> Void = {}
     /// 主浏览页 = true：注册 WebKit 兕底宿主 + 持久化最后访问页；剧集内嵌页 = false
     var isPrimaryBrowser = true
     /// 起始加载地址；nil = 主浏览页恢复上次访问页
@@ -431,6 +509,17 @@ struct WebViewContainer: UIViewRepresentable {
                          forMainFrameOnly: false)
         )
         controller.add(context.coordinator, name: "keyboardDismiss")
+
+        // 滚动收起联动：网页下滑收地址栏/工具条，上滑回顶展开（见 ScrollCollapseScript）。
+        // 只主浏览页装：剧集内嵌 webview 没有地址栏可收，装了只是白跑
+        if isPrimaryBrowser {
+            controller.addUserScript(
+                WKUserScript(source: ScrollCollapseScript.source,
+                             injectionTime: .atDocumentStart,
+                             forMainFrameOnly: true)
+            )
+            controller.add(context.coordinator, name: "browserScroll")
+        }
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
@@ -467,6 +556,9 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
+        // 宿主闭包随 SwiftUI 重建刷新：Coordinator 持有的是 makeCoordinator 时的副本，
+        // 不刷新的话闭包里捕获的都是首帧的那个 BrowserView（滚动收起联动要用最新状态）
+        context.coordinator.parent = self
         // WebKit 在某些加载阶段会把 scrollView 的 keyboardDismissMode 重置，
         // 每次更新补一次（文档本身可滚的站点靠它，内部容器滚动靠 KeyboardDismissScript）
         if uiView.scrollView.keyboardDismissMode != .interactive {
@@ -478,6 +570,7 @@ struct WebViewContainer: UIViewRepresentable {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "sniffer")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "adClean")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "keyboardDismiss")
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "browserScroll")
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -515,6 +608,20 @@ struct WebViewContainer: UIViewRepresentable {
                 print("BROWSER: keyboardDismiss from \(kind) keyboardOn=\(keyboardOn) webEndEditing=\(dismissed)")
                 return
             }
+            if message.name == "browserScroll" {
+                // 滚动收起联动：格式 "方向 该容器top doc|inner"（见 ScrollCollapseScript）
+                let text = (message.body as? String) ?? ""
+                let parts = text.split(separator: " ")
+                guard parts.count >= 2,
+                      let dir = ScrollCollapsePolicy.Direction(rawValue: String(parts[0])),
+                      let top = Double(parts[1]) else {
+                    print("BROWSER: browserScroll 无法解析 -> \(text)")
+                    return
+                }
+                let kind = parts.count >= 3 ? String(parts[2]) : "?"
+                parent.onScrollReport(dir, CGFloat(top), kind)
+                return
+            }
             guard message.name == "sniffer", let urlString = message.body as? String else { return }
             parent.manager.recordFound(urlString: urlString)
             if let current = parent.store.webView?.url?.absoluteString {
@@ -547,6 +654,8 @@ struct WebViewContainer: UIViewRepresentable {
             provisionalRetries = 0
             isInitialLoad = false
             parent.store.loadError = nil
+            // 新页面从顶部开始：把收起的两行展开（不然换页后地址栏还是藏着的）
+            parent.onPageCommit()
             // 前进/后退箭头可用性跟着导航栈走（画布 22:329/331）
             parent.store.refreshNavigationState()
             print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")

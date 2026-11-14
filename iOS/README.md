@@ -118,7 +118,7 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`）/ `MainTab`（tab 条目与图标唯一定义点）/ `PlaybackProgress` / `QuickLink` |
 | `SmartDownloader/Drama/` | 剧集域：`DramaDetailData`（接口 DTO）、`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`（Service）、`DramaPageViewModel`（VM）、`DramaDetailView`（View）、`DramaNativePage`（组装根） |
 | `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
-| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS）、`KeyboardDismissScript`（滑动网页收键盘的手势上报 JS） |
+| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS）、`KeyboardDismissScript`（滑动网页收键盘的手势上报 JS）、`ScrollCollapseScript`（滚动方向上报 JS：下滑收地址栏/工具条）、`ScrollCollapsePolicy`（纯判定状态机）、`BrowserStartPage`（起始页决策 Service） |
 | `SmartDownloader/Settings/` | 设置域：「我的」页的二级页（导航栈由 `ProfileView` 提供，本页不自建）。`QuickLinkStore` / `AppLaunchPreferences` / `DramaRoutePreferences`（Service）、`SettingsViewModel`（VM）、`SettingsView` + `QuickLinkEditorSheet`（View） |
 | `SmartDownloader/Profile/` | 我的域（纸本轨）：`ProfileViewModel`（四分类数据装配：历史/收藏/追更/点赞）、`ProfileView`（顶栏区 `pinnedHeader` 钉住身份行+分类+筛选；`NavigationStack(path:)` 值驱动路由 + `ProfileRoute`；底部 `.safeAreaPadding(MainTab.barReservedHeight + 15)` 避让 tab bar；`path.isEmpty` → `detailActive` 让 App 隐藏 bar） |
 | `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF）、`KeyboardObserver`（键盘显隐，弹起时收起 tab bar 与浏览页底部工具条） |
