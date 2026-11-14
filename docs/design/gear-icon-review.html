@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SmartDownloader · 设置入口图标 · 评审与改稿规格</title>
+<style>
+  :root{
+    --paper:#F2F0EA; --ink:#1C1E1F; --nong:#35393B; --zhong:#5A5F60; --dan:#8C9190; --qing:#C4C7C3;
+    --zhusha:#A05243;
+  }
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font:15px/1.75 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto;padding:56px 40px 96px;}
+  h1{font:600 30px/1.4 "Noto Serif SC",serif;margin:0 0 6px;}
+  h2{font:600 20px/1.5 "Noto Serif SC",serif;margin:44px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--qing);}
+  h3{font:600 16px/1.6 inherit;margin:26px 0 6px;}
+  p{margin:8px 0;}
+  .sub{color:var(--zhong);font-size:13px;margin:0 0 8px;}
+  .lead{background:#fff;border:1px solid var(--qing);border-radius:12px;padding:20px 22px;margin:26px 0;}
+  .lead b{color:var(--zhusha);}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--qing);padding:8px 11px;text-align:left;vertical-align:top;}
+  th{background:rgba(0,0,0,.035);font-weight:600;}
+  code{background:rgba(0,0,0,.05);padding:1px 6px;border-radius:4px;font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .swatch{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1px solid rgba(0,0,0,.18);}
+  ul,ol{margin:8px 0 8px 22px;padding:0;} li{margin:5px 0;}
+  .ok{color:#3F6B4A;font-weight:600;} .bad{color:var(--zhusha);font-weight:600;}
+  figure{margin:16px 0;} figcaption{font-size:12.5px;color:var(--zhong);margin-top:6px;}
+  img{max-width:100%;border:1px solid var(--qing);border-radius:8px;background:var(--paper);display:block;}
+  .row{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;}
+  .card{flex:1 1 300px;background:#fff;border:1px solid var(--qing);border-radius:10px;padding:14px 16px;}
+  .kv{font-size:13px;} .kv div{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px dashed var(--qing);}
+  .kv div:last-child{border:0;}
+</style>
+
+<div class="wrap">
+  <h1>设置入口图标 · 可用性与语义一致性评审</h1>
+  <p class="sub">SmartDownloader iOS · 纸墨双轨 · 画布文件 746972112461422 · 评审对象：tab 栏「设置」齿轮 + 「我的」页右上角按钮</p>
+
+  <div class="lead">
+    <p><b>一句话结论：</b>当前 tab 栏「设置」图标不是「糊」，而是<b>构型错误</b>——它是「中心环 + 8 根放射短线」，按定义就是太阳/星芒符号；真实齿轮靠的是<b>闭合齿廓</b>。改为 8 齿闭合轮廓后，1x / 3x 实测均清晰可辨，<b>不需要降到 6 齿</b>；同时「我的」页右上角那枚按钮<b>必须换语义</b>，因为它现在与左边的新月并排，会被读成「暗 / 亮」外观切换对，而 App 里已经有一个外观开关了。</p>
+  </div>
+
+  <div class="lead" style="border-left:4px solid var(--zhusha)">
+    <p style="margin:0"><b>状态（2026-11-14）</b></p>
+    <ul style="margin:8px 0 0">
+      <li><b>已落地</b>：8 齿闭合齿轮已按 <code>gear-settings-tab.svg</code> 的几何替换画布 5 处（下载中页 tab、已下载页 tab、我的页 tab 选中态、浏览页 tab、我的页右上角按钮），实测渲染为清晰可辨的 8 齿 cog，中心孔完整、无断线无色块。本文档 §2 的参数即落地依据。</li>
+      <li><b>已上抛用户拍板（本文档仅记录口径，未擅自执行）</b>：§1 顶栏按钮语义、§5 第 ② 条未选中态对比度、§5 第 ③ 条墨本轨反相、§5 第 ④ 条触控热区、§3 浏览的实心罗盘针改描边与 08 页 tab 栏 gap 统一、§4 落代码用 SF Symbol。</li>
+    </ul>
+  </div>
+
+  <h2>0 · 先纠正三个事实</h2>
+  <table>
+    <tr><th>流传说法</th><th>实测结论</th></tr>
+    <tr><td>「8 齿在 17px 会糊成黑饼」</td><td><span class="ok">不成立</span>。用闭合齿廓实测：1x 最窄白通道 2px、中位 3px；3x 最窄 2px、中位 9px。糊的真正原因是<b>放射线与中心环不相连</b>（那是太阳），不是齿数。</td></tr>
+    <tr><td>「6 齿是下限 / 必须降齿」</td><td><span class="bad">反了</span>。6 齿渲染出来是<b>花瓣</b>（见下方对比图 V3），比 8 齿更不像齿轮；8 齿才读作 cog。</td></tr>
+    <tr><td>「右上角齿轮只是和 tab 重复」</td><td>更严重：它<b>与左侧新月构成语义冲突</b>（见 §1）。</td></tr>
+  </table>
+
+  <h2>1 · 语义重复：同页两枚「设置」，且与外观开关撞车</h2>
+
+  <h3>画布实测</h3>
+  <ul>
+    <li>「我的」页身份行右上角是 <b>20×20</b> 容器 × 2：<b>🌙 夜间</b>（node 19:93，光学 Ø13.3px）+ <b>☀「设置」</b>（node 19:95，光学 Ø17px）。</li>
+    <li>那枚「设置」按钮的图形（node 24:1 / 24:2）= <b>与 tab 栏「设置」完全同一份路径</b>（node 22:160 / 22:159），只是换了颜色（重墨 #5A5F60 vs 焦墨 #1C1E1F）。</li>
+    <li>所以同一个 ☀ 图形在<b>同一屏出现两次</b>：一次在顶栏、一次在 tab 栏；而且它和紧挨着的月亮一起，构成「暗 / 亮」外观切换对 —— 用户会把它读成<b>「切到白天/亮度」</b>，而不是设置。</li>
+  </ul>
+  <p><img src="gear-tabset-1x.png" alt="tab set" style="max-width:760px"></p>
+  <figcaption>真机 1x 截图（Ardot 画布导出）：右上角月亮 + 太阳；tab 栏第三项也是同一枚太阳。</figcaption>
+
+  <h3>iOS 惯例</h3>
+  <ul>
+    <li>导航栏右上角是<b>动作位</b>（分享 / 搜索 / 更多 ⋯），不是「App 设置」的重复入口。</li>
+    <li>页内齿轮通常表示<b>本屏 / 本段落的设置</b>（如相册内的「照片设置」）。已有 Settings tab 时再放齿轮，是 Apple 明确不推荐的重复目的地。</li>
+    <li>无障碍层面还会产生<b>两个同名「设置」控件</b>（VoiceOver 列表里出现两个「设置」按钮），违反 WCAG 2.5.3（Label in Name / 名称唯一）。</li>
+  </ul>
+
+  <h3>可执行建议（按优先级）</h3>
+  <ol>
+    <li><b>首选：删掉「我的」页右上角那枚齿轮</b>，只保留「夜间」。理由：MainTab 已有「设置」tab；且画布上「我的」页的 tab 栏把<b>「设置」标成了选中态</b>，说明「我的」被当作「设置」的子页 —— 此时顶栏再放齿轮是 100% 冗余。若「我的」不属于「设置」子页，则 tab 栏不该高亮「设置」，二者必须二选一（MainTab 只有 3 项，「我的」不能是第 4 个 tab）。</li>
+    <li><b>次选：换成「更多」语义</b> —— <code>ellipsis.circle</code>，点击弹出 <b>sheet</b>（标题写「我的偏好」），<b>不要跳转到设置 tab 页</b>，两处入口不得指向同一目的地。sheet 内可放：个人资料 / 存储占用 / 下载记录入口。</li>
+    <li><b>不建议</b>：换成 <code>slider.horizontal.3</code>（滑杆在 iOS 语境强指向「筛选/参数」，在「我的」页语义过窄）；<b>更不建议</b>：保留两枚齿轮。</li>
+    <li><b>若最终选择「进二级页」路线（chevron.right / person.crop.circle），两个前提</b>：① <code>person.crop.circle</code> 与身份行最左侧<b>已有的 34×34 头像（node 19:90）</b>构成一行两个人形图形，比两枚齿轮更易误读 —— 若选它，建议改为一个无人物的入口（如 `list.bullet` / `person.text.rectangle`）；② <code>chevron.right</code> 表达「进入下一级」而非「打开面板」，放在导航栏右上角不符合 iOS 惯例（chevron 通常在列表行右侧），且必须让该二级页的标题与「设置」tab 页明确区分，否则两条路径仍会收敛到同一目的地。</li>
+    <li>无论选哪条，<b>必须写清点击目标</b>：跳设置页 / 开偏好弹层，两者语义与视觉都要分开。</li>
+    <li>顺带：<b>夜间（月亮）按钮的光学直径 13.3px 与旁边 17px 不等重</b>，建议统一到 <b>16–17px</b>；且月亮是「动作」不是「设置」，建议加 <code>.accessibilityLabel("切换到墨本")</code> 之类的状态化文案。</li>
+  </ol>
+
+  <h2>2 · 可辨识度：闭合齿廓 + 8 齿 + 1.3px，1x/3x 都清晰</h2>
+  <p>用真实像素渲染（Chrome headless，@1x 与 @3x）逐一测量「相邻墨迹之间的最窄白色通道」：</p>
+  <table>
+    <tr><th>候选</th><th>构造</th><th>1x 最窄通道</th><th>3x 最窄通道</th><th>判读</th></tr>
+    <tr><td>V1</td><td>8 齿 · 齿高 2.0 · 描边 1.3</td><td>2px（中位 3px）</td><td>1px（中位 9px）</td><td><span class="ok">✓ 清晰</span></td></tr>
+    <tr><td>V2</td><td>8 齿 · 齿顶加宽</td><td>2px</td><td>2px</td><td>✓ 齿偏钝</td></tr>
+    <tr><td>V3</td><td><b>6 齿</b> · 窄齿宽谷</td><td>2px</td><td>1px</td><td><span class="bad">✗ 读作花瓣</span></td></tr>
+    <tr><td>V4</td><td><b>8 齿 · 描边 1.2</b></td><td>2px（中位 3px）</td><td>2px（中位 9px）</td><td><span class="ok">✓ 最清爽</span></td></tr>
+    <tr><td>V5</td><td>7 齿</td><td>2px</td><td>2px</td><td>✓ 但奇数齿视觉不匀</td></tr>
+    <tr><td>现状</td><td>中心环 + 8 放射短线</td><td>2px</td><td>6px</td><td><span class="bad">✗ 是太阳</span></td></tr>
+  </table>
+  <div class="row">
+    <figure style="flex:1 1 420px;margin:0">
+      <img src="gear-candidates-3x.png" alt="3x candidates">
+      <figcaption><b>@3x</b>：V3（6 齿）明显读作花瓣；8 齿全部读作 cog。</figcaption>
+    </figure>
+    <figure style="flex:1 1 420px;margin:0">
+      <img src="gear-candidates-1x.png" alt="1x candidates">
+      <figcaption><b>@1x</b>（最严苛）：8 齿仍可数出齿，V4 描边 1.2 最干净。</figcaption>
+    </figure>
+  </div>
+
+  <h3>改稿参数（22×22 容器内，与另两枚同坐标系）</h3>
+  <div class="row">
+    <div class="card kv">
+      <div><span>齿数</span><b>8</b></div>
+      <div><span>齿顶路径半径 R_tip</span><b>8.7</b></div>
+      <div><span>齿根路径半径 R_root</span><b>6.7</b></div>
+      <div><span>齿高</span><b>2.0</b></div>
+      <div><span>齿顶圆弧角宽</span><b>24°</b>（半角 12°）</div>
+      <div><span>齿侧角</span><b>3.5° / 侧</b>（近径向直齿侧）</div>
+      <div><span>齿根圆弧角宽</span><b>14°</b>（齿隙 ≈1.6px）</div>
+      <div><span>中心孔半径</span><b>3.2</b>（白孔 Ø5.1）</div>
+      <div><span>描边</span><b>1.3</b>（或 1.2 更清爽）</div>
+      <div><span>接头 / 端点</span><b>round join / round cap</b></div>
+      <div><span>光学直径</span><b>≈18.7px</b></div>
+    </div>
+    <div class="card">
+      <p style="margin-top:0"><b>可直接落地的路径</b>（中心 11,11；已带 round join）</p>
+      <p style="font-size:12px"><code>gear-settings-tab.svg</code>，同目录。描边色替换为 <code>#1C1E1F</code> / <code>#5A5F60</code> 即可换态。</p>
+      <p style="font-size:12.5px"><b>为什么 8 齿不糊：</b>齿顶弧宽 3.6px、齿隙 1.6px，1.3px 描边只吃掉齿隙两侧各 0.65px，仍留 <b>≈2px 纯白通道</b>。而现状的「放射线」结构里，中心环与放射线之间本就留了 2.4px 白 —— 它不糊，它<b>本来就是太阳</b>。</p>
+    </div>
+  </div>
+
+  <h2>3 · 线性 vs 填充：三枚 tab 图标目前不自洽</h2>
+  <p>把画布上三枚图标按<b>实际路径</b>拆开（导出的 SVG 原文）：</p>
+  <table>
+    <tr><th>图标</th><th>外廓</th><th>中心元素</th><th>中心处理</th><th>问题</th></tr>
+    <tr><td>浏览</td><td>圆环 Ø18，描边 1.3</td><td>罗盘针 Ø5.6</td><td><b>实心填充</b></td><td>违反「单色线性、无填充」</td></tr>
+    <tr><td>下载</td><td>圆环 Ø18，描边 1.3</td><td>下箭头 7×8.5</td><td>描边（等效 1.5）</td><td>—</td></tr>
+    <tr><td>设置</td><td><b>无外廓环</b></td><td>中心环 Ø5.6 + 8 放射线</td><td>描边 + 实心</td><td>缺外廓、语义族混用</td></tr>
+  </table>
+  <p>最刺眼的一处：<b>「设置」的 Ø5.6 中心环，与「浏览」的 Ø5.6 实心针同尺寸、同坐标（8.2, 8.2）</b> —— 看上去像「浏览图标的缩小版」，这是「两枚图标其实长得像」错觉的直接来源。</p>
+
+  <h3>统一规则（三条，照抄即可）</h3>
+  <ol>
+    <li><b>外廓齐平</b>：三枚图标的外沿光学包络统一到 <b>Ø18.6–19.3px</b>。现设定图标 18.3 ✓；浏览 / 下载的环现在光学位数 19.3（路径 r=9 + 描边 0.65），建议把路径 r 收到 <b>8.65</b>，光学 Ø18.6，三枚等重。</li>
+    <li><b>中心元素一律描边</b>：浏览的实心罗盘针改成<b>描边小环 / 描边指针</b>，与下载的描边箭头、设置的描边孔同族 —— 这样三枚才真正是「单色线性、无填充」，也符合项目自己的设计说明第一条（只有明度、没有色相）。</li>
+    <li><b>禁用放射图形</b>：太阳 / 星芒 / 亮度在 iOS 语义里 = <b>显示与亮度</b>，正是顶栏「夜间」按钮要占的语义位。tab 族里一旦出现放射形，它就会和外观开关抢同一个概念，也会让 tab 栏读成「亮度调节」。</li>
+  </ol>
+  <p>补充：08 浏览页那份 tab 栏（node 22:341/22:353）的图标—文字间距是 <code>gap: 3</code>，其余三份是 <code>gap: 4</code>，顺手统一。</p>
+
+  <h2>4 · 落代码差异：画布稿 ≠ 最终像素</h2>
+  <p>代码侧已固定为 <code>MainTab.icon</code>：<code>safari.fill</code> / <code>arrow.down.circle</code> / <code>gearshape</code>，渲染点为 <code>App.swift:123</code> 的 <code>Image(systemName: tab.icon).font(.system(size: 20))</code>。差异清单：</p>
+  <table>
+    <tr><th>项</th><th>画布稿</th><th>代码真机</th><th>说明</th></tr>
+    <tr><td>尺寸</td><td>22×22 容器 / 17px 图形</td><td><b>20pt 视口</b>，SF 自带光学留白，<code>gearshape</code> 字形约 <b>19pt</b></td><td>画布比真机小 2–3px，评审时看到的「糊」会被低估 → <b>画布容器改 20×20、图形光学 Ø18–19、描边 1.3</b></td></tr>
+    <tr><td>齿数</td><td>8</td><td><code>gearshape</code> = <b>8 齿</b></td><td>一致 ✓（若画布定 6 齿则两端不符，须在注释写明以代码为准）</td></tr>
+    <tr><td>实心度</td><td>浏览 = 线性罗盘</td><td><code>safari.fill</code> = <b>填充圆盘</b> + 白色指针</td><td>画布<b>低估</b>了浏览图标的墨量；这是三枚里最大的实心度落差</td></tr>
+    <tr><td>线宽</td><td>1.3</td><td>SF Regular @20pt 约 <b>1.5–1.6pt</b></td><td>画布按 1.3 画即可（略细更贴纸墨），但落代码后会更粗一点，评审时留余量</td></tr>
+    <tr><td>接头</td><td>自绘</td><td>SF 圆端圆角</td><td>画布稿务必用 round join / round cap，否则换 SF 后观感变硬</td></tr>
+    <tr><td>颜色</td><td>墨阶手填</td><td><code>.foregroundStyle</code> 吃 tint</td><td>纸墨轨需新建 token；当前 <code>DWColor</code> 还是旧紫黑主题（<code>#0A0A0F</code>），不是纸墨</td></tr>
+  </table>
+  <h3>画布 → 代码的交付约定（建议写进画布注释层）</h3>
+  <ul>
+    <li>图标组件名统一加后缀 <b>「[占位]」</b>，并在画布上加一行注释：<code>落代码 = Image(systemName:"gearshape").font(.system(size:20)) · 自绘路径不交付</code>。</li>
+    <li><b>画布图标一律当占位示意</b>，评审以 SF 实际渲染为准；如需评审真机效果，把 SF Symbol 的 20pt 截图贴进画布，而不是继续完善自绘路径。</li>
+    <li>若坚持要「水墨版」自绘图标，必须<b>整套换</b>（含浏览 / 下载），并在设计说明里写死规则：同一套图标在代码里也用自绘资源，不再用 <code>systemName</code> —— 否则 <code>MainTab.icon</code> 这个字符串契约要改，代码侧要同步。</li>
+  </ul>
+
+  <h2>5 · 附带必须一起修的 4 处（不改会白改）</h2>
+  <ol>
+    <li><b>同一份太阳图形有 5 份拷贝</b>，改的时候别只改一处：<code>2:179</code>、<code>19:353</code>、<code>22:356</code>、<code>22:160</code>（tab 栏 4 份）+ <code>24:1</code>（顶栏 1 份）；配套的中心环 <code>2:178</code> / <code>19:352</code> / <code>22:355</code> / <code>22:159</code> / <code>24:2</code> 也要一起换。</li>
+    <li><b>未选中态对比度不达标</b>：淡墨 <span class="swatch" style="background:#8C9190"></span><code>#8C9190</code> 压在纸本 <span class="swatch" style="background:#F2F0EA"></span><code>#F2F0EA</code> 上只有 <b>2.81:1</b>。tab 标签是 10px 文字（需 ≥4.5:1）、图标是理解内容所必需（需 ≥3:1），<b>两条都不过</b>。→ 未选中图标与文字统一改 <b>重墨 #5A5F60（5.77:1 ✓）</b>；淡墨只留给分隔线（细线应使用清墨 #C4C7C3）。选中态焦墨 #1C1E1F = 15.6:1 ✓。</li>
+    <li><b>墨本轨必须反相</b>：焦墨 <code>#1C1E1F</code> 压在墨本 <code>#14171A</code> 上 = <b>1.01:1</b>（等于隐形）。纸墨双轨下墨阶要整体反相：墨本选中用纸本 <code>#F2F0EA</code> / 清墨 <code>#C4C7C3</code>，未选中用淡墨 <code>#8C9190</code>（对 #14171A 为 5.63:1 ✓）。</li>
+    <li><b>触控目标与读屏</b>：顶栏 20×20 容器低于 iOS HIG / WCAG 2.5.8 的最小可点尺寸，代码里热区扩到 <b>44×44</b>（<code>.frame(minWidth:44,minHeight:44)</code> + <code>.contentShape(Rectangle())</code>）；tab 三项同样处理。两枚同名控件（改完只剩一枚则无此问题）；齿轮按钮加 <code>.accessibilityLabel("设置")</code>，夜间按钮加状态化文案；选中态用 <code>.accessibilityAddTraits(.isSelected)</code> 而非只靠颜色 + 朱砂点（朱砂点仅作冗余线索，符合「朱砂仅标选中」规则）。</li>
+  </ol>
+
+  <h2>6 · 响应式 / 多端</h2>
+  <ul>
+    <li>iPad 分屏 / 横屏时 tab 栏不变，但<b>触达距离</b>变远，图标热区按上面 44×44 走。</li>
+    <li><b>动态字体</b>：代码里 tab 文字用 <code>.caption2</code>（随 Dynamic Type 缩放），画布 10px 固定值不能代表大字模式 —— 建议真机跑一次 AX5（最大字号），确认三枚图标不因文字变大而顶出 47px 的 <code>MainTab.barReservedHeight</code>。</li>
+    <li><b>深色 / 墨本</b>：见 §5 第 3 条，墨阶反相必须单独出一套。</li>
+    <li>图标本身是矢量，随系统 <b>Bold / Increase Contrast / Reduce Transparency</b> 自动适配；<b>Increase Contrast</b> 开启时 SF 会加粗描边，齿隙会变窄 —— 这也是保持「1x 最窄 2px」余量的理由。</li>
+  </ul>
+
+  <h2>推荐采用的方案</h2>
+  <div class="lead">
+    <p><b>把「设置」图标重画成 8 齿闭合齿轮（22×22 容器内：R_tip 8.7 / R_root 6.7 / 齿顶弧 24° / 齿侧 3.5° / 中心孔 r 3.2 / 描边 1.3 / round join），同步把「浏览」的实心罗盘针改成描边以统一线性家族，未选中态改用重墨 #5A5F60，并把「我的」页右上角那枚齿轮直接删除（或换成「更多」ellipsis.circle 弹 sheet）—— 画布图标一律标注为占位稿，落代码统一使用 SF Symbol（设置 = gearshape，20pt）。</b></p>
+  </div>
+</div>
