@@ -224,6 +224,13 @@ struct WebViewContainer: UIViewRepresentable {
                          forMainFrameOnly: false)
         )
         controller.add(context.coordinator, name: "sniffer")
+        // 广告弹窗清理：删除/候选经 adClean 消息回传原生日志，靠日志调优词表
+        controller.addUserScript(
+            WKUserScript(source: AdCleanerScript.source,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
+        controller.add(context.coordinator, name: "adClean")
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
@@ -259,6 +266,7 @@ struct WebViewContainer: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "sniffer")
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "adClean")
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -273,9 +281,13 @@ struct WebViewContainer: UIViewRepresentable {
         private var isInitialLoad = true
         init(_ parent: WebViewContainer) { self.parent = parent }
 
-        // JS -> 原生：嗅探到 m3u8（消息回调固定在主线程）
+        // JS -> 原生：嗅探到 m3u8（消息回调固定在主线程）；adClean = 广告清理回传
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
+            if message.name == "adClean", let text = message.body as? String {
+                print("BROWSER: adClean \(text)")
+                return
+            }
             guard message.name == "sniffer", let urlString = message.body as? String else { return }
             parent.manager.recordFound(urlString: urlString)
             if let current = parent.store.webView?.url?.absoluteString {

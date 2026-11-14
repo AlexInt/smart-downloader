@@ -13,7 +13,7 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
 
 ## 二、使用方法
 
-1. 「浏览」页下次启动时优先加载「设置 → 浏览页快捷站点」的默认站点（从没手动选过时自动用列表第一项）；点行右侧圆圈可改选或取消，取消后才恢复上次访问页（首次为空白起始页，地址栏输入视频资源站点即可）；在网页里正常登录、点开剧集播放
+1. 「浏览」页下次启动时优先加载「设置 → 浏览页快捷站点」的默认站点（从没手动选过时自动用列表第一项）；点行右侧圆圈可改选或取消，取消后才恢复上次访问页（首次为空白起始页，地址栏输入视频资源站点即可）；在网页里正常登录、点开剧集播放。**页面自带的广告弹窗/推广浮层会被自动清理**（广告类名词表 + 空浮层启发式，含 SPA 路由切换），日志锚点 `BROWSER: adClean removed <tag.class> via <规则>`
 2. 播放后底部「**下载视频 (n)**」按钮亮起（嗅探到的 m3u8 实时累积；多个时可点击选择）
 3. **选集下载**：首页点击剧集卡片 → 路由到**原生剧集页**（内嵌网页打开剧集页，主页停留不变）并自动弹出选集面板：
    grid 展示全集，点击集号选中（可全选/多选），已下载集打绿勾、点 ▶ 直接播放（文件系统就是账本，无数据库），
@@ -35,6 +35,8 @@ iPhone App（最低 iOS 26）：内嵌浏览器打开视频资源网页，自动
   WKWebView 加载视频资源站点 (cookie 共享, 登录态/付费内容自动解锁)
   ├ 注入嗅探 JS (atDocumentStart): Hook XHR/fetch + performance 历史 + video/source DOM 扫描
   │     → window.webkit.messageHandlers 回传 m3u8 → 按钮激活
+  ├ 注入广告清理 JS (atDocumentStart): 广告类名/id 词表直删 + 空浮层启发式(2s 门槛)
+  │     + MutationObserver 兜 SPA 路由切换 → messageHandlers.adClean 回传日志
   └ 点击剧集链接/SPA 路由检测 (/drama/(video|detail)/<ID>) → 推入原生剧集页（内嵌 webview 打开剧集页）
         选集面板: DramaAPI 登录 → playlet 接口 → AES-128-CBC 解密 → 剧名 + 全集列表
         （账号/AES 常量从随包 video_auto.py 解析, 不硬编码；站点地址从 URL 推导）
@@ -116,7 +118,7 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | `SmartDownloader/Shared/` | 跨域纯数据与设计系统：`DramaModels` / `DownloadModels` / `DesignTokens`（含 `designFrame`）/ `MainTab`（tab 条目与图标唯一定义点）/ `PlaybackProgress` / `QuickLink` |
 | `SmartDownloader/Drama/` | 剧集域：`DramaDetailData`（接口 DTO）、`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaFavorites`（Service）、`DramaPageViewModel`（VM）、`DramaDetailView`（View）、`DramaNativePage`（组装根） |
 | `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
-| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS） |
+| `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS） |
 | `SmartDownloader/Settings/` | 设置域：`QuickLinkStore` / `AppLaunchPreferences` / `DramaRoutePreferences`（Service）、`SettingsViewModel`（VM）、`SettingsView` + `QuickLinkEditorSheet`（View） |
 | `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF） |
 | `SmartDownloader/player/` | 播放域，五层齐全（详见 `HANDOFF.md` §3） |
