@@ -68,8 +68,14 @@ final class DramaPageViewModel: ObservableObject {
     private var lastRevalidatedAt: Date?
     /// 封面拉取在飞行中标志：三个赋值点先后走到 applyCover，不重复发同一请求
     private var coverFetchInFlight = false
-    /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）
-    @Published var playbackRequest: ImmersivePlaybackRequest?
+    /// 已下载集点播的播放入口（View 据此 fullScreenCover；View 仅在 onClose 时置 nil）。
+    /// didSet 探针：退出播放页的 5.2s 主线程冻结无我们日志，先把「绑定置 nil → fullScreenCover
+    /// 收起 → 详情页重现」这条链路的时间戳钉出来，与 stallProbe 的 mainStall 对照判读
+    @Published var playbackRequest: ImmersivePlaybackRequest? {
+        didSet {
+            print("PERF_DBG exit t=\(PERF.ms()) phase=playbackBinding \(oldValue != nil && playbackRequest == nil ? "cleared" : "changed")")
+        }
+    }
 
     // MARK: 剧集详情页（390×840 设计稿）交互状态
 

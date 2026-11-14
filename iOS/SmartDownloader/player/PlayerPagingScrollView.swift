@@ -106,10 +106,12 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: PagingScrollView, coordinator: Coordinator) {
         // 播放页销毁：全屏容器挂在 keyWindow 上，必须显式还原，否则泄漏在 window 上
+        print("PERF_DBG exit t=\(PERF.ms()) phase=pagingDismantle begin")
         coordinator.fullscreenController?.teardown()
         coordinator.gravityCancellable = nil
         coordinator.readyCancellable = nil
         coordinator.surfaceView?.stopRevealProbe(reason: "dismantle")
+        print("PERF_DBG exit t=\(PERF.ms()) phase=pagingDismantle done")
     }
 
     /// 渲染 gravity：横屏片源完整显示（fit）、竖屏片源拉满（fill）。App 已锁竖屏，

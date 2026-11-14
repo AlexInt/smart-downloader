@@ -15,7 +15,7 @@ struct DramaPlayerContainer: View {
 
     var body: some View {
         PlayerFeedView(vm: feedVM, onClose: {
-            print("PLAYER_DBG [Container] onClose → clearBinding + dismiss")
+            print("PERF_DBG exit t=\(PERF.ms()) phase=onClose (clearBinding + dismiss)")
             onClose()
             dismiss()
         })
@@ -25,8 +25,9 @@ struct DramaPlayerContainer: View {
                 feedVM.configure(request: request)
             }
             .onDisappear {
-                print("PLAYER_DBG [Container] disappear → stop")
+                print("PERF_DBG exit t=\(PERF.ms()) phase=containerDisappear (feedVM.stop begin)")
                 feedVM.stop()
+                print("PERF_DBG exit t=\(PERF.ms()) phase=containerDisappearDone (feedVM.stop returned)")
             }
     }
 }

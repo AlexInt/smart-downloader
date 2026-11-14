@@ -109,6 +109,12 @@ final class PlaybackPlayerService {
         let count = preloadedAssets.count
         preloadedAssets.removeAll()
         print("PLAYER_DBG [Service] teardown evictedAssets=\(count)")
+        print("PERF_DBG exit t=\(PERF.ms()) phase=serviceTeardownDone")
+    }
+
+    deinit {
+        // 退出探针：AVPlayer 随本对象释放（XPC 远端 teardown），与 mainStall 对照定位冻结段
+        print("PERF_DBG exit t=\(PERF.ms()) phase=playerServiceDeinit thread=\(Thread.isMainThread ? "main" : "bg")")
     }
 
     // MARK: 私有

@@ -413,6 +413,14 @@ final class DramaPlayerViewModel: ObservableObject {
             self.timeObserver = nil
         }
         isReady = false
+        print("PERF_DBG exit t=\(PERF.ms()) phase=vmStopDone (observers detached, player cleared)")
+    }
+
+    deinit {
+        // 退出探针：fullScreenCover 销毁时机 = VM（连带 AVPlayer）释放点。
+        // 5.2s 冻结疑似落在 deinit 前后（AVFoundation 远端 teardown / SwiftUI 收尾），
+        // 时间戳与 mainStall 对照即可钉出冻结段归属
+        print("PERF_DBG exit t=\(PERF.ms()) phase=playerVMDeinit thread=\(Thread.isMainThread ? "main" : "bg")")
     }
 
     func beginFastForward() {
