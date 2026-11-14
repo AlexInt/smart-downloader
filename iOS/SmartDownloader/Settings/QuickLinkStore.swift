@@ -72,6 +72,6 @@ struct QuickLinkStore {
     /// 内置默认：仅在用户从未配置时兜底（原 `BrowserView.quickLinks` 硬编码数组搬到这里），
     /// 之后全由设置页增删改，删空也不会恢复。
     static let defaultLinks: [QuickLink] = [
-        QuickLink(name: "🍎", url: "https://www.yeguodj.com/"),
+        QuickLink(name: "🍎", url: "https://www.apple.com/"),
     ]
 }
