@@ -323,16 +323,19 @@ struct WebViewContainer: UIViewRepresentable {
                 return
             }
             if message.name == "keyboardDismiss" {
-                // 页面里滑动带走键盘：只收 webview 内的第一响应者，
-                // 万一 webview 内没有被收（内容层在别的 responder）再走全局兜底
+                // 页面里滑动带走键盘。两种键盘都要收：
+                //  ① 网页输入框拉起的（第一响应者在 WKWebView 内部）→ endEditing
+                //  ② 原生地址栏 TextField 拉起的（第一响应者不在 webview）→ 全局 resign
+                // 两者都尝试，幂等且成本极低；无键盘时不打日志也不做无用功。
                 let kind = (message.body as? String) ?? "?"
+                let keyboardOn = KeyboardObserver.shared.isVisible
                 let webView = parent.store.webView
                 let dismissed = webView?.endEditing(true) ?? false
-                if !dismissed {
+                if keyboardOn {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                                     to: nil, from: nil, for: nil)
                 }
-                print("BROWSER: keyboardDismiss from \(kind) ok=\(dismissed)")
+                print("BROWSER: keyboardDismiss from \(kind) keyboardOn=\(keyboardOn) webEndEditing=\(dismissed)")
                 return
             }
             guard message.name == "sniffer", let urlString = message.body as? String else { return }

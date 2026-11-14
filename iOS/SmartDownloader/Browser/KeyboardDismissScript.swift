@@ -26,6 +26,8 @@ enum KeyboardDismissScript {
       var FOCUS_GUARD_MS = 700;
       var focusAt = 0;
       var touching = false;
+      var touchedInsideEditable = false;
+      var reportedThisTouch = false;
       var touchStartY = 0;
       var last = 0;
 
@@ -35,6 +37,10 @@ enum KeyboardDismissScript {
         return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable === true;
       }
 
+      // 上报给原生。**这里不判断「网页里有没有输入框聚焦」**——
+      // 地址栏那种原生键盘完全不经过网页（document.activeElement 是 body），
+      // 那样判断会把原生键盘场景全丢掉（真机实证）。键盘到底在不在屏上由原生
+      // 侧查 KeyboardObserver 决定，无键盘时它直接丢弃，成本可忽略。
       function report(kind) {
         if (Date.now() - focusAt < FOCUS_GUARD_MS) return;
         var now = Date.now();
@@ -48,9 +54,11 @@ enum KeyboardDismissScript {
       document.addEventListener('focusin', function () { focusAt = Date.now(); }, true);
 
       window.addEventListener('touchstart', function (e) {
-        if (!e.touches || e.touches.length !== 1) return;
         touching = true;
-        touchStartY = e.touches[0].clientY;
+        reportedThisTouch = false;
+        // 起手就在输入框/可编辑区里 → 本次触摸大概率是拖光标、选文字，整段不报
+        touchedInsideEditable = editable(e.target);
+        if (e.touches && e.touches.length === 1) touchStartY = e.touches[0].clientY;
       }, { passive: true, capture: true });
 
       window.addEventListener('touchend', function () { touching = false; }, { passive: true, capture: true });
@@ -59,16 +67,16 @@ enum KeyboardDismissScript {
       // 捕获阶段：内部滚动容器的 scroll 不冒泡，但捕获阶段能拿到
       window.addEventListener('scroll', function () {
         if (!touching) return;             // 只要手指正在拖（排除自动滚入可视区）
-        if (!editable(document.activeElement)) return;
+        if (touchedInsideEditable) return;
         report('scroll');
       }, true);
 
-      // 兜底：transform 虚拟滚动等不出 scroll 的场景；输入框内部起手不算
+      // 兜底：transform 虚拟滚动等不出 scroll 的场景；每次触摸段只报一条
       window.addEventListener('touchmove', function (e) {
-        if (!editable(document.activeElement)) return;
+        if (reportedThisTouch || touchedInsideEditable) return;
         if (!e.touches || !e.touches.length) return;
-        if (editable(e.target)) return;    // 在输入框里拖光标 / 选字，不收键盘
         if (Math.abs(e.touches[0].clientY - touchStartY) < 12) return;
+        reportedThisTouch = true;
         report('touchmove');
       }, { passive: true, capture: true });
     })();
