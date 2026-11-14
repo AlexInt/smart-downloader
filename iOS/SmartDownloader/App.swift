@@ -25,6 +25,8 @@ struct SmartDownloaderApp: App {
     @State private var showSplash = true
     /// 浏览页推入剧集详情时隐藏自定义 tab bar（详情页沉浸式全屏）
     @State private var browserDetailActive = false
+    /// 「我的」页推入二级页（设置页 / 剧集页）时隐藏自定义 tab bar（同一口径）
+    @State private var profileDetailActive = false
     /// 键盘可见时收起 tab bar：系统会把底部安全区顶上来，tab bar 会被顶到键盘上方，
     /// 既挡网页内容又白吃一层高度（用户实报 2026-11-14）
     @State private var keyboardVisible = KeyboardObserver.shared.isVisible
@@ -91,13 +93,14 @@ struct SmartDownloaderApp: App {
                             .background(DWColor.background.ignoresSafeArea())
                     }
                     if selectedTab == .settings {
-                        // 设置页改了快捷站点 / 启动 tab，都在下次切回浏览页或冷启动时生效
-                        SettingsView()
-                            .background(DWColor.background.ignoresSafeArea())
+                        // 「我的」页（画布 19:63 纸本）：封面墙聚合历史/收藏/追更/点赞，
+                        // 设置降为二级页（身份行齿轮推入）。改了快捷站点/启动 tab，
+                        // 都在下次切回浏览页或冷启动时生效
+                        ProfileView(manager: manager, detailActive: $profileDetailActive)
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
-                    if !browserDetailActive && !keyboardVisible {
+                    if !browserDetailActive && !profileDetailActive && !keyboardVisible {
                         mainTabBar
                     }
                 }
@@ -113,6 +116,12 @@ struct SmartDownloaderApp: App {
             }
             .onChange(of: selectedTab) { old, new in
                 print("PERF_DBG tabSwitch \(old)->\(new) t=\(Self.uptimeMs())")
+                // 「我的」页离开时它会被 ZStack 销毁（if selectedTab == .settings），
+                // path 随之丢失但 detailActive 是 App 级状态——不复位会让 tab bar 永久隐藏
+                if new != .settings && profileDetailActive {
+                    print("PROFILE_DBG tabSwitch 离开我的页 → 复位 tabBar")
+                    profileDetailActive = false
+                }
             }
             .onAppear {
                 Self.runDeviceAutoTest(manager: manager)
@@ -143,6 +152,15 @@ struct SmartDownloaderApp: App {
         .padding(.top, 6)
         .padding(.bottom, 2)
         .background(.bar)
+        .background {
+            GeometryReader { geo in
+                Color.clear.onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        print("UI_DBG tabBar frame=\(geo.frame(in: .global)) safeBottom=\(geo.safeAreaInsets.bottom)")
+                    }
+                }
+            }
+        }
     }
 
     private func tabBarItem(_ tab: MainTab) -> some View {

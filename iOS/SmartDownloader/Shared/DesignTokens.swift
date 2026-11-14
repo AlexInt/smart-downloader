@@ -57,6 +57,27 @@ enum DWColor {
     static let divider         = Color.white.opacity(0.08)
 }
 
+// MARK: - Design Tokens · 纸本轨（「我的」页，画布 19:63 / 24:43）
+//
+// 与墨本轨（详情页/播放页的深底）并行的第二套视觉：「我的」页是域级浅色页，
+// 色值全部来自画布节点实读，勿凭目测调整。
+extension DWColor {
+    /// 宣纸底
+    static let paper         = Color(hex: "#F2F0EA")
+    /// 墨字（标题/选中态）
+    static let paperInk      = Color(hex: "#1C1E1F")
+    /// 次级墨（未选中 tab / 进度文案）
+    static let paperInkSub   = Color(hex: "#8C9190")
+    /// 图标与辅助操作文字（夜间/设置/筛选/编辑）
+    static let paperIcon     = Color(hex: "#5A5F60")
+    /// 朱砂（选中短线 / 选中胶囊态语义色）
+    static let paperCinnabar = Color(hex: "#A05243")
+    /// 胶囊选中底
+    static let paperChipSel  = Color(hex: "#E2DED5")
+    /// 胶囊未选底
+    static let paperChipIdle = Color(hex: "#EAE7DF")
+}
+
 enum DWFont {
     /// 设计稿字体：Inter（西文）/ Noto Sans SC（中文）。
     /// 把两款字体文件加入工程并在 Info.plist 注册后改为 true，即可 1:1 还原；
@@ -74,6 +95,14 @@ enum DWFont {
         useBundledFonts
             ? .custom("Inter", size: size).weight(weight)
             : .system(size: size, weight: weight)
+    }
+
+    /// 纸本轨衬线字体：设计稿「我的」页标题/剧名用 Noto Serif SC（宋体气质）。
+    /// 未内置字体时退回系统衬线（中文为宋体-简），与画布的衬线感一致。
+    static func serif(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        useBundledFonts
+            ? .custom("Noto Serif SC", size: size).weight(weight)
+            : .system(size: size, weight: weight, design: .serif)
     }
 }
 

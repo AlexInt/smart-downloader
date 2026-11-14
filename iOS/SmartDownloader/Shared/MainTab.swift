@@ -17,16 +17,17 @@ enum MainTab: Int, CaseIterable, Identifiable {
         switch self {
         case .browser: return "浏览"
         case .downloads: return "下载"
-        case .settings: return "设置"
+        case .settings: return "我的"
         }
     }
 
-    /// iOS 26 符号集没有 compass，浏览页用 safari.fill
+    /// iOS 26 符号集没有 compass，浏览页用 safari.fill；
+    /// 「我的」画布（22:157）用 person 线稿
     var icon: String {
         switch self {
         case .browser: return "safari.fill"
         case .downloads: return "arrow.down.circle"
-        case .settings: return "gearshape"
+        case .settings: return "person"
         }
     }
 

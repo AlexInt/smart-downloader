@@ -104,6 +104,68 @@ enum EpisodeActionsStore {
         return result
     }
 
+    // MARK: 读 —— 剧级关系查询（「我的」页封面墙）
+
+    /// 看过的剧（有播放进度的），按最近观看倒序：剧级进度条目。
+    /// lastSort = 看过的最大集号（对 drama_episodes JOIN 出集号）；无集映射的行跳过。
+    /// 「看到第几集」的口径是看过的最大集号，不是最大进度时间点的集——如实标注。
+    struct DramaWatch {
+        let site: String
+        let dramaID: String
+        let lastSort: Int
+        let lastAt: String?
+    }
+
+    static func watchedDramas() -> [DramaWatch] {
+        guard let db = openDB() else { return [] }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT a.site, a.drama_id, MAX(e.sort), MAX(a.updated_at)
+        FROM episode_actions a
+        JOIN drama_episodes e
+          ON e.site=a.site AND e.drama_id=a.drama_id AND e.episode_id=a.episode_id
+        WHERE a.position_total > 0
+        GROUP BY a.site, a.drama_id
+        ORDER BY MAX(a.updated_at) DESC;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "watchedDramas read"); return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        var result: [DramaWatch] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(DramaWatch(site: DramaDatabase.text(stmt, 0) ?? "",
+                                     dramaID: DramaDatabase.text(stmt, 1) ?? "",
+                                     lastSort: Int(sqlite3_column_int(stmt, 2)),
+                                     lastAt: DramaDatabase.text(stmt, 3)))
+        }
+        return result
+    }
+
+    /// 点过赞的剧，按最近点赞时间倒序（点赞是集级标记，剧级取该剧任意集 liked=1）
+    static func likedDramas() -> [DramaWatch] {
+        guard let db = openDB() else { return [] }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT site, drama_id, MAX(updated_at) FROM episode_actions
+        WHERE liked=1 GROUP BY site, drama_id ORDER BY MAX(updated_at) DESC;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "likedDramas read"); return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        var result: [DramaWatch] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(DramaWatch(site: DramaDatabase.text(stmt, 0) ?? "",
+                                     dramaID: DramaDatabase.text(stmt, 1) ?? "",
+                                     lastSort: 0,
+                                     lastAt: DramaDatabase.text(stmt, 2)))
+        }
+        return result
+    }
+
     // MARK: 写
 
     static func setLiked(_ value: Bool, for identity: MediaIdentity) { writeFlag("liked", value, for: identity) }

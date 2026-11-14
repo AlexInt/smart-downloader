@@ -2,29 +2,28 @@ import SwiftUI
 
 /// 设置页：条目 1「启动进入」选哪个 tab；条目 2 浏览页快捷站点的多对 key/value 配置。
 /// View 只做渲染与意图转发，清洗与落盘在 SettingsViewModel 与 Service 层。
-/// 作为不透明覆盖层盖在保活容器上（见 App.swift），自身不带背景。
+/// 现在是「我的」页的二级页（`ProfileView` 身份行齿轮 push 进入），
+/// **导航栈由 ProfileView 提供，本页不要自建 NavigationStack**（嵌套栈会丢返回按钮/标题）。
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
 
     var body: some View {
-        NavigationStack {
-            List {
-                launchSection
-                dramaRouteSection
-                quickLinkSection
+        List {
+            launchSection
+            dramaRouteSection
+            quickLinkSection
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("恢复默认") { viewModel.restoreDefaults() }
+                    .font(.caption)
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("恢复默认") { viewModel.restoreDefaults() }
-                        .font(.caption)
-                }
-            }
-            .sheet(item: $viewModel.draft) { draft in
-                QuickLinkEditorSheet(viewModel: viewModel, draft: draft)
-            }
+        }
+        .sheet(item: $viewModel.draft) { draft in
+            QuickLinkEditorSheet(viewModel: viewModel, draft: draft)
         }
     }
 
