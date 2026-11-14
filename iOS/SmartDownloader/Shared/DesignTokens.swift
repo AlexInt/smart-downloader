@@ -88,6 +88,20 @@ extension DWColor {
     static let paperSwitchOff = Color(hex: "#C9CCC9")
     /// 开关钮 / 勾选反白（画布 30:17）
     static let paperKnob     = Color(hex: "#F7F5F0")
+
+    // 浏览页 / 下载页（画布 22:284 / 2:2）新增的四档
+    /// 输入框与站点胶囊底（22:297 / 22:305，比纸底深一档的"纸面凹槽"）
+    static let paperField     = Color(hex: "#E7E4DE")
+    /// 输入框与站点胶囊描边（22:297 stroke #C2BFB8；画布给 0.8/0.9 不透明度，用时再压）
+    static let paperFieldLine = Color(hex: "#C2BFB8")
+    /// 网页内容区兜底底色（22:321，比纸底深一档）
+    static let paperCanvas    = Color(hex: "#EDEAE2")
+    /// 进度轨道 / 分段下的细线（2:37 / 2:45 / 19:303）
+    static let paperTrack     = Color(hex: "#C4C7C3")
+    /// 进度条已下载部分（2:46，比 shell 更沉的墨）
+    static let paperTrackFill = Color(hex: "#35393B")
+    /// 最弱一档说明文字（22:326 占位说明 / 前进禁用态 22:331）
+    static let paperFaint     = Color(hex: "#A2A6AD")
 }
 
 // MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）
@@ -136,8 +150,10 @@ enum DWLayout {
     /// 设计画幅，仅作等比缩放基准；容器不写死此尺寸。
     static let designWidth: CGFloat = 390
     static let designHeight: CGFloat = 840
-    /// 左右安全边距
+    /// 左右安全边距（「我的」/设置页，画布 19:63 / 24:43）
     static let edge: CGFloat = 20
+    /// 浏览页与下载页的左右安全边距（画布 22:284 地址栏行 / 2:2 内容区都是 22）
+    static let pageEdge: CGFloat = 22
 }
 
 enum DWRadius {

@@ -31,73 +31,31 @@ struct BrowserView: View {
     var body: some View {
         NavigationStack {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                TextField("输入网址", text: $address)
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .onSubmit { store.load(address) }
-                Button("访问") { store.load(address) }
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-
-            // 快捷站点标签行（横向滑动，条目由设置页配置）
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(store.quickLinks) { link in
-                        Button {
-                            address = link.url
-                            store.load(link.url)
-                        } label: {
-                            Label(link.name, systemImage: "play.tv")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            addressRow
+            quickLinkRow
 
             if let loadError = store.loadError {
-                Text("⚠️ 网页加载失败: \(loadError)")
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
+                errorLine(loadError)
             }
 
+            // ③ 内容区：WKWebView 本体（外部页面配色不可控，纸本轨只保证周边与占位是同色系）
             WebViewContainer(manager: manager, store: store, address: $address,
                              onDramaLinkClick: { pushDramaPage($0) },
                              onDramaURLDetected: { detectDrama($0, undoSPA: $1) })
+                .background(DWColor.paperCanvas)
 
             if !keyboardVisible {
-                // 键盘弹起时整行收起：把这 56pt 让给网页输入区（Safari 同行为）。
+                // 键盘弹起时整行收起：把这 54pt 让给网页输入区（Safari 同行为）。
                 // 不收起的话它和 App 级 tab bar 会一起被顶到键盘上方，白占两层高度
-                HStack(spacing: 18) {
-                    Button { store.goBack() } label: { Image(systemName: "chevron.left") }
-                    Button { store.goForward() } label: { Image(systemName: "chevron.right") }
-                    Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
-                    Spacer()
-                    Button {
-                        if manager.foundURLs.count > 1 {
-                            showPicker = true
-                        } else {
-                            store.beginDownload(from: manager.foundURLs.first, manager: manager)
-                        }
-                    } label: {
-                        Label(downloadButtonTitle, systemImage: downloadButtonIcon)
-                    }
-                    .disabled(manager.foundURLs.isEmpty || store.isSubmitting || singleURLAlreadyQueued)
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                bottomBar
             }
         }
+        // App 层 tab bar 是 safeAreaInset 注入的，但系统只把它自带的 34pt 底部安全区
+        // 算进内容区，栏本身 62pt 的实高不会传下来——不在这里显式补，VStack 的底边会
+        // 落在屏幕底减 34 处，底部工具条整行被 tab bar 盖住（2026-11-14 实机排障）。
+        // 与下载页 / 我的页同一口径（DownloadsView.swift:125 / ProfileView.swift:33）。
+        .safeAreaPadding(.bottom, MainTab.barReservedHeight)
+        .background(DWColor.paper)
         // 浏览页不占导航条空间；推入的原生剧集页自行 .toolbar(.visible) 恢复
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $dramaPageTarget) { target in
@@ -147,6 +105,174 @@ struct BrowserView: View {
         }
     }
 
+    // MARK: - ① 地址栏行（画布 22:296，h52 / pad 10 / gap 8）
+
+    /// 输入框 34 高 + 访问按钮 54×34，两侧各留 9 → 行高 52（画布 22:296 固定 52）
+    private var addressRow: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 7) {
+                PaperLockShape()
+                    .stroke(DWColor.paperInkSub,
+                            style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                    .frame(width: 12, height: 12)
+
+                TextField("", text: $address,
+                          prompt: Text("输入网址").foregroundStyle(DWColor.paperFaint))
+                    .font(DWFont.cn(12))
+                    .foregroundStyle(DWColor.paperInk)
+                    .tint(DWColor.paperCinnabar)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .submitLabel(.go)
+                    .onSubmit { store.load(address) }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(DWColor.paperField))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(DWColor.paperFieldLine.opacity(0.8), lineWidth: 1)
+            }
+
+            Button {
+                store.load(address)
+            } label: {
+                Text("访问")
+                    .font(DWFont.cn(12, .medium))
+                    .foregroundStyle(DWColor.paper)
+                    .frame(width: 54, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DWColor.paperInk))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(height: 52)
+    }
+
+    // MARK: - ② 快捷站点行（画布 22:304，h44 / pad 10 / gap 8，横向可滑）
+
+    private var quickLinkRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.quickLinks) { link in
+                    Button {
+                        address = link.url
+                        store.load(link.url)
+                    } label: {
+                        HStack(spacing: 4) {
+                            PaperScreenShape()
+                                .stroke(DWColor.paperIcon,
+                                        style: StrokeStyle(lineWidth: 1, lineJoin: .round))
+                                .frame(width: 12, height: 12)
+                            Text(link.name)
+                                .font(DWFont.cn(10, .medium))
+                                .foregroundStyle(DWColor.paperInk)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 26)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(DWColor.paperField))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(DWColor.paperFieldLine.opacity(0.9), lineWidth: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                // 22:320 行尾「›」：站点过多时提示还能继续右滑，跟着列表一起滑走
+                Text("›")
+                    .font(DWFont.en(14))
+                    .foregroundStyle(DWColor.paperInkSub)
+                    .padding(.leading, 2)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+        }
+        .frame(height: 44)
+    }
+
+    // MARK: - ④ 底部工具栏（画布 22:327，h54 / pad 10 / gap 18）
+
+    /// 上传/后退/刷新是 20×20 命中框里的 1pt 线稿；不可点时转纸本最弱一档（画布 22:331）
+    private var bottomBar: some View {
+        HStack(spacing: 18) {
+            navGlyph(PaperChevronShape(pointsLeft: true), size: CGSize(width: 6.5, height: 13),
+                     enabled: store.canGoBack) { store.goBack() }
+            navGlyph(PaperChevronShape(pointsLeft: false), size: CGSize(width: 6.5, height: 13),
+                     enabled: store.canGoForward) { store.goForward() }
+            navGlyph(PaperReloadShape(), size: CGSize(width: 20, height: 20), enabled: true) { store.reload() }
+
+            Spacer(minLength: 0)
+
+            Button {
+                if manager.foundURLs.count > 1 {
+                    showPicker = true
+                } else {
+                    store.beginDownload(from: manager.foundURLs.first, manager: manager)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    PaperBadgeArrowShape()
+                        .stroke(DWColor.paper,
+                                style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                        .frame(width: 14, height: 14)
+                    Text(downloadButtonTitle)
+                        .font(DWFont.cn(11, .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(DWColor.paper)
+                .frame(width: 132, height: 34)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(canDownload ? DWColor.paperInk : DWColor.paperLineIdle))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDownload)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .frame(height: 54)
+        // 网页底色千奇百怪（这页是白底、下一页可能是深色），工具栏必须自带纸底，
+        // 否则网页内容会从图标背后透出来
+        .background(DWColor.paper)
+        // 与 App 级 tab bar 同一条发丝线：下面贴着网页时靠它分界
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(DWColor.paperHairline)
+                .frame(height: 0.5)
+        }
+    }
+
+    private func navGlyph<S: Shape>(_ shape: S, size: CGSize, enabled: Bool,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            shape
+                .stroke(enabled ? DWColor.paperInk : DWColor.paperFaint,
+                        style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                .frame(width: size.width, height: size.height)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    private func errorLine(_ message: String) -> some View {
+        Text(message)
+            .font(DWFont.cn(11))
+            .foregroundStyle(DWColor.paperCinnabar)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, DWLayout.pageEdge)
+            .padding(.bottom, 6)
+    }
+
+    private var canDownload: Bool {
+        !manager.foundURLs.isEmpty && !store.isSubmitting && !singleURLAlreadyQueued
+    }
+
     /// 检测到剧集页 URL：推入原生剧集页；SPA pushState 无法取消，undoSPA 时回退网页到列表页。
     /// 设置页「打开 Web 剧集页」开启时不推（网页自己展示），也不回退——让网页停在剧集页
     private func detectDrama(_ target: DramaTarget, undoSPA: Bool) {
@@ -172,28 +298,63 @@ struct BrowserView: View {
         print("BROWSER: 点击剧集 -> \(target.id) 推入原生剧集页")
     }
 
+    /// m3u8 候选面板：同一页嗅到多条流时让用户挑一条。
+    /// 纸本语言（衬线标题 + 细线 + 朱砂勾），不用系统 List 的灰底圆角块
     private var pickerSheet: some View {
-        NavigationStack {
-            List(manager.foundURLs, id: \.self) { found in
-                Button {
-                    showPicker = false
-                    store.beginDownload(from: found, manager: manager)
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(found).font(.footnote).lineLimit(2)
-                        Spacer(minLength: 0)
-                        if manager.hasActiveTask(forURL: found) {
-                            Label("已在队列", systemImage: "checkmark.circle.fill")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            Text("选择 m3u8")
+                .font(DWFont.serif(17, .medium))
+                .foregroundStyle(DWColor.paperInk)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
+
+            Rectangle().fill(DWColor.paperDivider).frame(height: 1)
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(manager.foundURLs, id: \.self) { found in
+                        let queued = manager.hasActiveTask(forURL: found)
+                        Button {
+                            showPicker = false
+                            store.beginDownload(from: found, manager: manager)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text(found)
+                                    .font(DWFont.cn(11))
+                                    .foregroundStyle(queued ? DWColor.paperLineIdle : DWColor.paperInk)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                                Spacer(minLength: 0)
+                                if queued {
+                                    Text("已在队列")
+                                        .font(DWFont.cn(10))
+                                        .foregroundStyle(DWColor.paperInkSub)
+                                } else {
+                                    PaperChevronShape(pointsLeft: false)
+                                        .stroke(DWColor.paperLineIdle,
+                                                style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                                        .frame(width: 6, height: 11)
+                                }
+                            }
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(queued)
+
+                        Rectangle()
+                            .fill(DWColor.paperRule)
+                            .frame(height: 1)
                     }
                 }
-                .disabled(manager.hasActiveTask(forURL: found))
+                .padding(.horizontal, DWLayout.edge)
             }
-            .navigationTitle("选择 m3u8")
-            .navigationBarTitleDisplayMode(.inline)
+
+            Spacer(minLength: 0)
         }
+        .background(DWColor.paper.ignoresSafeArea())
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     private var singleURLAlreadyQueued: Bool {
@@ -206,10 +367,6 @@ struct BrowserView: View {
         if store.isSubmitting { return "正在添加…" }
         if singleURLAlreadyQueued { return "已在下载队列" }
         return "下载视频 (\(manager.foundURLs.count))"
-    }
-
-    private var downloadButtonIcon: String {
-        singleURLAlreadyQueued ? "checkmark.circle.fill" : "arrow.down.circle.fill"
     }
 }
 
@@ -370,6 +527,8 @@ struct WebViewContainer: UIViewRepresentable {
             provisionalRetries = 0
             isInitialLoad = false
             parent.store.loadError = nil
+            // 前进/后退箭头可用性跟着导航栈走（画布 22:329/331）
+            parent.store.refreshNavigationState()
             print("BROWSER: didCommit \(webView.url?.absoluteString ?? "?")")
             if let current = webView.url?.absoluteString {
                 if parent.isPrimaryBrowser {
@@ -380,6 +539,7 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            parent.store.refreshNavigationState()
             webView.evaluateJavaScript("document.title") { result, _ in
                 guard let title = result as? String, !title.isEmpty else { return }
                 self.parent.store.pageTitle = title

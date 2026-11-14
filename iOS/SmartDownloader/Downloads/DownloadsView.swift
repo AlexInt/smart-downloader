@@ -57,7 +57,7 @@ enum DownloadSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
-private extension Date {
+extension Date {
     /// 列表里显示的创建时间，让排序依据可见（固定格式，不依赖 locale）
     var downloadsListText: String {
         let c = Calendar.current.dateComponents([.month, .day, .hour, .minute], from: self)
@@ -72,14 +72,29 @@ enum DownloadPage: Int, Hashable {
     case completed = 1
 }
 
-/// 下载页：顶部「下载中 / 已下载」两个 tab，可点可左右滑。
-/// 排序与编辑（批量删除）在工具栏统一控制，两个区域都支持左滑删除。
+/// 已下载 → 剧集的推入路由（String 不是 Identifiable，包一层给 navigationDestination(item:)）
+private struct SeriesRoute: Identifiable, Hashable {
+    let name: String
+    var id: String { name }
+}
+
+/// 下载页（画布 2:2「下载页 · 纸本」/ 19:272「已下载」/ 34:1「已下载 · 编辑模式」）。
+///
+/// 纸本轨：宣纸底 + 衬线分段（选中项压一条 44×2 朱砂短线）+ 细线，行内是
+/// 60×82 封面 + 剧名 + 说明 + 2pt 进度轨道，右侧 26 的圆形动作按钮。
+/// 顶部不再是系统 `Picker(.segmented)` + `List(.insetGrouped)`：分段与分组头都是自绘，
+/// 列表仍用 `List`（保住左滑删除），只把系统外观全部抹掉（plain / 透明背景 / 隐分隔线）。
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
     /// VM 由 App 层注入（StateObject 所有权在 App）：本视图随 tab 切换销毁重建，
     /// 缓存型 VM 不能在这里创建（否则每次切 tab 全量重扫盘 + 全量 SQLite 读）
     @ObservedObject var vm: DownloadsViewModel
     @ObservedObject var progressVM: PlaybackProgressViewModel
+
+    /// 取消下载的确认目标（下载中的圆形按钮是破坏性操作，先弹一次确认）
+    @State private var pendingCancel: DownloadTask?
+    /// 已下载 → 剧集二级页
+    @State private var pushedSeries: SeriesRoute?
 
     init(manager: DownloadManager, vm: DownloadsViewModel, progressVM: PlaybackProgressViewModel) {
         self.manager = manager
@@ -90,13 +105,7 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("下载区域", selection: $vm.page) {
-                    Text("下载中").tag(DownloadPage.inProgress)
-                    Text("已下载").tag(DownloadPage.completed)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+                segmentedHeader
 
                 TabView(selection: $vm.page) {
                     inProgressPage
@@ -106,32 +115,18 @@ struct DownloadsView: View {
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if vm.selectionMode { editBar }
             }
+            .background(DWColor.paper.ignoresSafeArea())
             // 自定义 tab bar 在 App 层用 safeAreaInset 注入，但 paging TabView 的页面
             // 不接收祖先追加的底部安全区（已知传递缺陷）→ 列表满屏时最后一行被 bar 盖住。
             // 这里按 bar 实高显式补底部安全区（MainTab.barReservedHeight 与 bar 内边距同步）。
             .safeAreaPadding(.bottom, MainTab.barReservedHeight)
-            .navigationTitle("下载")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if !manager.tasks.isEmpty {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Menu {
-                            Picker("排列顺序", selection: $vm.sortOrder) {
-                                ForEach(DownloadSortOrder.allCases) { order in
-                                    Label(order.label, systemImage: order.icon).tag(order)
-                                }
-                            }
-                        } label: {
-                            Label("排序", systemImage: "arrow.up.arrow.down")
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(vm.selectionMode ? "完成" : "编辑") {
-                            vm.toggleEditMode()
-                        }
-                    }
-                }
+            // 设计稿没有系统导航栏：分段头就是页头
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(item: $pushedSeries) { route in
+                SeriesDetailView(manager: manager, seriesName: route.name)
             }
             .confirmationDialog(
                 "删除《\(vm.pendingDeleteSeries ?? "")》全部集及其文件？",
@@ -141,10 +136,25 @@ struct DownloadsView: View {
                 ),
                 titleVisibility: .visible
             ) {
-                Button("删除全剧", role: .destructive) {
-                    vm.confirmDeleteSeries()
-                }
+                Button("删除全剧", role: .destructive) { vm.confirmDeleteSeries() }
                 Button("取消", role: .cancel) { vm.cancelDeleteSeries() }
+            }
+            .confirmationDialog(
+                "取消这个下载？",
+                isPresented: Binding(
+                    get: { pendingCancel != nil },
+                    set: { if !$0 { pendingCancel = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingCancel
+            ) { task in
+                Button("取消下载", role: .destructive) {
+                    manager.remove(task)
+                    pendingCancel = nil
+                }
+                Button("继续下载", role: .cancel) { pendingCancel = nil }
+            } message: { task in
+                Text("《\(task.seriesName.map { "\($0) · " } ?? "")\(task.title)》已下载的分片会被删除。")
             }
         }
         .sheet(item: $vm.playerRequest, onDismiss: { progressVM.refresh(manager.tasks) }) { item in
@@ -154,180 +164,548 @@ struct DownloadsView: View {
         .onChange(of: manager.tasks.count) { _, _ in progressVM.refresh(manager.tasks) }
     }
 
-    /// 编辑模式底部工具条：挂在两个页面的 List 自身（List 对自身 safeAreaInset 精确避让，
-    /// 最后一行不被盖）。原先挂在 VStack 外层且在 safeAreaPadding(47) 之后，落点正好是
-    /// tab bar 预留区，被自定义 tab bar 盖住（真机反馈）；现在位置在预留区之上，紧贴 tab bar 顶
-    private var editBarInset: some View {
-        Group {
-            if vm.selectionMode {
-                HStack {
-                    Button(vm.allSelected ? "全不选" : "全选") { vm.toggleSelectAll() }
-                        .buttonStyle(.bordered)
-                    Spacer()
-                    Button("删除所选 (\(vm.selected.count))", role: .destructive) {
-                        vm.deleteSelected()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(vm.selected.isEmpty)
+    // MARK: - 分段头（画布 2:29 分段与细线）
+
+    /// 分段：标签间距 26、文字 fs14 衬线、选中项下方压一条 44×2 朱砂短线（未选中留空位），
+    /// 分段下面 8 处一张通栏细线。左右边距 22（画布 2:7 内容区）。
+    private var segmentedHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 26) {
+                segment("下载中 \(vm.activeTasks.count)", selected: vm.page == .inProgress) {
+                    vm.page = .inProgress
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(.bar)
+                segment("已下载 \(completedCount)", selected: vm.page == .completed) {
+                    vm.page = .completed
+                }
+                Spacer(minLength: 0)
             }
+
+            Rectangle()
+                .fill(DWColor.paperTrack)
+                .frame(height: 1)
         }
+        .padding(.horizontal, DWLayout.pageEdge)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
     }
 
-    /// 左页：进行中（等待/解析/下载/保存/失败），左滑删除任务
+    private func segment(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            // 画布 2:31 是纵向布局、交叉轴左对齐：短线从文字左边起，比文字短
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title)
+                    .font(DWFont.serif(14, selected ? .medium : .regular))
+                    .foregroundStyle(selected ? DWColor.paperInk : DWColor.paperInkSub)
+                Rectangle()
+                    .fill(selected ? DWColor.paperCinnabar : Color.clear)
+                    .frame(width: 44, height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.18), value: selected)
+    }
+
+    private var completedCount: Int {
+        vm.seriesGroups.count + vm.standaloneItems.count
+    }
+
+    // MARK: - 左页：下载中（画布 2:38 下载中分组）
+
     @ViewBuilder
     private var inProgressPage: some View {
         if vm.activeTasks.isEmpty {
-            ContentUnavailableView(
-                "暂无进行中的下载",
-                systemImage: "arrow.down.circle",
-                description: Text("去「浏览」页打开视频网页播放，或在剧集页选集下载"))
+            paperEmpty(title: "暂无进行中的下载",
+                       hint: "去「浏览」页打开视频网页，或在剧集页选集下载")
         } else {
             List {
-                Section {
-                    ForEach(vm.activeTasks) { task in
-                        sectionRow(task: task)
-                    }
-                    .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.activeTasks)) }
-                } header: {
-                    Text("共 \(vm.activeTasks.count) 个任务 · 按创建时间排列")
+                ForEach(vm.activeTasks) { task in
+                    inProgressRow(task)
+                        .paperListRow()
                 }
+                // 左滑删除沿用系统语义（行内圆形按钮是「取消」，手势是快速通道）
+                .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.activeTasks)) }
             }
-            .listStyle(.insetGrouped)
-            .safeAreaInset(edge: .bottom) { editBarInset }
+            .paperList()
         }
     }
 
-    /// 右页：已下载。剧集分组可进二级页 / 排序 / 删整剧，散装单条放在下方
+    /// 下载中的一行：封面 60×82 + 剧名/说明/进度轨道（gap 9）+ 右侧 26 的圆形按钮。
+    /// 行高锁 82（封面高度），信息块 hug 内容后垂直居中 —— 与画布 2:40 的分布一致。
+    private func inProgressRow(_ task: DownloadTask) -> some View {
+        HStack(spacing: 14) {
+            PaperCover(title: task.seriesName ?? task.title,
+                       url: task.seriesName.flatMap { vm.seriesCovers[$0] })
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text(task.seriesName ?? task.title)
+                    .font(DWFont.serif(15, .medium))
+                    .foregroundStyle(DWColor.paperInk)
+                    .lineLimit(1)
+
+                Text(progressDetail(task))
+                    .font(DWFont.cn(11))
+                    .foregroundStyle(isFailed(task) ? DWColor.paperCinnabar : DWColor.paperIcon)
+                    .lineLimit(1)
+
+                PaperProgressBar(fraction: progressFraction(task))
+            }
+
+            if isFailed(task) {
+                // 失败行给「重试」：圆环 + 刷新箭头，与取消按钮同一形状语言
+                circleButton(stroke: DWColor.paperInkSub) {
+                    PaperReloadShape()
+                        .stroke(DWColor.paperIcon,
+                                style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                        .frame(width: 13, height: 13)
+                } action: {
+                    manager.run(task)
+                }
+            } else {
+                circleButton(stroke: DWColor.paperInkSub) {
+                    PaperXShape()
+                        .stroke(DWColor.paperIcon,
+                                style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                        .frame(width: 10, height: 10)
+                } action: {
+                    pendingCancel = task
+                }
+            }
+        }
+        .frame(height: 82)
+    }
+
+    private func isFailed(_ task: DownloadTask) -> Bool {
+        if case .failed = task.state { return true }
+        return false
+    }
+
+    private func progressFraction(_ task: DownloadTask) -> Double {
+        guard task.total > 0 else { return 0 }
+        return Double(task.current) / Double(task.total)
+    }
+
+    /// 「第 N 集 · 68%」：容量只有落盘后才算得出（磁盘占用缓存），下载中只报集号与百分比
+    private func progressDetail(_ task: DownloadTask) -> String {
+        let episode: String
+        if task.seriesName != nil {
+            let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 0
+            episode = "第 \(sort) 集"
+        } else {
+            // 散装任务没有集号；这里再报一次标题会和上一行完全重复
+            episode = "单文件"
+        }
+        switch task.state {
+        case .waiting: return "等待中"
+        case .parsing: return "解析播放列表…"
+        case .saving: return "保存文件…"
+        case .downloading:
+            guard task.total > 0 else { return "\(episode) · 下载中" }
+            return "\(episode) · \(Int(progressFraction(task) * 100))%"
+        case .failed(let message): return "失败 · \(message)"
+        case .done: return "已保存"
+        }
+    }
+
+    // MARK: - 右页：已下载（画布 19:272 / 34:1）
+
     @ViewBuilder
     private var completedPage: some View {
         if vm.seriesGroups.isEmpty && vm.standaloneItems.isEmpty {
-            ContentUnavailableView(
-                "还没有下载完的内容",
-                systemImage: "square.stack.3d.up",
-                description: Text("下载完成后，剧集和单条视频会出现在这里，可排序、可删除"))
+            paperEmpty(title: "还没有下载完的内容",
+                       hint: "下载完成后，剧集和单条视频会出现在这里")
         } else {
             List {
-                if !vm.seriesGroups.isEmpty {
-                    Section {
-                        ForEach(vm.seriesGroups, id: \.name) { group in
-                            if vm.selectionMode {
-                                seriesSelectionRow(group)
-                            } else {
-                                NavigationLink {
-                                    SeriesDetailView(manager: manager, seriesName: group.name)
-                                } label: {
-                                    seriesRow(group)
-                                }
-                            }
+                seriesHeaderRow
+                    .paperListRow()
+
+                ForEach(vm.seriesGroups, id: \.name) { group in
+                    Button {
+                        if vm.selectionMode {
+                            vm.toggleSeriesSelection(group)
+                        } else {
+                            pushedSeries = SeriesRoute(name: group.name)
                         }
-                        .onDelete { offsets in
-                            guard !vm.selectionMode else { return }
-                            if let index = offsets.first, vm.seriesGroups.indices.contains(index) {
-                                vm.pendingDeleteSeries = vm.seriesGroups[index].name
-                            }
-                        }
-                    } header: {
-                        Text(seriesHeaderText)
-                    } footer: {
-                        Text("左滑删除整剧，点进剧名可逐集管理")
+                    } label: {
+                        seriesRow(group)
+                    }
+                    .buttonStyle(.plain)
+                    .paperListRow()
+                }
+                .onDelete { offsets in
+                    guard !vm.selectionMode else { return }
+                    if let index = offsets.first, vm.seriesGroups.indices.contains(index) {
+                        vm.pendingDeleteSeries = vm.seriesGroups[index].name
                     }
                 }
+
                 if !vm.standaloneItems.isEmpty {
-                    Section("其他下载") {
-                        ForEach(vm.standaloneItems) { task in
-                            sectionRow(task: task)
+                    ForEach(vm.standaloneItems) { task in
+                        standaloneRow(task)
+                            .paperListRow()
+                    }
+                    .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.standaloneItems)) }
+                }
+            }
+            .paperList()
+        }
+    }
+
+    /// 分组头（画布 30:38 / 34:22）：左边统计，右边「编辑 + 排序」；
+    /// 编辑模式下右边换成单个「完成」，统计换成已选部数。
+    private var seriesHeaderRow: some View {
+        HStack(spacing: 0) {
+            Text(seriesStatText)
+                .font(DWFont.cn(10))
+                .foregroundStyle(DWColor.paperInkSub)
+
+            Spacer(minLength: 8)
+
+            if vm.selectionMode {
+                Button("完成") { vm.toggleEditMode() }
+                    .font(DWFont.cn(13, .medium))
+                    .foregroundStyle(DWColor.paperInk)
+                    .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 12) {
+                    iconButton {
+                        PaperPencilShape()
+                            .stroke(DWColor.paperIcon,
+                                    style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                            .frame(width: 14.6, height: 14.6)
+                    } action: {
+                        vm.toggleEditMode()
+                    }
+
+                    Menu {
+                        Picker("排列顺序", selection: $vm.sortOrder) {
+                            ForEach(DownloadSortOrder.allCases) { order in
+                                Label(order.label, systemImage: order.icon).tag(order)
+                            }
                         }
-                        .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.standaloneItems)) }
+                    } label: {
+                        PaperSortShape()
+                            .stroke(DWColor.paperIcon,
+                                    style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                            .frame(width: 12, height: 7)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .safeAreaInset(edge: .bottom) { editBarInset }
         }
+        .frame(height: 22)
     }
 
-    private func seriesRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "square.stack.3d.up.fill").foregroundColor(.purple)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group.name).lineLimit(1)
-                Text(seriesSubtitle(group)).font(.caption).foregroundColor(.secondary)
-            }
-            Spacer(minLength: 8)
-            // 右侧磁盘占用：后台枚举完成后出现（用户拍板 2026-11-13），未算出时不占位
-            if let sizeText = vm.seriesSizeText(group.name) {
-                Text(sizeText)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-            }
+    private var seriesStatText: String {
+        if vm.selectionMode {
+            let selectedSeries = vm.seriesGroups.filter { vm.seriesAllSelected($0) }.count
+            return "已选 \(selectedSeries) 部剧 · 共 \(vm.seriesGroups.count) 部"
         }
-        // 行高压缩（用户拍板 2026-11-13）：行内上下 padding 清零，交给 List 自身行内边距
-        .padding(.vertical, 0)
-    }
-
-    /// 剧集区标题：部数 + 总占用（总占用未算出/为 0 时只显部数）
-    private var seriesHeaderText: String {
-        var text = "剧集 · \(vm.seriesGroups.count) 部"
+        var text = "\(vm.seriesGroups.count) 部剧"
         if vm.seriesTotalBytes > 0 {
             text += " · \(DiskUsageService.formatted(vm.seriesTotalBytes))"
         }
         return text
     }
 
-    /// 剧行副标题带上时间，让「最新/最早优先」的排序依据可见
-    private func seriesSubtitle(_ group: (name: String, episodes: [DownloadTask])) -> String {
-        let times = group.episodes.map(\.createdAt)
-        let key = vm.sortOrder == .newestFirst ? times.max() : times.min()
-        let base = "已下载 \(group.episodes.count) 集"
-        guard let key else { return base }
-        return base + " · \(key.downloadsListText)"
+    /// 已下载的剧行（画布 19:306）：封面 + 剧名 / 说明 / 「可离线播放」胶囊，右侧完成勾。
+    /// 编辑模式下左侧多一枚 22 的勾选位（画布 34:39），右侧完成勾让位。
+    private func seriesRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
+        HStack(spacing: 14) {
+            if vm.selectionMode {
+                selectionMark(vm.seriesAllSelected(group))
+            }
+
+            PaperCover(title: group.name, url: vm.seriesCovers[group.name])
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text(group.name)
+                    .font(DWFont.serif(15, .medium))
+                    .foregroundStyle(DWColor.paperInk)
+                    .lineLimit(1)
+
+                Text(seriesSubtitle(group))
+                    .font(DWFont.cn(11))
+                    .foregroundStyle(DWColor.paperInkSub)
+                    .lineLimit(1)
+
+                Text("可离线播放")
+                    .font(DWFont.cn(10))
+                    .foregroundStyle(DWColor.paperIcon)
+                    .padding(.horizontal, 8)
+                    .frame(height: 20)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(DWColor.paperField))
+            }
+
+            Spacer(minLength: 0)
+
+            if !vm.selectionMode {
+                doneMark
+            }
+        }
+        .frame(height: 82)
+        .contentShape(Rectangle())
     }
 
-    /// 编辑模式下整行点击=勾选（Button(.plain)，不用 onTapGesture 以免与 List 手势冲突）；普通模式点击=播放
-    @ViewBuilder
-    private func sectionRow(task: DownloadTask) -> some View {
-        if vm.selectionMode {
-            Button {
-                vm.toggleSelection(task.id)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: vm.selected.contains(task.id) ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(vm.selected.contains(task.id) ? .blue : .secondary)
-                    TaskRow(task: task, progress: progressVM.progress(for: task))
-                }
-                .contentShape(Rectangle())
+    /// 散装单条（不属于任何剧的已完成下载）：沿用同一行骨架，右侧换成播放入口
+    private func standaloneRow(_ task: DownloadTask) -> some View {
+        HStack(spacing: 14) {
+            if vm.selectionMode {
+                selectionMark(vm.selected.contains(task.id))
             }
-            .buttonStyle(.plain)
-        } else {
-            TaskRow(task: task, progress: progressVM.progress(for: task))
-                .contentShape(Rectangle())
-                .onTapGesture { vm.handleTap(task, identity: progressVM.identity(for: task)) }
+
+            PaperCover(title: task.title, url: nil)
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text(task.title)
+                    .font(DWFont.serif(15, .medium))
+                    .foregroundStyle(DWColor.paperInk)
+                    .lineLimit(1)
+
+                Text("本地文件 · \(task.createdAt.downloadsListText)")
+                    .font(DWFont.cn(11))
+                    .foregroundStyle(DWColor.paperInkSub)
+                    .lineLimit(1)
+
+                Text("可离线播放")
+                    .font(DWFont.cn(10))
+                    .foregroundStyle(DWColor.paperIcon)
+                    .padding(.horizontal, 8)
+                    .frame(height: 20)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(DWColor.paperField))
+            }
+
+            Spacer(minLength: 0)
+
+            if !vm.selectionMode {
+                doneMark
+            }
+        }
+        .frame(height: 82)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if vm.selectionMode {
+                vm.toggleSelection(task.id)
+            } else {
+                vm.handleTap(task, identity: progressVM.identity(for: task))
+            }
         }
     }
 
-    /// 编辑模式下剧行点击=勾选整剧（该剧全部已下载集）
-    private func seriesSelectionRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
-        let allIn = vm.seriesAllSelected(group)
-        return Button {
-            vm.toggleSeriesSelection(group)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: allIn ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(allIn ? .blue : .secondary)
-                seriesRow(group)
+    /// 剧行说明（画布 19:310「全 32 集 · 1.1 GB · 昨日 21:40」）：集数 + 占用 + 时间
+    private func seriesSubtitle(_ group: (name: String, episodes: [DownloadTask])) -> String {
+        var parts = ["全 \(group.episodes.count) 集"]
+        if let sizeText = vm.seriesSizeText(group.name) { parts.append(sizeText) }
+        let times = group.episodes.map(\.createdAt)
+        if let key = vm.sortOrder == .newestFirst ? times.max() : times.min() {
+            parts.append(key.downloadsListText)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 完成勾（画布 19:313）：18 圆环 + 内嵌勾，纯状态指示，不是按钮
+    private var doneMark: some View {
+        ZStack {
+            Circle()
+                .stroke(DWColor.paperInkSub, lineWidth: 1)
+                .frame(width: 18, height: 18)
+            PaperCheckShape()
+                .stroke(DWColor.paperIcon,
+                        style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                .frame(width: 7.6, height: 5.2)
+        }
+        .frame(width: 22, height: 22)
+    }
+
+    /// 勾选位（画布 34:39 已选 = 朱砂实心 + 纸白勾）
+    private func selectionMark(_ selected: Bool) -> some View {
+        ZStack {
+            if selected {
+                Circle().fill(DWColor.paperCinnabar).frame(width: 18, height: 18)
+                PaperCheckShape()
+                    .stroke(DWColor.paper,
+                            style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+                    .frame(width: 7.6, height: 5.2)
+            } else {
+                // 画布 34:63 未选圈是 #8C9190（与完成勾的圆环同一档），不是更浅的轨道色
+                Circle().stroke(DWColor.paperInkSub, lineWidth: 1).frame(width: 18, height: 18)
             }
+        }
+        .frame(width: 22, height: 22)
+    }
+
+    // MARK: - 编辑工具条（画布 34:84）
+
+    private var editBar: some View {
+        HStack(spacing: 0) {
+            Button(vm.allSelected ? "全不选" : "全选") { vm.toggleSelectAll() }
+                .font(DWFont.cn(13, .medium))
+                .foregroundStyle(DWColor.paperInkSub)
+                .buttonStyle(.plain)
+
+            Spacer(minLength: 8)
+
+            Button {
+                vm.deleteSelected()
+            } label: {
+                Text("删除所选 (\(vm.selected.count))")
+                    .font(DWFont.cn(12, .medium))
+                    .foregroundStyle(DWColor.paper)
+                    .padding(.horizontal, 14)
+                    .frame(height: 32)
+                    .background(Capsule().fill(vm.selected.isEmpty
+                                               ? DWColor.paperLineIdle
+                                               : DWColor.paperCinnabar))
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.selected.isEmpty)
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 54)
+        .background(DWColor.paperChipIdle)
+        .overlay(alignment: .top) {
+            Rectangle().fill(DWColor.paperHairline).frame(height: 0.5)
+        }
+    }
+
+    // MARK: - 行内小部件
+
+    private func circleButton<Glyph: View>(stroke: Color,
+                                           @ViewBuilder glyph: () -> Glyph,
+                                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle().stroke(stroke, lineWidth: 1).frame(width: 22, height: 22)
+                glyph()
+            }
+            .frame(width: 26, height: 26)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
+
+    private func iconButton<Glyph: View>(@ViewBuilder glyph: () -> Glyph,
+                                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            glyph()
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func paperEmpty(title: String, hint: String) -> some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(DWFont.serif(14, .medium))
+                .foregroundStyle(DWColor.paperInkSub)
+            Text(hint)
+                .font(DWFont.cn(11))
+                .foregroundStyle(DWColor.paperFaint)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, DWLayout.pageEdge)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }
 
-/// 剧详情页：该剧全部集（含下载中的），点集播放，左滑删单集，右上角删全剧
+// MARK: - 纸本列表外观
+
+private extension View {
+    /// 列表行统一外观：透明行底 + 隐分隔线 + 左右 22 边距 + 上下 6（相邻行 → 12 的节奏）
+    func paperRow(vertical: CGFloat = 6) -> some View {
+        self
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: vertical, leading: DWLayout.pageEdge,
+                                      bottom: vertical, trailing: DWLayout.pageEdge))
+            .padding(.vertical, 0)
+    }
+
+    /// 分组内相邻行：画布 19:304 的分组是 itemSpacing 12，行本身没有内边距。
+    /// 用 vertical 6 时实测相邻封面之间是 24（List 自己又给了 12），故改 0。
+    func paperListRow() -> some View {
+        paperRow(vertical: 0)
+    }
+
+    /// 列表容器统一外观：抹掉系统 plain 的分组留白与白底，露出宣纸
+    func paperList() -> some View {
+        self
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
+    }
+}
+
+// MARK: - 封面 / 进度条
+
+/// 剧集封面（画布 19:307 60×82 r5）：本地缓存文件优先，无图用纸本占位（首字衬线）
+struct PaperCover: View {
+    let title: String
+    let url: URL?
+
+    var body: some View {
+        Group {
+            if let url, url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if let url, !url.isFileURL {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 60, height: 82)
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
+        }
+    }
+
+    private var fallback: some View {
+        ZStack {
+            DWColor.paperChipIdle
+            // 无封面时的兜底：首字压在纸块上（没有图也不该空成一块死灰）。
+            // 字号取 16 而不是 22——22 在 60×82 里像占位符，16 + 一点字距更像书脊烫印
+            Text(String(title.prefix(1)))
+                .font(DWFont.serif(16))
+                .tracking(1)
+                .foregroundStyle(DWColor.paperLineIdle)
+        }
+    }
+}
+
+/// 2pt 进度轨道（画布 2:45 轨道 #C4C7C3 + 2:46 已完成段 #35393B）
+struct PaperProgressBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(DWColor.paperTrack)
+                Rectangle()
+                    .fill(DWColor.paperTrackFill)
+                    .frame(width: geo.size.width * min(max(fraction, 0), 1))
+            }
+        }
+        .frame(height: 2)
+    }
+}
+
+// MARK: - 剧详情页
+
+/// 剧详情页：该剧全部集（含下载中的），点集播放，左滑删单集，右上角删全剧。
+/// 画布未覆盖此页，沿用纸本语言（宣纸底 + 衬线标题 + 细线行），与列表页同一套行样式。
 struct SeriesDetailView: View {
     @ObservedObject var manager: DownloadManager
     let seriesName: String
@@ -355,6 +733,7 @@ struct SeriesDetailView: View {
         List {
             ForEach(episodes) { task in
                 TaskRow(task: task, showSeries: false, progress: progressVM.progress(for: task))
+                    .paperListRow()
                     .contentShape(Rectangle())
                     .onTapGesture { playIfDone(task) }
             }
@@ -362,15 +741,25 @@ struct SeriesDetailView: View {
                 for offset in offsets { manager.remove(episodes[offset]) }
             }
         }
-        .listStyle(.insetGrouped)
-        // 同 DownloadsView：二级页的 List 同样吃不到 App 层 tab bar 的追加安全区
+        .paperList()
+        .background(DWColor.paper.ignoresSafeArea())
         .safeAreaPadding(.bottom, MainTab.barReservedHeight)
-        .navigationTitle(seriesName)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(DWColor.paper, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(seriesName)
+                    .font(DWFont.serif(17, .medium))
+                    .foregroundStyle(DWColor.paperInk)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { confirmDelete = true } label: {
-                    Image(systemName: "trash").foregroundColor(.red)
+                    Text("删除全剧")
+                        .font(DWFont.cn(13))
+                        .foregroundStyle(DWColor.paperCinnabar)
                 }
             }
         }
@@ -415,6 +804,7 @@ struct SeriesDetailView: View {
     }
 }
 
+/// 剧详情页的单集行（纸本版）：剧名 + 状态/进度说明，左侧状态点改成线稿圆环
 struct TaskRow: View {
     @ObservedObject var task: DownloadTask
     /// 队列行是否附剧名前缀（剧详情页内不需要）
@@ -430,67 +820,100 @@ struct TaskRow: View {
     var body: some View {
         HStack(spacing: 12) {
             stateIcon
-            VStack(alignment: .leading, spacing: 2) {
+
+            VStack(alignment: .leading, spacing: 6) {
                 Text(rowTitle)
+                    .font(DWFont.serif(14, .medium))
+                    .foregroundStyle(DWColor.paperInk)
                     .lineLimit(1)
                 detailLine
             }
-            Spacer()
+
+            Spacer(minLength: 0)
         }
-        // 行高压缩（用户拍板 2026-11-13，与剧行同口径）：行内上下 padding 清零
-        .padding(.vertical, 0)
+        .frame(height: 56)
     }
 
     @ViewBuilder private var stateIcon: some View {
         switch task.state {
         case .done:
-            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+            ZStack {
+                Circle().stroke(DWColor.paperInkSub, lineWidth: 1).frame(width: 16, height: 16)
+                PaperCheckShape()
+                    .stroke(DWColor.paperIcon,
+                            style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                    .frame(width: 6.6, height: 4.6)
+            }
+            .frame(width: 18, height: 18)
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
+            ZStack {
+                Circle().stroke(DWColor.paperCinnabar, lineWidth: 1).frame(width: 16, height: 16)
+                PaperXShape()
+                    .stroke(DWColor.paperCinnabar, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                    .frame(width: 8, height: 8)
+            }
+            .frame(width: 18, height: 18)
         default:
-            Image(systemName: "arrow.down.circle").foregroundColor(.blue)
+            ZStack {
+                Circle().stroke(DWColor.paperInkSub, lineWidth: 1).frame(width: 16, height: 16)
+                PaperBadgeArrowShape()
+                    .stroke(DWColor.paperIcon, style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                    .frame(width: 10, height: 10)
+                    .clipShape(Circle())
+            }
+            .frame(width: 18, height: 18)
         }
     }
 
     @ViewBuilder private var detailLine: some View {
         switch task.state {
         case .waiting:
-            Text("等待中…").font(.caption).foregroundColor(.secondary)
+            subText("等待中…")
         case .parsing:
-            Text("解析播放列表…").font(.caption).foregroundColor(.secondary)
+            subText("解析播放列表…")
         case .downloading:
             if task.total > 0 {
-                ProgressView(value: Double(task.current), total: Double(task.total))
-                Text("下载中 \(task.current)/\(task.total) (\(Int(Double(task.current) / Double(task.total) * 100))%)")
-                    .font(.caption).foregroundColor(.secondary)
+                PaperProgressBar(fraction: Double(task.current) / Double(task.total))
+                    .frame(width: 120)
+                subText("下载中 \(task.current)/\(task.total) (\(Int(Double(task.current) / Double(task.total) * 100))%)")
             } else {
-                ProgressView()
+                subText("下载中…")
             }
         case .saving:
-            Text("保存文件…").font(.caption).foregroundColor(.secondary)
+            subText("保存文件…")
         case .done:
             let base = task.isFromLibrary ? "本地文件" : "已保存到 \(task.displayName)"
-            Text("\(base) · \(task.createdAt.downloadsListText)")
-                .font(.caption).foregroundColor(.secondary)
+            subText("\(base) · \(task.createdAt.downloadsListText)")
             if let progress { playbackLine(progress) }
         case .failed(let message):
-            Text("失败: \(message)").font(.caption).foregroundColor(.red)
+            Text("失败: \(message)")
+                .font(DWFont.cn(11))
+                .foregroundStyle(DWColor.paperCinnabar)
+                .lineLimit(1)
         }
+    }
+
+    private func subText(_ text: String) -> some View {
+        Text(text)
+            .font(DWFont.cn(11))
+            .foregroundStyle(DWColor.paperInkSub)
+            .lineLimit(1)
     }
 
     /// 已完成条目的播放进度：薄进度条 + 时间（看完只给文字）
     @ViewBuilder
     private func playbackLine(_ progress: PlaybackProgress) -> some View {
         if progress.isFinished {
-            Label("已看完", systemImage: "checkmark.seal")
-                .font(.caption2).foregroundColor(.secondary)
+            Text("已看完")
+                .font(DWFont.cn(10))
+                .foregroundStyle(DWColor.paperFaint)
         } else {
             HStack(spacing: 6) {
-                ProgressView(value: progress.fraction)
-                    .progressViewStyle(.linear)
-                    .frame(maxWidth: 110)
+                PaperProgressBar(fraction: progress.fraction)
+                    .frame(width: 90)
                 Text("播至 \(progress.text)")
-                    .font(.caption2).foregroundColor(.secondary)
+                    .font(DWFont.cn(10))
+                    .foregroundStyle(DWColor.paperFaint)
             }
         }
     }

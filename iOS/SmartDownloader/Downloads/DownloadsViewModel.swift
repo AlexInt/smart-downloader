@@ -28,6 +28,10 @@ final class DownloadsViewModel: ObservableObject {
     @Published private(set) var seriesSizes: [String: Int64] = [:]
     /// 剧集区总占用：「已下载顶部：剧集·N部·xx.xGB」用
     @Published private(set) var seriesTotalBytes: Int64 = 0
+    /// 剧名 → 本地封面文件（画布 19:307 的 60×82 封面位）。
+    /// 与磁盘占用同一趟后台扫描里解析：身份查询是 SQLite 读，**不能**放到行渲染里做
+    ///（2026-11-14 主线程卡顿修复的口径）；没命中就留空，行内退化成纸本占位块。
+    @Published private(set) var seriesCovers: [String: URL] = [:]
     /// 上次已计算的全局输入指纹：done 任务 id 集 + 总数没变 → 连 work item 都不排（进度 tick 零成本）
     private var lastSizeSignature = ""
     /// 后台扫描专用串行队列：身份解析（SQLite）+ 目录枚举都在这里，主线程只做快照与发布
@@ -44,6 +48,14 @@ final class DownloadsViewModel: ObservableObject {
     init(manager: DownloadManager) {
         self.manager = manager
         self.sortOrder = sortPreferences.sortOrder
+        // 视觉验收用启动参数（与 App.swift 的 -autoTestDownload / -perfLog 同一族）：
+        // simctl 无法点击/滑动，实机对齐画布时需要直接落在「已下载」或编辑模式上截图。
+        // 仅 Debug 生效，Release 分支连判断都不编译进去。
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-startDownloadedPage") { page = .completed }
+        if arguments.contains("-startEditMode") { selectionMode = true }
+        #endif
         // 任务的任何变化（新增/完成/删除）都可能改变磁盘占用 → 去抖后重算；
         // 指纹在计算时取最新值，进度 tick（id/done 不变）算完发现指纹相同自然跳过
         managerObservation = manager.objectWillChange
@@ -68,10 +80,13 @@ final class DownloadsViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    /// 全局指纹 = done 任务 id 集 + 任务总数；新增/完成/删除都会变，进度 tick 不会变
+    /// 全局指纹 = done 任务 id 集 + 任务总数 + 进行中的剧名；
+    /// 新增/完成/删除都会变，进度 tick 不会变。
+    /// 进行中的剧名也进指纹：它们的封面要在首次出现时补一次（纯进度 tick 仍然零成本）
     private static func sizeSignature(_ tasks: [DownloadTask]) -> String {
         let doneIDs = tasks.filter { $0.state == .done }.map(\.id.uuidString).sorted()
-        return "\(doneIDs.joined(separator: ","))#\(tasks.count)"
+        let activeSeries = Set(tasks.filter { $0.state != .done }.compactMap(\.seriesName)).sorted()
+        return "\(doneIDs.joined(separator: ","))#\(tasks.count)#\(activeSeries.joined(separator: ","))"
     }
 
     private func recomputeSizes() {
@@ -97,8 +112,12 @@ final class DownloadsViewModel: ObservableObject {
         }
         let cacheCopy = episodeSizeCache
         let groupNames = Set(snaps.map(\.seriesName))
+        /// 只在「下载中」出现过的剧名：分组循环覆盖不到，单独补一次封面
+        let activeSeries = Set(manager.tasks.filter { $0.state != .done }.compactMap(\.seriesName))
         Self.sizeQueue.async { [weak self] in
             let groups = Dictionary(grouping: snaps, by: { $0.seriesName })
+            /// 剧名 → 本地封面：身份解析已在下面按剧做过，封面只是顺手取一次文件路径
+            var covers: [String: URL] = [:]
             struct SeriesPlan {
                 let cacheKey: String
                 let name: String
@@ -109,6 +128,10 @@ final class DownloadsViewModel: ObservableObject {
             for (name, eps) in groups {
                 let identity = DramaCache.seriesIdentity(forSeriesName: name)
                 let cacheKey = identity.map { "\($0.site)#\($0.dramaID)" } ?? "name:\(name)"
+                if let identity,
+                   let local = DramaCoverCache.validLocalURL(site: identity.site, dramaID: identity.dramaID) {
+                    covers[name] = local
+                }
                 let cached = cacheCopy[cacheKey]?.episodes ?? [:]
                 var reuse: [String: Int64] = [:]
                 var toScan: [(key: String, url: URL, isFolder: Bool)] = []
@@ -128,6 +151,12 @@ final class DownloadsViewModel: ObservableObject {
                     (plan.cacheKey, item.key,
                      item.isFolder ? DiskUsageService.directorySize(item.url) : DiskUsageService.fileSize(item.url))
                 }
+            }
+            // 只在「下载中」出现的剧（还没落盘、没有 group）：单独解析身份取封面
+            for name in activeSeries where covers[name] == nil {
+                guard let identity = DramaCache.seriesIdentity(forSeriesName: name),
+                      let local = DramaCoverCache.validLocalURL(site: identity.site, dramaID: identity.dramaID) else { continue }
+                covers[name] = local
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -151,7 +180,8 @@ final class DownloadsViewModel: ObservableObject {
                 }
                 self.seriesSizes = sizesBySeries
                 self.seriesTotalBytes = total
-                print("PLAYER_DBG [Service] diskUsage series=\(sizesBySeries.count) total=\(DiskUsageService.formatted(total)) episodesReused=\(reusedCount) episodesScanned=\(scannedCount) ms=\(PERF.ms() - t0)")
+                self.seriesCovers = covers
+                print("PLAYER_DBG [Service] diskUsage series=\(sizesBySeries.count) total=\(DiskUsageService.formatted(total)) episodesReused=\(reusedCount) episodesScanned=\(scannedCount) covers=\(covers.count) ms=\(PERF.ms() - t0)")
             }
         }
     }

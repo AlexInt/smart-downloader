@@ -28,6 +28,20 @@ final class WebViewStore: ObservableObject {
     /// 下载入口连点锁（异步取标题期间置位；架构评估 P9 从 View 收纳）
     @Published private(set) var isSubmitting = false
 
+    /// 后退/前进可用性（画布 22:329/331 用墨色与浅灰区分可点与不可点）。
+    /// WKWebView 的 canGoBack/canGoForward 不是 KVO 友好的属性，由导航回调统一回写；
+    /// 初值 false 与画布一致（起始页两个箭头都是灰的，后退在首次导航后才转墨）。
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+
+    /// 导航状态变化后回写箭头可用性（主线程调用）
+    func refreshNavigationState() {
+        let back = webView?.canGoBack ?? false
+        let forward = webView?.canGoForward ?? false
+        if back != canGoBack { canGoBack = back }
+        if forward != canGoForward { canGoForward = forward }
+    }
+
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
     func reload() { webView?.reload() }

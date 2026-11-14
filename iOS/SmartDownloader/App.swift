@@ -90,7 +90,7 @@ struct SmartDownloaderApp: App {
                         .allowsHitTesting(selectedTab == .browser)
                     if selectedTab == .downloads {
                         DownloadsView(manager: manager, vm: downloadsVM, progressVM: progressVM)
-                            .background(DWColor.background.ignoresSafeArea())
+                            .background(DWColor.paper.ignoresSafeArea())
                     }
                     if selectedTab == .settings {
                         // 「我的」页（画布 19:63 纸本）：封面墙聚合历史/收藏/追更/点赞，
@@ -104,6 +104,11 @@ struct SmartDownloaderApp: App {
                         mainTabBar
                     }
                 }
+                // 纸底统一在容器上铺满（2026-11-14）：三页都是宣纸底，各页再各自
+                // `.background(...ignoresSafeArea())` 会把顶部安全区一起吃掉，
+                // 页面自身的根视图于是多拿到一个状态栏高度、底边溢出到 tab bar 后面
+                //（浏览页底部工具条整行被 tab bar 盖住，就是这么丢的）
+                .background(DWColor.paper.ignoresSafeArea())
                 // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App
                 if showSplash {
                     LaunchSplashView()
@@ -142,11 +147,9 @@ struct SmartDownloaderApp: App {
     }
 
     /// 自定义底部 tab bar（替代系统 TabView 的 tab bar，配合保活容器）
-    /// 视觉与配色都在 `MainTabBar` 里：外观必须由 View 自己读环境——
-    /// App/Scene 层拿不到会随外观变化的 `colorScheme`（读到的永远是初始值）。
+    /// 视觉与配色都在 `MainTabBar` 里。
     private var mainTabBar: some View {
-        MainTabBar(selectedTab: $selectedTab,
-                   forcePaper: selectedTab == .settings)
+        MainTabBar(selectedTab: $selectedTab)
     }
 
 
@@ -185,24 +188,12 @@ struct SmartDownloaderApp: App {
 
 /// 底部标签栏（画布 19:225 / 22:157）：图标 22 + 文字 fs10 + 朱砂选中点 4×4。
 ///
-/// 栏底跟「页面」走，不跟全局外观走：
-/// - 「我的」页是纸本轨（整页锁浅色），栏必须同纸，否则一屏里深浅两截 —— 由 `forcePaper` 保证；
-/// - 浏览 / 下载页是浅底页（网页与系统列表），浅色外观下同样用纸底；系统深色外观下这两页转深，
-///   栏压墨（墨本轨，图标文字转纸白）。
-///
-/// 这个 View 独立存在的原因：`colorScheme` 必须由 View 树内的 View 读取，
-/// 在 App/Scene 层读到的是初始值、不会随外观切换更新（实测深色下仍判成 light）。
+/// 2026-11-14 起全 App 只剩**纸本单轨**（浏览/下载/我的三页都改成了宣纸底，
+/// 见画布 22:284 / 2:2 / 19:63），因此栏底恒为纸，不再跟系统外观走：
+/// 原先「深色外观下栏压墨」的双轨规则在这三页都变纸之后只会造成一屏里深浅两截。
+/// 页面色值都是写死的十六进制，深色外观下同样是宣纸底，故栏也必须恒纸。
 struct MainTabBar: View {
     @Binding var selectedTab: MainTab
-    /// 当前页是纸本轨（「我的」），无视外观恒用纸底
-    let forcePaper: Bool
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var isPaper: Bool { forcePaper || colorScheme == .light }
-    private var surface: Color { isPaper ? DWColor.paper : DWColor.barInk }
-    private var selectedColor: Color { isPaper ? DWColor.paperInk : DWColor.barInkSelected }
-    private var idleColor: Color { isPaper ? DWColor.paperInkSub : DWColor.barInkIdle }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -213,14 +204,12 @@ struct MainTabBar: View {
         .padding(.top, 10)
         .padding(.bottom, 6)
         // 栏底铺到屏幕底边（否则 Home 指示条那条会露出页面底色）
-        .background(surface.ignoresSafeArea(edges: .bottom))
+        .background(DWColor.paper.ignoresSafeArea(edges: .bottom))
         // 纸本轨加一条发丝线：下面是白底网页时靠它分界
         .overlay(alignment: .top) {
-            if isPaper {
-                Rectangle()
-                    .fill(DWColor.paperHairline)
-                    .frame(height: 0.5)
-            }
+            Rectangle()
+                .fill(DWColor.paperHairline)
+                .frame(height: 0.5)
         }
         .background {
             GeometryReader { geo in
@@ -250,7 +239,7 @@ struct MainTabBar: View {
                     .frame(width: 4, height: 4)
             }
             .frame(maxWidth: .infinity)
-            .foregroundStyle(selected ? selectedColor : idleColor)
+            .foregroundStyle(selected ? DWColor.paperInk : DWColor.paperInkSub)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
