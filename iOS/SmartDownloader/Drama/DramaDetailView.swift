@@ -83,6 +83,10 @@ struct DramaDetailView: View {
     @State private var introSecondLineWidth: CGFloat = 0
     /// 第一行基线到第二行基线的距离（CoreText 实测，行高取整后 + 行距）
     @State private var introLineDelta: CGFloat = 0
+    /// 展开态最后一条**完整可见**行的基线距首行的距离（CoreText 实测）：收起按钮纵向落位
+    @State private var introLastLineDelta: CGFloat = 0
+    /// 展开态最后一条**完整可见**行的实际宽度：收起按钮贴行尾用
+    @State private var introLastLineWidth: CGFloat = 0
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -421,6 +425,9 @@ struct DramaDetailView: View {
 
             if vm.isDescriptionExpanded {
                 if introOverflow {
+                    // 展开态「收起」：与截断态胶囊**同一落位规则**——贴最后一行行尾、
+                    // 右侧最多收到 370（与胶囊同一右边界）。曾钉死 (296, 471) 68×44，
+                    // 文案居中在框内导致距右缘比胶囊远 10pt+，纵向也不跟文本行（真机反馈）
                     Button { vm.toggleDescription() } label: {
                         HStack(spacing: 2) {
                             Text("收起")
@@ -428,11 +435,11 @@ struct DramaDetailView: View {
                         }
                         .font(DWFont.cn(12, .medium))
                         .foregroundStyle(DWColor.gold)
-                        .frame(width: 68, height: 44)
+                        .frame(width: collapseWidth, height: 44, alignment: .trailing)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .designFrame(296, 471, 68, 44)
+                    .designFrame(collapseX, collapseY, collapseWidth, 44)
                 }
             }
         }
@@ -493,16 +500,53 @@ struct DramaDetailView: View {
 
     /// 胶囊左上角 y：第二行垂直居中（386 + 实测基线间距 + (行框高-胶囊高)/2）
     private var introPillY: CGFloat {
-        let box = UIFont.systemFont(ofSize: 13).ascender - UIFont.systemFont(ofSize: 13).descender
+        let box = introLineBoxHeight
         let delta = introLineDelta > 0 ? introLineDelta : ceil(introLineHeight) + introLineSpacing
         return 386 + delta + (box - 18) / 2
     }
 
-    /// 简介两行测量（View 层职责：渲染度量不走 VM）：用 CoreText 按实际渲染参数
-    ///（宽 350 / 13pt / 行距 5 / **自动换行**）排全文，一次拿到三个量：
+    /// 简介正文单行的字框高度（ascent + descent）
+    private var introLineBoxHeight: CGFloat {
+        let f = UIFont.systemFont(ofSize: 13)
+        return f.ascender - f.descender
+    }
+
+    /// 「收起」按钮宽 = 「收起」实测 + 间距 2 + chevron 估算 12（SF Symbol 12pt ≈ 11~12）
+    private var collapseWidth: CGFloat {
+        let font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        let textWidth = ("收起" as NSString).size(withAttributes: [.font: font]).width
+        return ceil(textWidth) + 2 + 12
+    }
+
+    /// 「收起」是否与末行同行（行尾还剩 ≥ 按钮宽 + 6pt 的空间）
+    private var collapseFitsInline: Bool {
+        let lineEnd = 20 + min(introLastLineWidth, 350)
+        return lineEnd + 6 + collapseWidth <= 370
+    }
+
+    /// 「收起」左上角 x：同行放得下就贴行尾（与胶囊同一规则，只是不压省略号，留 6pt）；
+    /// 放不下则右对齐到文本右缘 370 —— 与胶囊被 clamp 时的右边界完全一致
+    private var collapseX: CGFloat {
+        let lineEnd = 20 + min(introLastLineWidth, 350)
+        return collapseFitsInline ? lineEnd + 6 : 370 - collapseWidth
+    }
+
+    /// 「收起」左上角 y：同行就垂直居中于末行；放不下则落到末行下方
+    ///（按钮 44pt 触摸高、可见内容约 18pt，故上边距取 -13 让可见内容贴行底 +2）
+    private var collapseY: CGFloat {
+        let delta = introLastLineDelta > 0 ? introLastLineDelta : ceil(introLineHeight) + introLineSpacing
+        let lineTop = 386 + delta
+        if collapseFitsInline { return lineTop + introLineBoxHeight / 2 - 22 }
+        return lineTop + introLineBoxHeight + 2 - 13
+    }
+
+    /// 简介测量（View 层职责：渲染度量不走 VM）：用 CoreText 按实际渲染参数
+    ///（宽 350 / 13pt / 行距 5 / **自动换行**）排全文，一次拿到五个量：
     ///  - introOverflow：自然排版超过两行 → 需要「展开」
-    ///  - introSecondLineWidth：第二行实际宽度 → 胶囊贴行尾用
-    ///  - introLineDelta：第二行相对首行的基线间距 → 胶囊纵向落位
+    ///  - introSecondLineWidth / introLineDelta：第二行宽度与基线距 → 截断态胶囊落位
+    ///  - introLastLineWidth / introLastLineDelta：展开态最后一条完整可见行的宽度与
+    ///    基线距 → 「收起」贴行尾落位（展开容器固定 54pt 位移，超出的行会被裁掉，
+    ///    所以这里按 `introTwoLineHeight + 54` 的实际可视高度取最后一条完整行）
     ///
     /// **禁止用 `.byTruncatingTail` 测量**：CoreText 会把整段当成一行做尾部截断
     /// （实测 lines 恒为 1、末行 range 覆盖全文），溢出判定恒为 false，按钮直接消失。
@@ -530,10 +574,28 @@ struct DramaDetailView: View {
             secondLineWidth = CGFloat(CTLineGetTypographicBounds(lines[1], nil, nil, nil))
             delta = origins[0].y - origins[1].y
         }
+        // 展开态可视范围：容纳最后一条「整行」都在框内的行
+        let expandableHeight = introTwoLineHeight + 54
+        let lineBox = uiFont.ascender - uiFont.descender
+        var lastIdx = 0
+        for i in 0..<lines.count {
+            let top = origins[0].y - origins[i].y
+            if top + lineBox <= expandableHeight + 0.5 { lastIdx = i } else { break }
+        }
+        var lastLineWidth: CGFloat = 0
+        var lastLineDelta: CGFloat = 0
+        if !lines.isEmpty {
+            lastLineWidth = CGFloat(CTLineGetTypographicBounds(lines[lastIdx], nil, nil, nil))
+            lastLineDelta = origins[0].y - origins[lastIdx].y
+        }
         introSecondLineWidth = min(secondLineWidth, 350)
         introLineDelta = delta
+        introLastLineWidth = min(lastLineWidth, 350)
+        introLastLineDelta = lastLineDelta
         introOverflow = lines.count > 2
-        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) lines=\(lines.count) line2W=\(Int(secondLineWidth)) delta=\(Int(delta)) len=\(measured.count) boxH=\(Int(introTwoLineHeight))")
+        print("PLAYER_DBG [Entry] introOverflow=\(introOverflow) lines=\(lines.count) line2W=\(Int(secondLineWidth)) delta=\(Int(delta)) lastIdx=\(lastIdx) lastW=\(Int(lastLineWidth)) lastDelta=\(Int(lastLineDelta)) len=\(measured.count) boxH=\(Int(introTwoLineHeight))")
+        // 落位对账：胶囊（截断态）与「收起」（展开态）的实测坐标，右缘应为 370 或贴行尾
+        print("PLAYER_DBG [Entry] introGeo pill=(\(Int(introPillX)),\(Int(introPillY)),w\(Int(introPillWidth))) collapse=(\(Int(collapseX)),\(Int(collapseY)),w\(Int(collapseWidth))) inline=\(collapseFitsInline)")
     }
 
     // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）
