@@ -21,19 +21,20 @@ enum MainTab: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// iOS 26 符号集没有 compass，浏览页用 safari.fill；
-    /// 「我的」画布（22:157）用 person 线稿
+    /// 三个 tab 统一走线稿（画布底栏 22:147/152/157 都是线稿图标）；
+    /// 浏览页用 safari（非 fill 版），与「我的」的 person 线稿同重。
     var icon: String {
         switch self {
-        case .browser: return "safari.fill"
+        case .browser: return "safari"
         case .downloads: return "arrow.down.circle"
         case .settings: return "person"
         }
     }
 
     /// 自定义底部 tab bar 的预留高度（与 App.mainTabBar 的内边距同步：
-    /// VStack(spacing:2){ icon≈24 + text≈13 } + padding(top:6, bottom:2) ≈ 47）。
+    /// VStack(spacing:4){ 图标 22 + 文字 ≈13 + 朱砂点 4，文字与点间距 3 }
+    /// + padding(top:10, bottom:6) ≈ 62）。
     /// 分页 TabView 的页面不接收祖先 safeAreaInset 追加的底部安全区（已知传递缺陷），
     /// 下载页列表用它显式补底部安全区；改 bar 内边距时同步此值。
-    static let barReservedHeight: CGFloat = 47
+    static let barReservedHeight: CGFloat = 62
 }

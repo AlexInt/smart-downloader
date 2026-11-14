@@ -142,43 +142,13 @@ struct SmartDownloaderApp: App {
     }
 
     /// 自定义底部 tab bar（替代系统 TabView 的 tab bar，配合保活容器）
-    /// 条目与顺序取自 `MainTab.allCases`，新增 tab 只改 MainTab 定义
+    /// 视觉与配色都在 `MainTabBar` 里：外观必须由 View 自己读环境——
+    /// App/Scene 层拿不到会随外观变化的 `colorScheme`（读到的永远是初始值）。
     private var mainTabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(MainTab.allCases) { tab in
-                tabBarItem(tab)
-            }
-        }
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-        .background(.bar)
-        .background {
-            GeometryReader { geo in
-                Color.clear.onAppear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                        print("UI_DBG tabBar frame=\(geo.frame(in: .global)) safeBottom=\(geo.safeAreaInsets.bottom)")
-                    }
-                }
-            }
-        }
+        MainTabBar(selectedTab: $selectedTab,
+                   forcePaper: selectedTab == .settings)
     }
 
-    private func tabBarItem(_ tab: MainTab) -> some View {
-        Button {
-            selectedTab = tab
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: tab.icon)
-                    .font(.system(size: 20))
-                Text(tab.title)
-                    .font(.caption2)
-            }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
 
     /// 设备端自动冒烟（真机蜂窝网络下验证 WAF/下载链路，无需手工操作 UI）：
     /// `devicectl ... launch --console ... <bundle> -autoTestDownload <m3u8URL>` 启动即自动下载，
@@ -208,5 +178,83 @@ struct SmartDownloaderApp: App {
             }
         }
         poll()
+    }
+}
+
+// MARK: - 底部标签栏
+
+/// 底部标签栏（画布 19:225 / 22:157）：图标 22 + 文字 fs10 + 朱砂选中点 4×4。
+///
+/// 栏底跟「页面」走，不跟全局外观走：
+/// - 「我的」页是纸本轨（整页锁浅色），栏必须同纸，否则一屏里深浅两截 —— 由 `forcePaper` 保证；
+/// - 浏览 / 下载页是浅底页（网页与系统列表），浅色外观下同样用纸底；系统深色外观下这两页转深，
+///   栏压墨（墨本轨，图标文字转纸白）。
+///
+/// 这个 View 独立存在的原因：`colorScheme` 必须由 View 树内的 View 读取，
+/// 在 App/Scene 层读到的是初始值、不会随外观切换更新（实测深色下仍判成 light）。
+struct MainTabBar: View {
+    @Binding var selectedTab: MainTab
+    /// 当前页是纸本轨（「我的」），无视外观恒用纸底
+    let forcePaper: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isPaper: Bool { forcePaper || colorScheme == .light }
+    private var surface: Color { isPaper ? DWColor.paper : DWColor.barInk }
+    private var selectedColor: Color { isPaper ? DWColor.paperInk : DWColor.barInkSelected }
+    private var idleColor: Color { isPaper ? DWColor.paperInkSub : DWColor.barInkIdle }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MainTab.allCases) { tab in
+                item(tab)
+            }
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        // 栏底铺到屏幕底边（否则 Home 指示条那条会露出页面底色）
+        .background(surface.ignoresSafeArea(edges: .bottom))
+        // 纸本轨加一条发丝线：下面是白底网页时靠它分界
+        .overlay(alignment: .top) {
+            if isPaper {
+                Rectangle()
+                    .fill(DWColor.paperHairline)
+                    .frame(height: 0.5)
+            }
+        }
+        .background {
+            GeometryReader { geo in
+                Color.clear.onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        print("UI_DBG tabBar frame=\(geo.frame(in: .global)) safeBottom=\(geo.safeAreaInsets.bottom)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func item(_ tab: MainTab) -> some View {
+        let selected = selectedTab == tab
+        return Button {
+            selectedTab = tab
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 22, weight: selected ? .medium : .regular))
+                    .frame(height: 22)
+                Text(tab.title)
+                    .font(.system(size: 10, weight: selected ? .medium : .regular))
+                // 画布 22:162：朱砂选中点 4×4；未选中也占位，否则选中态文字会上下跳
+                Circle()
+                    .fill(selected ? DWColor.paperCinnabar : Color.clear)
+                    .frame(width: 4, height: 4)
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(selected ? selectedColor : idleColor)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
 	<key>CFBundleDisplayName</key>
-	<string>Smart Downloader</string>
+	<string>DramaWave</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -20,10 +20,13 @@
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<!-- 系统启动屏 = 纯纸底（颜色资源 LaunchBackground，与纸本轨 #F2F0EA 同值）。
+	     不再用整屏 PNG：图不能铺满所有机型分辨率，边缘会露出白边。
+	     记号（墨箭 + 朱砂承线）由 LaunchSplashView 在系统屏之后淡入。 -->
 	<key>UILaunchScreen</key>
 	<dict>
-		<key>UIImageName</key>
-		<string>LaunchScreen</string>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
 	</dict>
 	<!-- 个人使用优先可用：允许任意 HTTP/HTTPS 加载 -->
 	<key>NSAppTransportSecurity</key>

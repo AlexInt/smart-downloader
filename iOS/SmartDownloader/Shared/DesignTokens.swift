@@ -76,6 +76,22 @@ extension DWColor {
     static let paperChipSel  = Color(hex: "#E2DED5")
     /// 胶囊未选底
     static let paperChipIdle = Color(hex: "#EAE7DF")
+    /// 纸本轨栏底顶部的发丝分隔线（与白底网页交界处才不会糊成一片）
+    static let paperHairline = Color(hex: "#E0DBD1")
+}
+
+// MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）
+//
+// 栏底跟随所在页的轨：浏览/下载页是墨本深底，栏也压墨，图标与文字转纸白；
+// 「我的」页是纸本，栏同纸，选中用墨字 + 朱砂点。两轨只有这三个角色色不同，
+// 几何（图标 22 / 文字 fs10 / 朱砂点 4×4）完全一致。
+extension DWColor {
+    /// 墨本轨：栏底（与 DownloadsView 的页面底色同一值，栏与页无缝）
+    static let barInk         = background
+    /// 墨本轨：选中图标 / 文字（纸白，不用纯白，与纸本轨同一色温）
+    static let barInkSelected = Color(hex: "#EDEAE2")
+    /// 墨本轨：未选中图标 / 文字
+    static let barInkIdle     = Color(hex: "#6F7576")
 }
 
 enum DWFont {
