@@ -22,6 +22,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     let activeToast: String?
     /// 左缘右滑返回（fullScreenCover 没有系统边缘返回，自己补）
     var onEdgeBack: () -> Void = {}
+    /// 末页再往下滑一格（想看下一集但已无资源、翻不出去）——边界提示的触发点
+    ///（用户拍板 2026-11-14：停稳末页不提示，滑出未果才提示）
+    var onPullBeyondEnd: () -> Void = {}
     let makeCard: (PlayableEpisode) -> AnyView
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -435,6 +438,14 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             let triggered = abs(delta) > height * 0.15 || abs(velocity.y) > 0.3
             if triggered {
                 nextIndex = currentIndex + ((delta > 0 || velocity.y > 0) ? 1 : -1)
+            }
+            // 末页边界提示触发点（用户拍板 2026-11-14）：在末页滑动方向朝向下一集、
+            // 且翻页判定成立（有位移/有速度），但目标页超出最后页——「想看下一集
+            // 但已无资源，滑出未果」。此时才弹「已经到底了」，停稳末页本身不提示。
+            // 轻拖不触发（triggered=false），回弹误触被 clamp 判定天然排除。
+            if triggered, nextIndex > parent.slots.count - 1 {
+                print("PLAYER_DBG [CHECK] pullBeyondEnd idx=\(currentIndex) delta=\(Int(delta)) vY=\(String(format: "%.2f", velocity.y)) slots=\(parent.slots.count)")
+                parent.onPullBeyondEnd()
             }
             nextIndex = max(0, min(parent.slots.count - 1, nextIndex))
             let targetY = CGFloat(nextIndex) * height

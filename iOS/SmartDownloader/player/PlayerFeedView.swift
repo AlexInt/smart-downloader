@@ -21,6 +21,7 @@ struct PlayerFeedView: View {
                     isReady: vm.playbackReady,
                     activeToast: vm.toastText,
                     onEdgeBack: onClose,
+                    onPullBeyondEnd: { vm.pulledBeyondEnd() },
                     makeCard: { slot in AnyView(card(for: slot)) }
                 )
                 .ignoresSafeArea()

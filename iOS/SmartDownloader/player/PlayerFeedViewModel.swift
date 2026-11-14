@@ -106,13 +106,11 @@ final class PlayerFeedViewModel: ObservableObject {
             print("PLAYER_DBG [CHECK] pageSettled done sort=\(sort) isLast=\(self.isLast(sort)) slots=\(self.slots.count) current=\(self.currentSort.map(String.init) ?? "nil") ready=\(self.playbackReady)")
             if !slot.isAvailable {
                 // 待办 #4：滑到未下载集给引导提示（不改 resolve 语义：全剧集数可滑、胶囊 4/11 不变）。
-                // 占位卡已有内联提示，toast 补「去哪下载」的行动指引；优先于到底提示（更有信息量）
+                // 占位卡已有内联提示，toast 补「去哪下载」的行动指引
                 self.showToast("第\(sort)集尚未下载 · 回剧集页下载后可看")
-            } else if self.isLast(sort), !self.endToastShown {
-                self.endToastShown = true
-                AppHaptics.warning()   // 上滑到最后一集：到达边界（行业惯例警示触）
-                self.showToast("已经到底了")
             }
+            // 「已经到底了」不再在停稳末页时提示（用户拍板 2026-11-14）：
+            // 改为末页再滑一次（想看下一集但已无资源）才提示，见 pulledBeyondEnd()
         }
     }
 
@@ -137,6 +135,22 @@ final class PlayerFeedViewModel: ObservableObject {
 
     func isFirst(_ sort: Int) -> Bool { slots.first?.sort == sort }
     func isLast(_ sort: Int) -> Bool { slots.last?.sort == sort }
+
+    /// 末页再滑一次（想看下一集但已无资源、翻不出去）时才提示「已经到底了」。
+    /// 用户拍板 2026-11-14：停稳末页本身不算信号（旧实现在 pageSettled 里停稳即提示），
+    /// 与抖音行为一致——末页停留是正常状态，滑出未果才是用户在问「还有没有」。
+    /// 触发源：PlayerPagingScrollView 的 scrollViewWillEndDragging 检测「想往后翻一格
+    /// 但被 clamp 在末页」。一次会话只提示一次（endToastShown）。
+    func pulledBeyondEnd() {
+        guard !endToastShown else {
+            print("PLAYER_DBG [CHECK] pullBeyondEnd SKIP reason=alreadyShown")
+            return
+        }
+        endToastShown = true
+        AppHaptics.warning()   // 上滑到最后一集再滑一次仍翻不出去：到达边界（行业惯例警示触）
+        showToast("已经到底了")
+        print("PLAYER_DBG [CHECK] pullBeyondEnd → toast「已经到底了」")
+    }
 
     /// 2 秒后自动消失（用户指定）。取消旧 WorkItem + UUID 令牌：连续提示时旧任务
     /// 因令牌不匹配不会误清新提示，最后一条只要令牌仍匹配就必须无条件清掉（不留永久挂着的 toast）。
