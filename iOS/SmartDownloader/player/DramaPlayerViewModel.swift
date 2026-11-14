@@ -238,12 +238,20 @@ final class DramaPlayerViewModel: ObservableObject {
             progressTracker?.flush()
             return
         }
-        userWantsPlayback = true
-        if let duration = player.currentItem?.duration,
-           CMTimeGetSeconds(duration).isFinite,
-           CMTimeGetSeconds(player.currentTime()) >= CMTimeGetSeconds(duration) - 0.2 {
-            player.seek(to: .zero)
+        // 片尾态不复活（用户拍板 2026-11-14）：播完停在末帧，点按不得从头重播——
+        // 旧实现此处 seek(.zero)+play()，末集播完误点一下整集从头放（真机日志实证）。
+        // 非 last 集的播完窗口由自动连播接管（~1s 内滚走），片尾停留态实际只有末集，
+        // 故不做 last 判定（播放 VM 也不持有队列知识）。重看走横向 seek 拖离片尾，
+        // 拖回正片区间后点按恢复正常播放语义
+        if let item = player.currentItem {
+            let total = CMTimeGetSeconds(item.duration)
+            let now = CMTimeGetSeconds(player.currentTime())
+            if total.isFinite, total > 0, now >= total - 0.2 {
+                print("PLAYER_DBG [Playback] togglePlayback SKIP reason=atEnd at=\(Int(now))/\(Int(total))")
+                return
+            }
         }
+        userWantsPlayback = true
         player.play()
     }
 
