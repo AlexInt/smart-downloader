@@ -87,6 +87,10 @@ struct DramaDetailView: View {
     @State private var introLastLineDelta: CGFloat = 0
     /// 展开态最后一条**完整可见**行的实际宽度：收起按钮贴行尾用
     @State private var introLastLineWidth: CGFloat = 0
+    /// 顶栏底下还是不是海报（纸本化 2026-11-14）：海报盖着顶栏时用白图标 + 墨色 scrim，
+    /// 滚过去之后顶栏换纸底 + 细线 + 墨色图标。没有这个开关，滚到选集以后会剩一条
+    /// 灰雾压在宣纸上——深色轨的 scrim 直接搬到纸面上就是坏掉的样子。
+    @State private var posterUnderHeader = true
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -116,6 +120,18 @@ struct DramaDetailView: View {
                                    alignment: .topLeading)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
+                    // 顶栏随滚动换底：海报底边（设计 376，按 scale 换算成屏幕点）压过
+                    // 顶栏底（96）就切纸底。offset 是屏幕点，两边同一口径。
+                    .onScrollGeometryChange(for: Bool.self) { g in
+                        g.contentOffset.y + 96 * scale < DetailLayout.posterHeight * scale
+                    } action: { _, overPoster in
+                        posterUnderHeader = overPoster
+                    }
+                    #if DEBUG
+                    // 样张落到页底（`-dramaPreviewBottom`）：模拟器滑不了，
+                    // 要看「滚过海报后的顶栏」和档案区只能靠它。
+                    .defaultScrollAnchor(DramaDebugFlags.bottomAnchor ? .bottom : .top)
+                    #endif
                     // 顶栏（返回 / 收藏）钉在屏幕顶部：**不随页面滚动**，用户拍板 2026-11-14
                     .overlay(alignment: .topLeading) { pinnedHeader(scale: scale) }
                     // 左缘右滑时整屏跟手，露出左侧底层，模拟系统返回观感
@@ -130,7 +146,7 @@ struct DramaDetailView: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .ignoresSafeArea()
-        .background(DWColor.background.ignoresSafeArea())
+        .background(DWColor.paper.ignoresSafeArea())
         // 设计稿是沉浸式全屏，状态栏之上不叠系统导航栏；返回用屏内自带按钮
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
@@ -215,7 +231,7 @@ struct DramaDetailView: View {
     @ViewBuilder
     private func canvas(_ info: DramaInfo, layout: PageLayout) -> some View {
         ZStack(alignment: .topLeading) {
-            DWColor.background
+            DWColor.paper
                 .frame(width: DWLayout.designWidth, height: layout.totalHeight)
             coverLayer
             titleAndTags(info)
@@ -235,11 +251,13 @@ struct DramaDetailView: View {
 
     // MARK: ① 海报层（三态占位）
 
+    /// 无封面时的海报底：纸本轨用「墨块」而不是原来的紫渐变。
+    /// 剧名/标签是白字、压在底部 scrim 上，底色必须是墨——纸色会让白字直接消失。
     private var posterGradient: some View {
         LinearGradient(stops: [
-            .init(color: DWColor.posterTop, location: 0),
-            .init(color: DWColor.posterMid, location: 0.45),
-            .init(color: DWColor.posterBottom, location: 1)
+            .init(color: DWColor.paperInkTop, location: 0),
+            .init(color: DWColor.paperInkMid, location: 0.45),
+            .init(color: DWColor.paperInkBottom, location: 1)
         ], startPoint: .top, endPoint: .bottom)
     }
 
@@ -257,11 +275,12 @@ struct DramaDetailView: View {
                                 .frame(width: 390, height: DetailLayout.posterHeight)
                                 .clipped()
                         case .failure, .empty:
-                            DWColor.coverPlaceholder
+                            DWColor.paperInkPlate
                         @unknown default:
-                            DWColor.coverPlaceholder
+                            DWColor.paperInkPlate
                         }
-                        if case .success = phase { glowLayer }
+                        // 纸本轨去掉原来的径向光晕：宣纸上不会有色晕，那一层只在
+                        // 深色轨成立。封面本身有明暗，scrim 够了。
                         scrimBottom
                         switch phase {
                         case .empty: loadingPlaceholder
@@ -274,7 +293,7 @@ struct DramaDetailView: View {
                 .id(vm.coverReloadToken)
             } else {
                 ZStack(alignment: .topLeading) {
-                    DWColor.coverPlaceholder
+                    DWColor.paperInkPlate
                     scrimBottom
                     failurePlaceholder
                 }
@@ -285,23 +304,30 @@ struct DramaDetailView: View {
         .clipped()
     }
 
-    private var glowLayer: some View {
-        RadialGradient(stops: [
-            .init(color: DWColor.glowCenter.opacity(0.18), location: 0),
-            .init(color: Color.clear, location: 1)
-        ], center: .center, startRadius: 0, endRadius: 120)
-            .designFrame(60, 56, 270, 240)
-            .allowsHitTesting(false)
-    }
-
     /// 顶部压暗渐变：现在由 `pinnedHeader` 常驻渲染（不再属于海报层），
-    /// 保证顶栏图标在任何滚动位置都有对比度
+    /// 保证顶栏图标在任何滚动位置都有对比度。纸本化后它只在「海报还盖着顶栏」时出现，
+    /// 滚过去换纸底（见 pinnedHeader）。
     private var scrimTop: some View {
         LinearGradient(colors: [.black.opacity(0.45), .clear],
                        startPoint: .top, endPoint: .bottom)
             .designFrame(0, 0, 390, 96)
             .allowsHitTesting(false)
     }
+
+    /// 滚过海报后的顶栏底：96 高纸面 + 一条细线（与设置页纸本导航栏同一种做法），
+    /// 高度与 scrimTop 一致，切换时图标不位移。
+    private var paperHeaderPlate: some View {
+        VStack(spacing: 0) {
+            DWColor.paper
+                .frame(width: 390, height: 96)
+            DWColor.paperHairline
+                .frame(width: 390, height: 0.5)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// 海报上的说明文字用纸白半透明（墨块上紫灰读不出来）
+    private var onPosterSubText: Color { Color.white.opacity(0.62) }
 
     private var scrimBottom: some View {
         LinearGradient(colors: [.clear, .black.opacity(0.92)],
@@ -314,11 +340,11 @@ struct DramaDetailView: View {
     private var loadingPlaceholder: some View {
         ZStack(alignment: .topLeading) {
             ProgressView()
-                .tint(DWColor.gold)
+                .tint(DWColor.paperCinnabar)
                 .designFrame(171, 134, 48, 48)
             Text("正在加载封面…")
                 .font(DWFont.cn(13, .medium))
-                .foregroundStyle(DWColor.textHint)
+                .foregroundStyle(onPosterSubText)
                 .designFrame(115, 190, 160, 18)
         }
         .frame(width: 390, height: DetailLayout.posterHeight)
@@ -330,16 +356,16 @@ struct DramaDetailView: View {
         ZStack(alignment: .topLeading) {
             Image(systemName: "photo")
                 .font(.system(size: 30, weight: .regular))
-                .foregroundStyle(DWColor.placeholderIcon)
+                .foregroundStyle(Color.white.opacity(0.30))
                 .designFrame(171, 134, 48, 48)
             Text("封面加载失败")
                 .font(DWFont.cn(13, .medium))
-                .foregroundStyle(DWColor.textHint)
+                .foregroundStyle(onPosterSubText)
                 .designFrame(156, 190, 78, 18)
             Button { vm.retryCover() } label: {
                 Text("点击重试")
                     .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.textMuted)
+                    .foregroundStyle(Color.white.opacity(0.82))
                     .frame(width: 90, height: 44)
                     .contentShape(Rectangle())
             }
@@ -357,14 +383,30 @@ struct DramaDetailView: View {
     /// 这样它不会挡住下方的滚动区域。
     private func pinnedHeader(scale: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            // 顶部压暗渐变随顶栏一起常驻：滚动后图标下面可能是任意内容（含亮色封面），
-            // 没有这层会看不清。原先它挂在海报层里，滚动就跟着跑了。
+            // 两层同时在场、只切不透明度：交叉淡入比「换视图」少一次硬跳。
+            // 海报盖着顶栏 → 墨色 scrim + 白图标；滚过去 → 纸底 + 细线 + 墨图标。
             scrimTop
+                .opacity(posterUnderHeader ? 1 : 0)
+            paperHeaderPlate
+                .opacity(posterUnderHeader ? 0 : 1)
             headerBar
         }
         .frame(width: DWLayout.designWidth, height: 100)
         .scaleEffect(scale, anchor: .topLeading)
         .frame(width: DWLayout.designWidth * scale, height: 100 * scale, alignment: .topLeading)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: posterUnderHeader)
+    }
+
+    /// 顶栏图标色：压在海报上是纸白，落在纸面上是墨
+    private var headerGlyphColor: Color {
+        posterUnderHeader ? .white : DWColor.paperInk
+    }
+
+    /// 收藏态：海报上仍是白（设计稿 30:110 的实心白），纸面上一枚朱砂——
+    /// 纸本轨里「已收藏」= 一方印，与设置页/我的页同一个说法
+    private var heartColor: Color {
+        guard vm.isFavorite else { return headerGlyphColor }
+        return posterUnderHeader ? .white : DWColor.paperCinnabar
     }
 
     /// 视觉盒 32×32 @ (16,50)/(334,50)，命中区外扩到 44×44（设计稿 ::after 规则）
@@ -373,7 +415,7 @@ struct DramaDetailView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(headerGlyphColor)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
@@ -384,7 +426,7 @@ struct DramaDetailView: View {
             Button { vm.toggleFavorite() } label: {
                 Image(systemName: vm.isFavorite ? "heart.fill" : "heart")
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(heartColor)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
@@ -399,8 +441,10 @@ struct DramaDetailView: View {
 
     private func titleAndTags(_ info: DramaInfo) -> some View {
         ZStack(alignment: .topLeading) {
+            // 画布 22:172 的节点名就是「剧名 24pt 衬线」——深色轨当年落成了黑体，
+            // 纸本轨按画布改回衬线（与设置页/我的页标题同一族）。白字压在墨色 scrim 上。
             Text(info.name)
-                .font(DWFont.cn(24, .heavy))
+                .font(DWFont.serif(24, .bold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .designFrame(20, 310, 350, 32, alignment: .leading)
@@ -424,7 +468,7 @@ struct DramaDetailView: View {
             Text(vm.intro ?? "")
                 .font(DWFont.cn(13))
                 .lineSpacing(5)
-                .foregroundStyle(DWColor.textBody)
+                .foregroundStyle(DWColor.paperInk)
                 .lineLimit(vm.isDescriptionExpanded ? nil : 2)
                 .frame(width: 350, height: height, alignment: .topLeading)
                 .clipped()
@@ -452,7 +496,7 @@ struct DramaDetailView: View {
                             Image(systemName: "chevron.up")
                         }
                         .font(DWFont.cn(12, .medium))
-                        .foregroundStyle(DWColor.gold)
+                        .foregroundStyle(DWColor.paperCinnabar)
                         // fixedSize：宽度只由内容决定，永不因容器窄了而换行/竖排
                         .fixedSize(horizontal: true, vertical: false)
                         .frame(width: collapseWidth, height: 44, alignment: .trailing)
@@ -478,11 +522,11 @@ struct DramaDetailView: View {
             .font(DWFont.cn(12, .medium))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(DWColor.gold)
+            .foregroundStyle(DWColor.paperCinnabar)
             .padding(.leading, 22)
             .padding(.trailing, 3)
             .frame(height: 18)
-            .background(LinearGradient(colors: [.clear, DWColor.background, DWColor.background],
+            .background(LinearGradient(colors: [.clear, DWColor.paper, DWColor.paper],
                                        startPoint: .leading, endPoint: .trailing))
             .contentShape(Rectangle())
             .onTapGesture { vm.toggleDescription() }
@@ -628,20 +672,21 @@ struct DramaDetailView: View {
     private func contentGroup(_ info: DramaInfo) -> some View {
         ZStack(alignment: .topLeading) {
             Text("选集")
-                .font(DWFont.cn(16, .bold))
-                .foregroundStyle(.white)
+                .font(DWFont.serif(16, .medium))
+                .foregroundStyle(DWColor.paperInk)
                 .designFrame(20, 490, 64, 24, alignment: .leading)
 
             Text(vm.episodeCountText)
                 .font(DWFont.cn(12))
-                .foregroundStyle(DWColor.textHint)
+                .foregroundStyle(DWColor.paperInkSub)
                 .designFrame(96, 494, 76, 18, alignment: .leading)
 
-            // 设计稿「下载全部」：一次把所有可下且未入队的集交给现有调度
+            // 设计稿「下载全部」：一次把所有可下且未入队的集交给现有调度。
+            // 纸本轨的动作文字一律朱砂（设置页「重命名」/下载页「全选」同一档）。
             Button { vm.downloadAll() } label: {
                 Text("下载全部")
                     .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.gold)
+                    .foregroundStyle(DWColor.paperCinnabar)
                     .frame(width: 64, height: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -652,7 +697,7 @@ struct DramaDetailView: View {
             Button { vm.refresh() } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(DWColor.gold)
+                    .foregroundStyle(DWColor.paperCinnabar)
                     .frame(width: 28, height: 44)
                     .contentShape(Rectangle())
             }
@@ -669,7 +714,8 @@ struct DramaDetailView: View {
                      ? (vm.showAllEpisodesInline ? "收起 ›" : "查看全部 ›")
                      : "已显示全部")
                     .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(vm.hasExtraEpisodes ? DWColor.gold : DWColor.textHint)
+                    .foregroundStyle(vm.hasExtraEpisodes
+                                     ? DWColor.paperCinnabar : DWColor.paperFaint)
                     .frame(width: 90, height: 44, alignment: .trailing)
                     .contentShape(Rectangle())
             }
@@ -684,7 +730,7 @@ struct DramaDetailView: View {
                 : 650
             Text(vm.hintText)
                 .font(DWFont.cn(12))
-                .foregroundStyle(DWColor.textHint)
+                .foregroundStyle(DWColor.paperFaint)
                 .lineLimit(1)
                 .designFrame(20, hintY, 350, 18, alignment: .leading)
         }
@@ -727,38 +773,42 @@ struct DramaDetailView: View {
     /// 刷新已移到选集行 ↻，所以 sheet 可以整块删掉，功能不丢。
     private var inlineBatchToolbar: some View {
         HStack(spacing: 8) {
+            // 纸本轨的次级按钮 = 纸块胶囊 + 墨字（下载页编辑工具条 34:84 同一做法），
+            // 主操作 = 朱砂胶囊 + 纸白字。深色轨的「深底 + 金字」在宣纸上没有对应物。
             Button { vm.selectAll() } label: {
                 Text("全选")
                     .font(DWFont.cn(11, .medium))
-                    .frame(width: 52, height: 36)
+                    .foregroundStyle(DWColor.paperInkSub)
+                    .frame(width: 52, height: 32)
+                    .background(Capsule().fill(DWColor.paperChipIdle))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(DWColor.gold)
-            .background(DWColor.surface, in: RoundedRectangle(cornerRadius: 8))
             .disabled(vm.selectableEpisodes.isEmpty)
 
             Button { vm.clearSelection() } label: {
                 Text("清空")
                     .font(DWFont.cn(11, .medium))
-                    .frame(width: 52, height: 36)
+                    .foregroundStyle(DWColor.paperInkSub)
+                    .frame(width: 52, height: 32)
+                    .background(Capsule().fill(DWColor.paperChipIdle))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(DWColor.gold)
-            .background(DWColor.surface, in: RoundedRectangle(cornerRadius: 8))
             .disabled(vm.selected.isEmpty)
 
             Button { vm.startDownload() } label: {
                 Text("下载所选 (\(vm.selected.count))")
                     .font(DWFont.cn(11, .semibold))
-                    .frame(height: 36)
+                    .foregroundStyle(DWColor.paper)
+                    .frame(height: 32)
                     .padding(.horizontal, 12)
+                    .background(Capsule().fill(vm.selected.isEmpty
+                                               ? DWColor.paperLineIdle
+                                               : DWColor.paperCinnabar))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.white)
-            .background(DWColor.primary, in: RoundedRectangle(cornerRadius: 8))
             .disabled(vm.selected.isEmpty)
 
             Spacer(minLength: 0)
@@ -782,7 +832,8 @@ struct DramaDetailView: View {
                     if case .active(let progress) = phase {
                         Text("\(Int(progress * 100))/100")
                             .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(DWColor.gold)
+                            // 选中格是朱砂底：数字必须转纸白，朱砂压朱砂就没了
+                            .foregroundStyle(isSelected ? DWColor.paper : DWColor.paperCinnabar)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                     }
@@ -814,7 +865,8 @@ struct DramaDetailView: View {
     }
 
     /// 设计稿右下角 18×18 状态角标（left 27 / top 23 相对 50×44 格子）。
-    /// ready = 金色实心三角，todo = 灰色向下箭头 + 底线；downloading / queued / failed 不叠加。
+    /// 纸本轨：已下载 = 墨实心三角（= 纸上已落定），待下载 = 最弱的灰箭头；
+    /// downloading / queued / failed 不叠加。
     @ViewBuilder
     private func episodeStatusBadge(phase: EpisodeDownloadPhase) -> some View {
         switch phase {
@@ -825,7 +877,7 @@ struct DramaDetailView: View {
                 Rectangle()
                     .frame(width: 10, height: 1)
             }
-            .foregroundStyle(DWColor.textHint)
+            .foregroundStyle(DWColor.paperFaint)
         case .done:
             Path { p in
                 p.move(to: CGPoint(x: 3, y: 2))
@@ -833,16 +885,16 @@ struct DramaDetailView: View {
                 p.addLine(to: CGPoint(x: 3, y: 10))
                 p.closeSubpath()
             }
-            .fill(DWColor.gold)
+            .fill(DWColor.paperInk)
             .frame(width: 12, height: 12)
         default:
             EmptyView()
         }
     }
 
-    /// 剧集按钮边缘进度环：设计稿 `.ring-fg` 色 `#F5C451` 金色（2026-11-12 由绿色改回金色）。
-    /// 排队淡金轨道 → 下载中金色逐渐闭环 → 完成金色闭环；失败仍是红环。
-    /// 与右下角状态角标、n/100 分数同用一套金色，不再有绿色元素。
+    /// 剧集按钮边缘进度环。纸本轨一套三档：轨道用最淡的纸线、进度用墨
+    /// （与下载页 `PaperProgressBar` 的 轨道 #C4C7C3 + 完成段 #35393B 同一套）；
+    /// **红色只留给失败**——深色轨那套「金色代表一切进度」搬到纸面上会散成一片。
     /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪）。
     @ViewBuilder
     private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
@@ -851,20 +903,22 @@ struct DramaDetailView: View {
             EmptyView()
         case .queued:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.gold.opacity(0.30), lineWidth: 2)
+                .stroke(DWColor.paperTrack.opacity(0.55), lineWidth: 2)
                 .padding(1)
         case .active(let progress):
             RoundedRectangle(cornerRadius: 10)
                 .trim(from: 0, to: progress)
-                .stroke(DWColor.gold, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(DWColor.paperTrackFill, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .padding(1)
         case .done:
+            // 完成态用半档墨：2pt 实墨闭环在纸面上会和「选中」抢同一份重量，
+            // 而已下载本来就有淡朱砂底 + 墨三角角标，闭环只需"看起来是合上的"。
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.gold, lineWidth: 2)
+                .stroke(DWColor.paperInkSub, lineWidth: 1.5)
                 .padding(1)
         case .failed:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.primary, lineWidth: 2)
+                .stroke(DWColor.paperCinnabar, lineWidth: 2)
                 .padding(1)
         }
     }
@@ -875,12 +929,12 @@ struct DramaDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("为你推荐")
-                    .font(DWFont.cn(15, .bold))
-                    .foregroundStyle(.white)
+                    .font(DWFont.serif(15, .medium))
+                    .foregroundStyle(DWColor.paperInk)
                 Spacer()
                 Text("\(vm.recommendations.count) 部 · 详情接口")
                     .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.textHint)
+                    .foregroundStyle(DWColor.paperFaint)
             }
             .frame(height: DetailLayout.recoTitleBlock - 12, alignment: .topLeading)
 
@@ -894,6 +948,13 @@ struct DramaDetailView: View {
         .padding(.top, DetailLayout.recoTopPadding)
         .padding(.bottom, DetailLayout.recoBottomPadding)
         .frame(width: 390, height: layout.recoHeight, alignment: .topLeading)
+        // 分节细线（纸本轨）：深色轨靠「黑底留白」分段，纸面必须有线才分得开。
+        // 走 overlay 画在顶上，不占布局高度，推荐区高度预算不受影响。
+        .overlay(alignment: .top) {
+            DWColor.paperRule
+                .frame(height: 0.5)
+                .padding(.horizontal, 20)
+        }
     }
 
     private func recoColumn(_ items: [RecoCardItem]) -> some View {
@@ -915,32 +976,40 @@ struct DramaDetailView: View {
                             switch phase {
                             case .success(let image):
                                 // scaledToFit（用户拍板 2026-11-13）：完整显示整张封面不裁切；
-                                // 中/矮两档卡高比 3:4 矮，图片宽度收窄居中，两侧露出深色背景
+                                // 中/矮两档卡高比 3:4 矮，图片宽度收窄居中，两侧露出纸底
                                 image.resizable().scaledToFit()
                                     .frame(width: DetailLayout.recoColumnWidth, height: coverHeight)
                             default:
-                                recoCoverPlaceholder(height: coverHeight)
+                                recoCoverPlaceholder(title: item.drama.displayTitle,
+                                                     height: coverHeight)
                             }
                         }
                     } else {
-                        recoCoverPlaceholder(height: coverHeight)
+                        recoCoverPlaceholder(title: item.drama.displayTitle, height: coverHeight)
                     }
                     if let badge = item.drama.displayBadge {
                         Text(badge)
                             .font(DWFont.cn(10, .semibold))
-                            .foregroundStyle(DWColor.gold)
+                            .foregroundStyle(DWColor.paper)
                             .padding(.horizontal, 7)
                             .frame(height: 18)
-                            .background(Color.black.opacity(0.72), in: Capsule())
+                            // 角标压在图/纸块上，必须自己带底：墨底 + 纸白字
+                            .background(DWColor.paperInk.opacity(0.82), in: Capsule())
                             .padding(8)
                     }
                 }
                 .frame(width: DetailLayout.recoColumnWidth, height: coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                // 纸本轨封面收一圈 0.5 细边（下载页 PaperCover 同款），
+                // 否则浅色封面直接化在宣纸里、找不到边界
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
+                }
 
                 Text(item.drama.displayTitle)
-                    .font(DWFont.cn(13, .semibold))
-                    .foregroundStyle(.white)
+                    .font(DWFont.serif(13, .medium))
+                    .foregroundStyle(DWColor.paperInk)
                     .lineLimit(2)
                     .frame(width: DetailLayout.recoColumnWidth, height: 36,
                            alignment: .topLeading)
@@ -948,7 +1017,7 @@ struct DramaDetailView: View {
 
                 Text(item.drama.tags.isEmpty ? "—" : item.drama.tags.joined(separator: " / "))
                     .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.textHint)
+                    .foregroundStyle(DWColor.paperInkSub)
                     .lineLimit(1)
                     .frame(width: DetailLayout.recoColumnWidth, height: 15,
                            alignment: .leading)
@@ -957,14 +1026,14 @@ struct DramaDetailView: View {
                 HStack(spacing: 3) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 8))
-                        .foregroundStyle(DWColor.textHint)
+                        .foregroundStyle(DWColor.paperFaint)
                     Text(item.drama.displayPlayCount)
                         .font(DWFont.cn(10, .semibold))
-                        .foregroundStyle(DWColor.gold)
+                        .foregroundStyle(DWColor.paperCinnabar)
                     if let status = item.drama.serializeStatusText, !status.isEmpty {
                         Text("· \(status)")
                             .font(DWFont.cn(10))
-                            .foregroundStyle(DWColor.textHint)
+                            .foregroundStyle(DWColor.paperFaint)
                     }
                 }
                 .frame(width: DetailLayout.recoColumnWidth, height: 15,
@@ -979,10 +1048,17 @@ struct DramaDetailView: View {
         .accessibilityLabel("推荐：\(item.drama.displayTitle)")
     }
 
-    private func recoCoverPlaceholder(height: CGFloat) -> some View {
-        LinearGradient(colors: [Color(hex: "#3A1A4E"), Color(hex: "#5A2148"), Color(hex: "#16101E")],
-                       startPoint: .topLeading, endPoint: .bottomTrailing)
-            .frame(width: DetailLayout.recoColumnWidth, height: height)
+    /// 推荐卡无封面兜底：纸块 + 首字（下载页 `PaperCover.fallback` 同一说法）。
+    /// 深色轨这里原本是三色紫渐变，纸本轨没有紫色可用，也不该给一块死灰。
+    private func recoCoverPlaceholder(title: String, height: CGFloat) -> some View {
+        ZStack {
+            DWColor.paperChipIdle
+            Text(String(title.prefix(1)))
+                .font(DWFont.serif(34))
+                .tracking(2)
+                .foregroundStyle(DWColor.paperLineIdle)
+        }
+        .frame(width: DetailLayout.recoColumnWidth, height: height)
     }
 
     // MARK: ⑥ 剧集档案（详情接口整包字段，尽量全展示）
@@ -991,32 +1067,33 @@ struct DramaDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("剧集档案")
-                    .font(DWFont.cn(15, .bold))
-                    .foregroundStyle(.white)
+                    .font(DWFont.serif(15, .medium))
+                    .foregroundStyle(DWColor.paperInk)
                     .frame(height: 24, alignment: .leading)
                 Text("详情接口原始字段 · 本地留存，离线可读")
                     .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.textHint)
+                    .foregroundStyle(DWColor.paperFaint)
                     .frame(height: 16, alignment: .leading)
             }
             .frame(height: DetailLayout.archiveTitleBlock, alignment: .topLeading)
 
             ForEach(vm.archiveSections) { section in
                 VStack(alignment: .leading, spacing: 0) {
+                    // 分组名用朱砂：纸本轨里"标题/落款"都用这一档（设置页分组标同款）
                     Text(section.title)
                         .font(DWFont.cn(12, .bold))
-                        .foregroundStyle(DWColor.gold)
+                        .foregroundStyle(DWColor.paperCinnabar)
                         .frame(height: DetailLayout.archiveSectionTitle, alignment: .leading)
                     ForEach(section.rows) { row in
                         HStack(alignment: .top, spacing: 8) {
                             Text(row.label)
                                 .font(DWFont.cn(10))
-                                .foregroundStyle(DWColor.textHint)
+                                .foregroundStyle(DWColor.paperFaint)
                                 .lineLimit(1)
                                 .frame(width: 108, alignment: .leading)
                             Text(row.value)
                                 .font(DWFont.cn(10))
-                                .foregroundStyle(DWColor.textBody)
+                                .foregroundStyle(DWColor.paperInk)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1026,7 +1103,12 @@ struct DramaDetailView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(DWColor.surface, in: RoundedRectangle(cornerRadius: 10))
+                // 纸本卡：比纸底深一档的纸块 + 0.5 细边（不是深色轨那种浮在黑上的实心块）
+                .background(DWColor.paperCanvas, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
+                }
             }
         }
         .padding(.horizontal, 20)
@@ -1039,10 +1121,10 @@ struct DramaDetailView: View {
 
     private var loadingState: some View {
         VStack(spacing: 12) {
-            ProgressView().tint(DWColor.gold)
+            ProgressView().tint(DWColor.paperCinnabar)
             Text("正在获取剧集列表…")
                 .font(DWFont.cn(13))
-                .foregroundStyle(DWColor.textHint)
+                .foregroundStyle(DWColor.paperInkSub)
         }
     }
 
@@ -1050,33 +1132,74 @@ struct DramaDetailView: View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.largeTitle)
-                .foregroundStyle(DWColor.gold)
+                .foregroundStyle(DWColor.paperCinnabar)
             Text(message)
                 .font(DWFont.cn(13))
-                .foregroundStyle(DWColor.textBody)
+                .foregroundStyle(DWColor.paperInk)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("重试") { vm.reload() }
-                .buttonStyle(.borderedProminent)
-                .tint(DWColor.primary)
+            // 系统 borderedProminent 会有自己的强调色底，纸本轨用自己的胶囊（同下载页删除所选）
+            Button {
+                vm.reload()
+            } label: {
+                Text("重试")
+                    .font(DWFont.cn(12, .medium))
+                    .foregroundStyle(DWColor.paper)
+                    .padding(.horizontal, 22)
+                    .frame(height: 32)
+                    .background(Capsule().fill(DWColor.paperCinnabar))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
     }
 
     // MARK: - 共用配色
 
-    /// 主屏 12 格与内联展开集共用：底色表达「能不能播」，选中态红底优先。
-    /// 原「查看全部」sheet 已按设计稿改为内联展开，全选/清空/下载所选在
-    /// `inlineBatchToolbar`，刷新在选集行 ↻，两条能力都保留。
+    /// 主屏 12 格与内联展开集共用：底色表达「能不能播」，选中态朱砂底优先。
+    /// 纸本轨三档纸色，不用深色轨的「实心块 + 红底」：
+    ///   选中 = 朱砂（唯一的重色，等于把这一集"圈出来"）
+    ///   已下载 = 极淡朱砂（存过 = 有印，但比选中轻）
+    ///   可播 = 纸块；不可播 = 空
     private func cellBackground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
-        if isSelected { return DWColor.primary }
-        // 已下载淡金底：与金色进度环/角标同色系，但仍与「待下载」中性深色可区分
-        if isDownloaded { return DWColor.gold.opacity(0.16) }
-        return playable ? DWColor.surface : Color(uiColor: .systemGray6)
+        if isSelected { return DWColor.paperCinnabar }
+        if isDownloaded { return DWColor.paperCinnabar.opacity(0.10) }
+        return playable ? DWColor.paperChipIdle : .clear
     }
 
     private func cellForeground(isSelected: Bool, isDownloaded: Bool, playable: Bool) -> Color {
-        if isSelected { return .white }
-        if isDownloaded { return .white }
-        return playable ? .white : DWColor.textHint
+        if isSelected { return DWColor.paper }
+        if isDownloaded { return DWColor.paperCinnabar }
+        return playable ? DWColor.paperInk : DWColor.paperFaint
     }
 }
+
+#if DEBUG
+// MARK: - 纸本样张容器（仅模拟器截图用）
+
+/// 样张专用开关。模拟器点不了、滑不了，纸本轨又必须"改一版、看一张"。
+enum DramaDebugFlags {
+    /// 启动即落到内容页底，用于查看档案区与「滚过海报后的顶栏」
+    static var bottomAnchor: Bool {
+        ProcessInfo.processInfo.arguments.contains("-dramaPreviewBottom")
+    }
+}
+
+/// 启动参数 `-dramaPreview` 打开：注入固定样本后直接渲染剧集页。
+/// 存在的理由——模拟器点不了、滑不了，纸本轨又必须"改一版、看一张"；
+/// 没有这个入口就只能盲改。Release 不编译。
+struct DramaPreviewHost: View {
+    @StateObject private var vm: DramaPageViewModel
+
+    init(manager: DownloadManager) {
+        let vm = DramaPageViewModel(target: DramaTarget(site: "https://preview.local", dramaID: "9001"),
+                                    manager: manager)
+        vm.injectPreviewData()
+        _vm = StateObject(wrappedValue: vm)
+    }
+
+    var body: some View {
+        NavigationStack { DramaDetailView(vm: vm) }
+    }
+}
+#endif

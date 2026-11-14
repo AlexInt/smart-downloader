@@ -102,6 +102,15 @@ extension DWColor {
     static let paperTrackFill = Color(hex: "#35393B")
     /// 最弱一档说明文字（22:326 占位说明 / 前进禁用态 22:331）
     static let paperFaint     = Color(hex: "#A2A6AD")
+
+    // 剧集页海报占位（2026-11-14 纸本化）：纸本里没有紫色渐变可用，
+    // 无封面时给一块"墨"——白剧名压在底部 scrim 上仍然立得住。
+    /// 墨块渐变三档（原 posterTop/Mid/Bottom 的纸本替身）
+    static let paperInkTop    = Color(hex: "#3C4042")
+    static let paperInkMid    = Color(hex: "#24282A")
+    static let paperInkBottom = Color(hex: "#141719")
+    /// 单色墨板：封面加载中 / 加载失败 / 无 URL 时的海报底
+    static let paperInkPlate  = Color(hex: "#1A1D1E")
 }
 
 // MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）

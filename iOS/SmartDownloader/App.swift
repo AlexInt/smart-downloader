@@ -35,6 +35,12 @@ struct SmartDownloaderApp: App {
     /// 防止 onAppear 重复触发自动冒烟（主线程约定，GCD 版无线程标注）
     private static var autoTestStarted = false
     private static var stallProbeStarted = false
+    #if DEBUG
+    /// 剧集页纸本样张（启动参数 `-dramaPreview`）：模拟器点不了/滑不了，
+    /// 纸本轨想"看一眼"只能靠这么个入口直接落到目标页。Release 不编译。
+    @State private var showDramaPreview = false
+    private static var dramaPreviewShown = false
+    #endif
 
     private static func uptimeMs() -> Int { PERF.ms() }
 
@@ -109,6 +115,11 @@ struct SmartDownloaderApp: App {
                 // 页面自身的根视图于是多拿到一个状态栏高度、底边溢出到 tab bar 后面
                 //（浏览页底部工具条整行被 tab bar 盖住，就是这么丢的）
                 .background(DWColor.paper.ignoresSafeArea())
+                #if DEBUG
+                .fullScreenCover(isPresented: $showDramaPreview) {
+                    DramaPreviewHost(manager: manager)
+                }
+                #endif
                 // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App
                 if showSplash {
                     LaunchSplashView()
@@ -142,6 +153,16 @@ struct SmartDownloaderApp: App {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     withAnimation(.easeOut(duration: 0.45)) { showSplash = false }
                 }
+                #if DEBUG
+                // 样张要在 splash 之后弹，否则截到的是启动图盖住的样子
+                if ProcessInfo.processInfo.arguments.contains("-dramaPreview"),
+                   !Self.dramaPreviewShown {
+                    Self.dramaPreviewShown = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        showDramaPreview = true
+                    }
+                }
+                #endif
             }
         }
     }

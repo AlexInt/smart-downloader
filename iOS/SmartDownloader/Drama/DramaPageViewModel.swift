@@ -112,6 +112,59 @@ final class DramaPageViewModel: ObservableObject {
         DramaMetaHarvester.harvestedKeys.remove(target.id)
     }
 
+    #if DEBUG
+    /// 模拟器视觉验收专用（启动参数 `-dramaPreview`）：不经网络、不读库，
+    /// 直接注入一屏固定样本，让纸本版剧集页能一次截全所有区块。
+    /// Release 不编译，也不被任何真实业务路径调用。
+    func injectPreviewData() {
+        loading = false
+        loadError = nil
+        isFavorite = false
+        info = DramaInfo(
+            name: "荒岛求生：离队赢家",
+            updateStatus: "已完结",
+            episodes: (1...30).map {
+                ApiDramaEpisode(id: $0, sort: $0, playable: $0 != 7)
+            }
+        )
+        intro = "一场突如其来的海难，把所有人都困在了这座荒岛。资源有限、规则失效，"
+            + "被排挤的人反而成了唯一看清局势的人。他带着三个人离开人群，走了一条谁都不敢走的路。"
+        tags = "都市 逆袭 已完结"
+        downloadedSorts = [2, 8]
+        selectedSort = 1
+        recommendations = [
+            RecommendedDrama(videoID: 9001, title: "渡江 · 山河起甲", cover: nil,
+                             tags: ["古装", "权谋"], playCount: 1_260_000,
+                             playCountText: "126.0万", serializeStatusText: "已完结",
+                             contentAccessType: "free"),
+            RecommendedDrama(videoID: 9002, title: "长夜将明", cover: nil,
+                             tags: ["悬疑", "年代"], playCount: 862_000,
+                             playCountText: "86.2万", serializeStatusText: "已完结",
+                             contentAccessType: "vip"),
+            RecommendedDrama(videoID: 9003, title: "山南旧事", cover: nil,
+                             tags: ["年代", "寻根"], playCount: 421_000,
+                             playCountText: "42.1万", serializeStatusText: "连载中",
+                             contentAccessType: "free"),
+            RecommendedDrama(videoID: 9004, title: "一把破刀，砍到裂土封王", cover: nil,
+                             tags: ["热血", "逆袭"], playCount: 2_304_000,
+                             playCountText: "230.4万", serializeStatusText: "已完结",
+                             contentAccessType: "free")
+        ]
+        archiveSections = [
+            DramaArchiveSection(title: "基础信息", rows: [
+                DramaArchiveRow(label: "剧集名称", value: "荒岛求生：离队赢家"),
+                DramaArchiveRow(label: "总集数", value: "30 集 · 已完结"),
+                DramaArchiveRow(label: "视频规格", value: "1080×1920 · 竖屏"),
+                DramaArchiveRow(label: "数据来源", value: "本地留存 · 11月14日")
+            ]),
+            DramaArchiveSection(title: "互动数据", rows: [
+                DramaArchiveRow(label: "播放量", value: "230.4 万"),
+                DramaArchiveRow(label: "点赞 / 追剧", value: "18.6 万 / 4.2 万")
+            ])
+        ]
+    }
+    #endif
+
     // MARK: - 派生状态
 
     /// 该剧仍在队列（等待/下载中）的集号。单一事实源是 manager.tasks，
