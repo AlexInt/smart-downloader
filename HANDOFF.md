@@ -2,7 +2,7 @@
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络/并发约定，最高优先级）。本文只讲「做到哪了 / 还剩什么 / 怎么验」。**实现细节与防回归约束在 AGENTS 与代码注释里，完整过程在 git 历史**，本文不重复每个 build 日志。
 >
-> 最后更新：2026-11-14 · 分支 `main`（`feat/player-uikit-shell` 的包 A 提交已合入 main）· 基准提交见 `git log -1`
+> 最后更新：2026-11-14 · 分支 `main`（全 App 纸本单轨化完成：浏览 / 下载 / 我的 / 设置四页，基准提交 `801aa68`）· 基准提交见 `git log -1`
 
 ## 1. 项目一览
 
@@ -97,6 +97,10 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | **「我的」页列表底部被 tab bar 遮挡（11-14，用户实报）** | 根因：自定义 tab bar 是 App 层 `safeAreaInset(edge: .bottom)` 注入的，**不传进 NavigationStack 内的页面**（与下载页分页 TabView 同一个已知传递缺陷）。模拟器 402×874 实测：修复前 `contentInsets.bottom` 只有 34 的家区，ScrollView 内容区一直画到 840，而 bar 占 794…840 → 最后一行被盖 46pt。修法：给 ProfileView 的 ScrollView 加 `.safeAreaPadding(.bottom, MainTab.barReservedHeight)`（与下载页同一口径，改 bar 内边距时同步该常量）；补完实测 `contentInsets.bottom = 81`（34+47）、内容区止于 793，正好在 bar 顶（794）之上。新增诊断日志 `PROFILE_DBG insets top= bottom= barReserved=`（`onScrollGeometryChange`，排障期保留） | 模拟器实测 insets bottom=81 / 内容止于 793；待真机：封面墙滚到底，最后一行完整可见且不被 bar 压住 |
 | **点进设置页不隐藏 tab bar（11-14，用户实报）** | 现象：从「我的」页点齿轮进入设置页，自定义 tab bar 仍在底部。修法：① `ProfileView` 改 `NavigationStack(path: $path)` 值驱动路由（新增 `ProfileRoute`：`.settings` / `.drama(DramaTarget)`），`path.isEmpty` 是「是否在二级页」唯一事实来源，经 `detailActive` 绑定同步给 App；② App 新增 `profileDetailActive`，`!browserDetailActive && !profileDetailActive && !keyboardVisible` 才挂 bar，并在切离开「我的」页时复位（该页随 `if selectedTab == .settings` 销毁、path 丢失但 App 级布尔会残留）；③ `SettingsView` 去掉自建 `NavigationStack`（否则嵌套栈丢返回按钮/标题），导航栈统一由 ProfileView 提供。日志 `PROFILE_DBG path 进入二级页 depth=1 → tabBar hidden` / `回到根页 → tabBar shown` | **模拟器已验**：进入设置页后 bar 消失、返回按钮与「设置」标题正常、返回根页后 bar 恢复；待真机复核 |
 | **分类/筛选随上滑消失 + 底部间距加大（11-14，用户要求）** | ① 分类 tab（历史/收藏/追更/点赞）与筛选胶囊（全部/已看完/未看完）原先与封面墙同在一个 ScrollView 内容里，一上滑就被滚走。改为把**身份行 + 分类 tab + 筛选胶囊**三段合成 `pinnedHeader`，用 `safeAreaInset(edge: .top, spacing: 0)` 钉在 ScrollView 之上（布局级固定，不是 sticky 技巧），纸底不透明防内容穿过叠字；身份行的水平 padding 上移到 header 统一给（避免双重 20pt 缩进）。② 列表底部与 tab bar 的间距再加大 15pt：`.safeAreaPadding(.bottom, MainTab.barReservedHeight + Self.bottomGap)`（`bottomGap = 15`）。实测 `contentInsets.bottom = 96`（34 家区 + 47 bar + 15），内容区止于 778、bar 顶 794 → 留 16pt | **模拟器已验**（灌 24 部假剧到模拟器库、程序化滚到底截图）：滚到底时身份行/分类/筛选仍固定在顶部；末行与 bar 之间留出呼吸距离 |
+| **浏览页 + 下载页纸本化（11-14，用户要求「改造浏览和下载」）** | 两页从系统控件（`TextField(.roundedBorder)` / `.bordered` 胶囊 / `borderedProminent` / `Picker(.segmented)` / `List(.insetGrouped)`）全面改为**纸本自绘**，几何全部取自画布节点实读：① 浏览页（`22:284`）—地址栏行 h52（锁 12×12 + 输入框 h34 `paperField` 底 1pt 描边 + 墨底「访问」54×34 r8）、快捷站点胶囊 h26 r6、内容区 `paperCanvas` 底、底部工具条 h54（‹ › ↻ 1.2pt 线稿 + 下载按钮 132×34，禁用色 `paperFaint`）；② 下载页（`2:2`/`19:272`/`34:1`）—分段头自绘（衬线 14 + 朱砂 44×2 选中压条 + `paperTrack` 通栏细线）、行 h82 / 封面 60×82 r5 / 组内 gap 12、完成勾 18 圆环 `paperInkSub`、编辑模式 18 空心圆（画布 34:63 是 `#8C9190` 不是轨道色）、编辑条 `paperChipIdle`；③ 新增 `Shared/PaperGlyphs.swift`（10 个 1pt 线稿 Shape 替代 SF Symbols，符号字重/端点与画布对不上）；④ 全 App 视觉单轨化：`MainTabBar` 删 `forcePaper`/`colorScheme` 双轨判定，栏底恒纸（三页都变纸后双轨只会一屏深浅两截） | **模拟器四态截图已验**（浏览页 / 下载中 / 已下载 / 编辑模式）；commit `801aa68`，待真机回归 |
+| **【承重 bug】浏览页底部工具条整行被 tab bar 盖住（11-14）** | 排查链：① 先排除键盘误判（`KeyboardObserver.isVisible` 逻辑正确）；② `UserDefaults` 探针在模拟器读不到（见下条）；③ 屏幕上压 `Text` 探针得 `sz=402x778 kb=false obs=false`，条件命中；④ `onGeometryChange` 读 global frame 得 `y=62..840 h=778`，底边 840 已越过 bar 顶 778；⑤ 对照实验把 `.toolbar(.hidden)` 临时改 `.visible` → `y=116..840 h=724`，**底边恒 840 = 874−34**，与导航栏无关。**根因**：自定义 tab bar 走 App 层 `safeAreaInset(edge: .bottom)`，系统只把它自带的 34pt 底部安全区算进内容区，**栏本身 62pt 实高不传下来**。**修复**：页面根视图显式 `.safeAreaPadding(.bottom, MainTab.barReservedHeight)`（下载页 125 行、我的页 33 行早已这么做，浏览页漏了）；同时把纸底统一上提到 App 容器——各页自己 `.background(paper.ignoresSafeArea())` 会连**顶部**安全区一起吃掉，根视图多拿一个状态栏高度。伴生修：`bottomBar` 补 `.background(DWColor.paper)` + 顶部 0.5 发丝线（否则网页内容从图标背后透出）、`didCommit`/`didFinish` 各补 `refreshNavigationState()` | **模拟器已验**：地址栏→胶囊→网页→工具条→tab bar 层级正确无遮挡；规则已进 AGENTS「纸本单轨视觉」第 2、3 条 |
+| **下载页四处细节修正（11-14）** | ① 相邻行距实测 24pt 而画布是 12 —— `paperRow()` 的 6pt 纵向内边距叠在 List 自己给的 12 上，改 `paperListRow()`（vertical 0）；②「下载中」行标题重复成「剧名 · 集名」、散装行说明又重复一次剧名 —— 标题只留 `task.seriesName ?? task.title`、散装 `episode = "单文件"`、说明改「本地文件 · 时间」；③ 进度条短一截 —— `Spacer(minLength: 0)` 让中间列收缩到文字宽，删掉后撑满（画布 2:45 是 fill_container）；④ 封面兜底首字 22 号像占位符 —— 改 serif(16) + `.tracking(1)`，更像书脊烫印 | 构建通过，模拟器已验 |
+
 
 ## 3. `player/` 模块架构地图（MVVM + Service）
 
@@ -155,6 +159,8 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 - **浏览页路由「有时原生有时 web」（未改，待拍板）**：`decidePolicyFor` 只在 `navigationType == .linkActivated`（真实 `<a>`）+ `DramaTarget.parse` 命中时取消网页推原生；卡片若用 JS `location.href`/`pushState`/`window.open` 跳，`.other` 拦不住。URL KVO 兜底但 `detectDrama` 有 `lastAutoDramaKey` 去重、`pushDramaPage` 不写该标记 → 两路径状态不一致，同剧二次点击可能被挡。`DramaTarget.parse` 只认 `/drama/(video|detail)/<数字>`。建议：主帧剧集 URL 一律 `.cancel` 并推原生、两路径共用去重标记——触及导航，先等确认。
 - **手势残余边界（可接受）**：带外慢速横向拖拽 >0.15s 仍可能起 2x（慢拖与「长按+慢漂移」不可区分，「先起者独占」的固有歧义）。
 - **tags 数据源（已定案，细节见 `DramaDetailData` 代码注释）**：站点 detail 走 Nuxt `_payload.json`（devalue 扁平数组），非明文/非信封；解码链 明文→信封→payload，`via=plain|envelope|payload` 日志区分。旧缓存无 `tags_source` → 进页自动补采一次。
+- **纸本轨字体（待用户定夺）**：画布用的是 Noto Serif SC / Noto Sans SC，App 走系统字体（宋体/苹方）替代，纵向落位存在 ≤4pt 偏差。内置两款字体约 5–10MB/款。不内置则接受该偏差；内置则需改 `DWFont` 映射 + 打包字体文件。
+- **`docs/design/gear-*` 8 个未跟踪文件（待用户定夺）**：`gear-candidates-1x.png` / `gear-candidates-3x.png` / `gear-icon-review.html` / `gear-tabset-1x.png` / `gear-settings-tab.svg` 是设置页与 tab 图标的工作稿，另 3 个带 `.DRAFT-not-adopted` 后缀是废弃稿。要么提交前 5 个、删 3 个废弃稿，要么整批清掉。
 
 ## 7. 验证与调试
 
@@ -169,6 +175,7 @@ xcrun devicectl device process launch --console --device <id> com.firefish.smart
 ```
 
 - 排障一律**先加 log 再请用户贴 log**，靠日志判读不靠猜（本项目协作模式）。
+- **纸本视觉验收走模拟器**（不需要真机）：构建 / 装机 / 截图 / Debug 启动参数（`-startDownloadedPage` `-startEditMode`）/ 慢速 HLS 造下载中 / 「模拟器拿不到 print 与 UserDefaults，只能靠屏幕探针」全部记在 AGENTS「模拟器视觉验收」一节。
 - 秒开：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK waitedMs=` / `spinner show` / `status STALE`。
 - 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
 - tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。

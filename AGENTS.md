@@ -83,9 +83,9 @@ View → ViewModel → Service → 系统能力 / Model
 
 本节的适用范围是 `iOS/SmartDownloader/` **全部** Swift 文件，不只是 `player/`。目录按「功能域」划分，**不按 Model / Service / ViewModel / View 分**：同 target 没有 import 边界，按层分目录不产生任何依赖约束，只会把一个功能的四个文件打散到四处。按域分则「一个功能一个目录」，域内是否分层一眼可查。
 
-- `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `MediaIdentity` / `ApiDramaEpisode` / `DramaInfo` / `DramaError` / `EpisodeDownloadPhase`）、`DownloadModels.swift`（`TaskState` / `DownloadError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`——注意 `designFrame` 末尾是 `.position`，返回的是撑满父容器的视图，**其后再挂 `.overlay` / `.background` 拿到的是父容器尺寸而不是指标框**，要对齐到该指标框必须挂在使用 `designFrame` 之前）。只放被 2 个以上域引用的类型，不塞 Service / 业务逻辑
+- `Shared/`：跨域共享的**纯数据**与设计系统。`DramaModels.swift`（`DramaTarget` / `MediaIdentity` / `ApiDramaEpisode` / `DramaInfo` / `DramaError` / `EpisodeDownloadPhase`）、`DownloadModels.swift`（`TaskState` / `DownloadError`）、`DesignTokens.swift`（`DWColor` / `DWFont` / `DWLayout` / `designFrame`——注意 `designFrame` 末尾是 `.position`，返回的是撑满父容器的视图，**其后再挂 `.overlay` / `.background` 拿到的是父容器尺寸而不是指标框**，要对齐到该指标框必须挂在使用 `designFrame` 之前）、`MainTab.swift`（tab 条目与顺序的唯一来源）、`PaperGlyphs.swift`（纸本轨 1pt 线稿图元库，见下文「纸本单轨视觉」）。只放被 2 个以上域引用的类型，不塞 Service / 业务逻辑
 - `Drama/`：剧集域。Model（`DramaDetailData` 详情 DTO / `RecommendedDrama` 推荐卡片纯数据 / `DramaArchive` 档案展示行与派生纯函数）、Service（`DramaAPI` / `DramaCache` / `DramaMetaHarvester` / `DramaCoverCache` 封面按剧 id 落盘缓存 / `DramaFavorites` 剧级收藏（SQLite `drama_favorites`） / `EpisodeActionsStore` 集级行为数据表 / `DramaDatabase` 统一连接与迁移）、ViewModel（`DramaPageViewModel`）、View（`DramaDetailView`——顶栏返回/收藏经 `pinnedHeader` 钉在 ScrollView 之上不随滚动消失，`scrimTop` 常驻顶栏层，**勿塞回 `canvas`**）、组装根（`DramaNativePage`）
-- `Downloads/`：下载域。Service（`Downloader` 下载核心 + 任务/队列 / `DiskUsageService` 磁盘占用纯计算 / `DownloadsSortPreferences` 排序偏好）、`DownloadsViewModel`（VM，含占用缓存与去抖重算）、`PlaybackProgressViewModel`（VM：列表侧只读行为数据）、`DownloadsView`（View）
+- `Downloads/`：下载域（纸本轨）。Service（`Downloader` 下载核心 + 任务/队列 / `DiskUsageService` 磁盘占用纯计算 / `DownloadsSortPreferences` 排序偏好）、`DownloadsViewModel`（VM，含占用缓存与去抖重算、`seriesCovers` 封面后台解析）、`PlaybackProgressViewModel`（VM：列表侧只读行为数据）、`DownloadsView`（View，**按画布 `2:2` / `19:272` / `34:1` 全自绘、不是系统 `List(.insetGrouped)` 观感**：分段头自绘 + 行透明化 + 编辑条）
 - `Browser/`：浏览域。`BrowserView`（View + `WebViewContainer`）、`WebViewStore`（VM，P9 那轮并入 View 文件后已拆出）、`SnifferScript`（注入 JS 常量）、`AdCleanerScript`（广告弹窗清理 JS 常量：CSS 预隐藏 + MutationObserver 同步删，防「闪一下」；日志经 adClean 回传调优）、`KeyboardDismissScript`（滑动网页收键盘的手势上报：捕获阶段 scroll + touchmove 兜底，走 keyboardDismiss handler）、`BrowserStartPage`（Service：起始页优先级决策 + 上次访问页持久化；View 层不再碰 UserDefaults）
 - `Settings/`：设置域。Service（`QuickLinkStore` 快捷站点 key/value 与「默认加载站点 id」持久化 / `AppLaunchPreferences` 启动 tab 持久化 / `DramaRoutePreferences` 「打开 Web 剧集页」路由偏好）、ViewModel（`SettingsViewModel`）、View（`SettingsView` + `QuickLinkEditorSheet`）。**设置页是「我的」页的二级页，导航栈由 `ProfileView` 提供，`SettingsView` 不要自建 `NavigationStack`**（嵌套栈会丢返回按钮/标题）
   - **设置页按画布 `24:43 设置页 · 纸本` 全自绘，不是系统 `List(.insetGrouped)`**：`.toolbar(.hidden, for: .navigationBar)` 后自己画顶栏（返回尖角 / 「设置」衬线 fs30 / 「恢复默认」fs12）。几何来自节点实读并与设计稿逐像素校准过：顶栏 63 = 上下 padding 10 + 内容 43，下方分隔线 1（`#DDD9D0`，**通栏**，不吃 20pt 边距）；分组容器 padding top 6 / 左右 20；组标 fs11 行高 16；行高 40；脚注 fs10 行高 14（用 `lineSpacing(2)` 达成）；组内一律 gap 4；组间细线 1（`#E4E0D6`，**在 20pt 边距内**，实测 x<20 处没有线）。
@@ -95,7 +95,7 @@ View → ViewModel → Service → 系统能力 / Model
   - **恢复默认 = 三项一起回默认**（启动 tab `.downloads`、剧集页开关 `false`、快捷站点回内置列表），会清掉用户自建站点，所以先弹 `confirmationDialog` 确认。
   - 站点行有**两个平级 Button**（左侧整行进编辑器、右侧圆圈改默认），不能嵌套——外层 Button 会吞掉内层点击。
   - 隐藏系统导航栏会连带关掉右滑返回，用 `swipeBackEnabled()`（`Infra/SwipeBackSupport.swift`，只在导航栈深度 > 1 时放行，防止栈根起手卡死）补回。
-- `Profile/`：我的域（纸本轨视觉）。`ProfileViewModel`（VM：四分类数据装配——历史/收藏/追更/点赞，口径全在 Service 层的关系查询上）、`ProfileView`（View + 组装：`NavigationStack(path:)` 值驱动路由，`ProfileRoute` 定义二级页）。**顶栏区（身份行 + 分类 tab + 筛选胶囊）用 `safeAreaInset(edge: .top)` 钉住**，封面墙上滑时不动（用户要求：分类与筛选不应随上滑消失）；**底部必须 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)`**：自定义 tab bar 是 App 层 `safeAreaInset` 注入的，**不传进 NavigationStack 内的页面**（下载页分页 TabView 同样收不到），不补的话封面墙最后一行被 bar 盖住（实测 contentInsets.bottom 只有 34 家区、内容区画到 840 而 bar 占 794…840）；补完 contentInsets.bottom = 111（34+62+15）、内容止于 763，与 bar 顶（779）留 15pt 呼吸。`path.isEmpty` 是「是否在二级页」唯一事实来源，经 `detailActive` 绑定让 App 隐藏 tab bar（设置页/剧集页都算）
+- `Profile/`：我的域（纸本轨视觉）。`ProfileViewModel`（VM：四分类数据装配——历史/收藏/追更/点赞，口径全在 Service 层的关系查询上）、`ProfileView`（View + 组装：`NavigationStack(path:)` 值驱动路由，`ProfileRoute` 定义二级页）。**顶栏区（身份行 + 分类 tab + 筛选胶囊）用 `safeAreaInset(edge: .top)` 钉住**，封面墙上滑时不动（用户要求：分类与筛选不应随上滑消失）；**底部必须 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)`**：自定义 tab bar 是 App 层 `safeAreaInset` 注入的，**栏本身 62pt 不传进页面**（详见「纸本单轨视觉」第 3 条承重规则），不补的话封面墙最后一行被 bar 盖住（实测 contentInsets.bottom 只有 34 家区、内容区画到 840 而 bar 占 794…840）；补完 contentInsets.bottom = 111（34+62+15）、内容止于 763，与 bar 顶（779）留 15pt 呼吸。`path.isEmpty` 是「是否在二级页」唯一事实来源，经 `detailActive` 绑定让 App 隐藏 tab bar（设置页/剧集页都算）
 - `Infra/`：系统能力。`LocalMediaServer`（本地回环 HTTP）、`WebKitFetcher`（WKDownload 兜底）、`AppHaptics`（全 App 触觉反馈唯一入口）、`KeyboardObserver`（键盘显隐唯一入口：弹起时收起自定义 tab bar 与浏览页底部工具条，避免被系统顶到键盘上方）
 - `player/`：播放域，五层齐全。Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `PlayerPreferences` / `PlaybackPlayerService` / `PlayerGesturePolicy` / `PlaybackProgressTracker` 进度落库与续播 / `PlayerOrientationTrigger` CoreMotion 姿态判稳 / `PlayerFullscreenController` 全屏搬运动画）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerPagingScrollView` / `PlayerSurfaceContainer` 单例视频容器 `PlayerSurfaceUIView` / `PlayerFullscreenControlsView` 全屏控制层）、组装根（`DramaPlayerContainer`）
 - `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定
@@ -104,6 +104,18 @@ View → ViewModel → Service → 系统能力 / Model
 **域内五层规则**：每个域的 Model 独立文件、纯数据无 IO；VM 不直接读写系统对象；Service 不 import SwiftUI、不用 `@Published`、不反向依赖 VM。新增类型必须归到所属域，不要再往根目录堆。判断有没有落实看三条：Model 是否独立且纯数据、VM 碰不碰系统对象、Service 删掉 UI 后是否仍成立。
 
 **folder-sync**：工程只有一个 `PBXFileSystemSynchronizedRootGroup`（`path = SmartDownloader`），子目录递归自动参与编译，`git mv` 即可，不要改 pbxproj。`Info.plist` 必须留在根（`INFOPLIST_FILE = SmartDownloader/Info.plist`），`iOS/LaunchSplashView.swift` 是显式 `PBXBuildFile`、不在同步文件夹内，勿挪。
+
+### 纸本单轨视觉（2026-11-14 起全 App 唯一视觉轨）
+
+浏览（画布 `22:284`）/ 下载（`2:2` `19:272` `34:1`）/ 我的（`19:63`）/ 设置（`24:43`）**四页都已是宣纸底纸本视觉**，全 App 视觉单轨化完成。深色墨本轨只残留在 `DramaDetailView` 与播放页。
+
+1. **栏底恒为纸**：`MainTabBar` 已删掉 `forcePaper` 参数与 `@Environment(\.colorScheme)` 双轨判定。页面色值全是写死的十六进制，深色外观下照样是宣纸底，「深色外观压墨」只会造成一屏里深浅两截。**不要再加回双轨**，也不要在 Scene 层加 `preferredColorScheme(.light)`（`DramaDetailView` 与播放页会跟着变浅）。
+2. **纸底统一上提到 App 容器**（`App.swift`）：`.background(DWColor.paper.ignoresSafeArea())` 只写一次。**各页不要自己 `ignoresSafeArea()` 铺纸底**——那会连**顶部**安全区一起吃掉，页面根视图于是多拿一个状态栏高度、底边溢出到 tab bar 后面（浏览页底部工具条整行被盖，就是这么丢的）。
+3. **【承重规则】`safeAreaInset` 的 62pt 不会传下来**：自定义 tab bar 走 App 层 `.safeAreaInset(edge: .bottom)`，系统**只把它自带的 34pt 底部安全区**算进内容区，**栏本身 62pt 的实高不传给任何页面**（也传不进 NavigationStack / 分页 TabView 内的页面）。任何页面的根视图若只依赖系统 safe area，底边恒落在「屏幕高 − 34」（如 874−34 = 840），而 bar 占 778…840 → 底部内容被整行盖住。**必须在页面根视图显式 `.safeAreaPadding(.bottom, MainTab.barReservedHeight)`**（=62）：下载页 `DownloadsView.swift:125`、我的页 `ProfileView.swift:33`（另加 15pt 呼吸）、浏览页 `BrowserView.swift`。新增任何带底部内容的全屏页，一律先加这一句，改 `MainTab.barReservedHeight` 时三处同步。
+4. **`PaperGlyphs.swift` 是纸本轨的线稿图元库**：10 个 1pt 线稿 `Shape`（chevron / 锁 / 屏 / 下载徽章 / 重载 / 叉 / 勾 / 铅笔 / 排序 / 加号）替代 SF Symbols。理由是符号的字重、留白、端点全由系统决定，与画布上 1pt 线稿对不上（同一位置换 `Image(systemName:)` 会明显粗一圈、端点带圆角）。**尺寸与线宽照画布节点实读**，不要「看起来差不多」自己定。
+5. **几何常量**：`DWLayout.edge = 20`（设置页/我的页）、`DWLayout.pageEdge = 22`（浏览页/下载页，画布左右边距就是 22）、`MainTab.barReservedHeight = 62`（bar 自身 `padding(.top, 10).padding(.bottom, 6)` + 内容 46）。下载页行高 82 / 封面 60×82 r5 / 组内 gap 12、浏览页地址栏行 52（输入框 34，描边 1pt `paperFieldLine.opacity(0.8)`）/ 快捷站点行 44（胶囊 26）/ 底部工具条 54。
+6. **纸本轨 token 全在 `DWColor`**：`paper` `#F2F0EA` / `paperInk` `#1C1E1F` / `paperInkSub` `#8C9190` / `paperIcon` `#5A5F60` / `paperCinnabar` `#A05243` / `paperChipSel` `#E2DED5` / `paperChipIdle` `#EAE7DF` / `paperHairline` `#E0DBD1` / `paperDivider` `#DDD9D0` / `paperRule` `#E4E0D6` / `paperLineIdle` `#B9BCB9` / `paperSwitchOff` `#C9CCC9` / `paperKnob` `#F7F5F0` / `paperField` `#E7E4DE` / `paperFieldLine` `#C2BFB8` / `paperCanvas` `#EDEAE2` / `paperTrack` `#C4C7C3` / `paperTrackFill` `#35393B` / `paperFaint` `#A2A6AD`。**新色必须先在画布上量出来再进 `DWColor`**，不要在 View 里写裸 `Color(hex:)`。
+7. **列表类页面用 `List` 时必须把系统观感剥干净**：`.listStyle(.plain)` + `scrollContentBackground(.hidden)` + 行 `.listRowBackground(Color.clear)` / `.listRowSeparator(.hidden)` / `.listRowInsets(...)`。**行距要算上 List 自己给的 12pt**——`DownloadsView.paperRow(vertical:)` 默认 6 叠在 12 上会得到 24，画布要的是 12，所以相邻行用 `paperListRow()`（vertical 0）。
 
 ### 具体约定
 
@@ -176,10 +188,46 @@ View → ViewModel → Service → 系统能力 / Model
 - **品牌资产的唯一来源是设计稿**（Ardot 文件 `746972112461422`）：App Icon = 节点 `19:278 App Icon · 1024×1024`（墨底 `#14171A` + 纸面板 `19:363` r160 + 一笔墨主体 `19:364` + 朱砂小印 `19:367`/印文「观」`19:368`）；品牌符号 = 节点 `19:356 一笔墨 · 品牌符号`。改图先改设计稿，再 `export_nodes`（scale 1 导出即 1024）；`19:363` 只是那块纸面板，单导它是张空白纸。**禁止在代码里重画记号**——曾用脚本自绘了一个「下箭头」图标，与设计稿的一笔墨完全不是一回事，返工一次。
 - 启动屏分两层：系统层是 `UILaunchScreen → UIColorName = LaunchBackground`（颜色资源，纸底 `#F2F0EA`）；应用层 `iOS/LaunchSplashView.swift` 在同一纸底上把 `LaunchLogo` 淡入。`LaunchLogo` 由 `19:356` 导出后**只做取景不改图形**（裁到 alpha 包围盒、居中放进 1024 方画布，图形高度占 72%，对齐设计稿 86/120），保留 alpha。**不要退回整屏 PNG 启动图**：固定分辨率铺不满所有机型，边缘会露白。
 - App 显示名在 `Info.plist` 的 `CFBundleDisplayName`，改这一个字符串即可，不动工程名/bundle id。当前为 `观影`，与设计稿 `19:359` 应用名、`19:368` 朱砂印文一致。
-- 底部 tab bar 是 `App.swift` 里的 `MainTabBar`（独立 View，不是 App 内联）。**`colorScheme` 必须由 View 树内的 View 读取**：写在 `App`/Scene 层读到的是初始值，实测深色外观下仍判成 light，栏会一直停在纸底。
+- 底部 tab bar 是 `App.swift` 里的 `MainTabBar`（独立 View，不是 App 内联）。历史坑仍记着：`colorScheme` 若写在 `App`/Scene 层读到的是初始值（实测深色外观下仍判成 light）——但 2026-11-14 单轨化后 `MainTabBar` 已不读 `colorScheme`，别再把它加回来（见「纸本单轨视觉」第 1 条）。
 - iOS 26 符号集没有 `compass` SF Symbol；三个 tab 统一线稿（`safari` / `arrow.down.circle` / `person`），别把浏览换回 `safari.fill`（实心图标与另两个不同重，底部会一头沉）。`webView.downloadDelegate` 是 macOS-only，iOS 上 delegate 挂在 `WKDownload` 对象上。
 - 真机自动冒烟：`xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader -autoTestDownload "<m3u8URL>"`。
 - **模拟器换 App 图标不会立刻刷新**：SpringBoard 缓存旧图标，`simctl install` 覆盖装也刷不掉。必须 `simctl uninstall` → `simctl shutdown` → `simctl boot` → 再 `install`，否则主屏截图里看到的还是上一版（曾据此误判成合成出错）。图标本身对不对，直接看构建产物 `SmartDownloader.app/AppIcon60x60@2x.png` 最快。
+
+## 模拟器视觉验收（不碰真机，2026-11-14 建立）
+
+纸本轨对齐画布需要「改一版、截一张、量一次」，真机往返太慢。以下是实测可用的链路与踩过的死路。
+
+**构建**（约 4 分钟）：
+
+```bash
+cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DD \
+  ONLY_ACTIVE_ARCH=YES build
+```
+
+**必须 `dangerouslyDisableSandbox: true`**（代理工具侧）——沙箱里 keychain 访问被拒，直接 `BUILD FAILED`，与代码无关。
+
+**装机与截图**：`xcrun simctl install booted <app>` → `xcrun simctl launch booted com.firefish.smartdownloader` → `xcrun simctl io booted screenshot /tmp/x.png`。模拟器 iPhone 17 Pro（402×874pt，iOS 26.5）。换 App 图标必须 `uninstall → shutdown → boot → install`，SpringBoard 图标缓存刷不掉。
+
+**Debug 专用启动参数**（`simctl` 点不了也滑不了，只能靠参数直接落到目标状态；均 `#if DEBUG` 门控，Release 不编译）：
+
+| 参数 | 作用 |
+|---|---|
+| `-startDownloadedPage` | 下载页直接落在「已下载」分段 |
+| `-startEditMode` | 下载页直接进编辑模式 |
+| `-autoTestDownload <URL>` | 启动即自动下载（真机蜂窝链路冒烟） |
+| `-perfLog` | Release 启用主线程卡顿探针（Debug 常开） |
+
+例：`xcrun simctl launch booted com.firefish.smartdownloader -startDownloadedPage -startEditMode`。
+
+**造「下载中」任务**：本机起一个慢速 HLS 服务器（本地 24 片 × 180KB、每片 sleep 0.25 → 约 22 秒完成），下载页才有真实进度可截。纯静态文件秒完成，抓不到中间态。
+
+**探针通道（重要，两条都走不通）**：
+
+- `simctl launch --console` **拿不到 App 的 `print`**（输出 0 字节）。
+- `simctl spawn booted defaults read <bundle>` **读不到 App 写的 `UserDefaults`**（模拟器偏好缓存不落盘，plist 里根本没有新 key）。
+
+所以模拟器排障**唯一可靠通道是屏幕**：临时在界面上压一层 `Text` 显示探针值 → 截图 → 读图；要判几何就从 `simctl io screenshot` 的 PNG 里按列扫颜色找边界（Swift + CoreGraphics 写个小脚本，本机无 PIL）。真机走 `devicectl --console` + `PLAYER_DBG` 日志，不受此限。
 
 ## 文档与提交
 
