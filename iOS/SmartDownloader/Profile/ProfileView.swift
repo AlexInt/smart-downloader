@@ -18,8 +18,6 @@ struct ProfileView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: 10) {
-                    categoryTabs        // 19:180 分类 tab
-                    filterRow           // 19:190 筛选胶囊行
                     coverWall           // 19:200 封面墙 / 空态
                 }
                 .padding(.top, 10)
@@ -30,20 +28,23 @@ struct ProfileView: View {
             // 自定义 tab bar 是 App 层 `safeAreaInset(edge: .bottom)` 注入的，**不进
             // NavigationStack 内的页面**（模拟器 402×874 实测：修复前 contentInsets.bottom
             // 只有 34 的家区，ScrollView 内容区一直画到 840，而 bar 占 794…840 → 重叠 46pt）。
-            // 按 bar 实高显式补一次，与下载页 `safeAreaPadding` 同一口径；补完实测
-            // contentInsets.bottom = 81、内容区止于 793，正好在 bar 顶（794）之上。
-            .safeAreaPadding(.bottom, MainTab.barReservedHeight)
+            // 按 bar 实高显式补一次，与下载页 `safeAreaPadding` 同一口径；另 +15 是用户要求
+            // 的呼吸间距（列表末行与 bar 之间再留 15pt）。
+            .safeAreaPadding(.bottom, MainTab.barReservedHeight + Self.bottomGap)
             // 底部避让诊断（开发即埋日志，排障期保留）：contentInsets 是 ScrollView 实际
-            // 生效的内容内缩（安全区 + safeAreaPadding）。期望 bottom = 34 + 47 = 81；
-            // 若哪天变成 47 或 34，说明传递行为变了（或 bar 内边距改了没同步 barReservedHeight）
+            // 生效的内容内缩（安全区 + safeAreaPadding）。期望 bottom = 34 + 47 + 15 = 96；
+            // 若哪天变成 47/34，说明传递行为变了（或 bar 内边距改了没同步 barReservedHeight）
             .onScrollGeometryChange(for: EdgeInsets.self) { geo in
                 geo.contentInsets
             } action: { _, insets in
-                print("PROFILE_DBG insets top=\(insets.top) bottom=\(insets.bottom) barReserved=\(MainTab.barReservedHeight)")
+                print("PROFILE_DBG insets top=\(insets.top) bottom=\(insets.bottom) barReserved=\(MainTab.barReservedHeight) gap=\(Self.bottomGap)")
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)   // 画布无导航条：身份行即顶栏
-            .safeAreaInset(edge: .top) { identityRow }   // 19:89 身份行（替代导航条，含设置齿轮）
+            // 顶栏区（身份行 + 分类 tab + 筛选胶囊）钉在 ScrollView 之上，不随封面墙上滑消失
+            //（用户要求 2026-11-14）。用 safeAreaInset 而不是塞进 ScrollView 内容里：
+            // 前者是布局级固定，后者得靠 sticky header 技巧且滚动时会露出内容。
+            .safeAreaInset(edge: .top, spacing: 0) { pinnedHeader }
             // 二级页由路径值驱动：设置页（画布 24:43）/ 剧集详情页
             .navigationDestination(for: ProfileRoute.self) { route in
                 switch route {
@@ -67,7 +68,23 @@ struct ProfileView: View {
         }
     }
 
-    // MARK: - 身份行（19:89，高 56，水平 padding 20）
+    // MARK: - 钉住的顶栏区（19:89 身份行 + 19:180 分类 tab + 19:190 筛选胶囊）
+
+    /// 这三段在画布上是连续的一块，一起做成**固定区**（`safeAreaInset(edge: .top)`），
+    /// 封面墙上滑时它们不动（用户要求 2026-11-14：「分类与筛选不应随着上滑而看不见」）。
+    /// 纸底不透明：滚动内容从下方穿过时不可见，避免半透明叠字。
+    private var pinnedHeader: some View {
+        VStack(spacing: 10) {
+            identityRow
+            categoryTabs
+            filterRow
+        }
+        .padding(.horizontal, DWLayout.edge)
+        .padding(.bottom, 8)                 // 与封面墙之间留白（滚动时纸底同色，视觉上是一条静止的分隔带）
+        .background(DWColor.paper)
+    }
+
+    // MARK: - 身份行（19:89，高 56）
 
     private var identityRow: some View {
         HStack(spacing: 12) {
@@ -95,8 +112,7 @@ struct ProfileView: View {
             }
             .accessibilityLabel("设置")
         }
-        .padding(.horizontal, DWLayout.edge)
-        .padding(.vertical, 11)              // 行高 56：34 + 11×2
+        .padding(.vertical, 11)              // 行高 56：34 + 11×2（水平 padding 由 pinnedHeader 统一给）
         .background(DWColor.paper)
     }
 
@@ -197,6 +213,9 @@ struct ProfileView: View {
         GridItem(.fixed(106), spacing: 10),
         GridItem(.fixed(106))
     ]
+
+    /// 列表末行与 tab bar 之间的呼吸间距（用户要求 2026-11-14：再加大 15pt）
+    static let bottomGap: CGFloat = 15
 
     @ViewBuilder
     private var coverWall: some View {
