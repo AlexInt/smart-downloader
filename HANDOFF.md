@@ -159,8 +159,8 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 - **浏览页路由「有时原生有时 web」（未改，待拍板）**：`decidePolicyFor` 只在 `navigationType == .linkActivated`（真实 `<a>`）+ `DramaTarget.parse` 命中时取消网页推原生；卡片若用 JS `location.href`/`pushState`/`window.open` 跳，`.other` 拦不住。URL KVO 兜底但 `detectDrama` 有 `lastAutoDramaKey` 去重、`pushDramaPage` 不写该标记 → 两路径状态不一致，同剧二次点击可能被挡。`DramaTarget.parse` 只认 `/drama/(video|detail)/<数字>`。建议：主帧剧集 URL 一律 `.cancel` 并推原生、两路径共用去重标记——触及导航，先等确认。
 - **手势残余边界（可接受）**：带外慢速横向拖拽 >0.15s 仍可能起 2x（慢拖与「长按+慢漂移」不可区分，「先起者独占」的固有歧义）。
 - **tags 数据源（已定案，细节见 `DramaDetailData` 代码注释）**：站点 detail 走 Nuxt `_payload.json`（devalue 扁平数组），非明文/非信封；解码链 明文→信封→payload，`via=plain|envelope|payload` 日志区分。旧缓存无 `tags_source` → 进页自动补采一次。
-- **纸本轨字体（待用户定夺）**：画布用的是 Noto Serif SC / Noto Sans SC，App 走系统字体（宋体/苹方）替代，纵向落位存在 ≤4pt 偏差。内置两款字体约 5–10MB/款。不内置则接受该偏差；内置则需改 `DWFont` 映射 + 打包字体文件。
-- **`docs/design/gear-*` 8 个未跟踪文件（待用户定夺）**：`gear-candidates-1x.png` / `gear-candidates-3x.png` / `gear-icon-review.html` / `gear-tabset-1x.png` / `gear-settings-tab.svg` 是设置页与 tab 图标的工作稿，另 3 个带 `.DRAFT-not-adopted` 后缀是废弃稿。要么提交前 5 个、删 3 个废弃稿，要么整批清掉。
+- **纸本轨字体（已定案 2026-11-14：保持系统字体）**：画布用 Noto Serif SC / Noto Sans SC，App 走系统字体（宋体/苹方）替代，纵向落位存在 ≤4pt 偏差。用户拍板不内置（省 10–20MB 包体），该偏差只在与设计稿逐像素并排比才看得出，接受。**若将来要 1:1 还原，改 `DWFont` 映射 + 打包字体文件即可，View 层不用动**（`DWFont.serif/cn` 本来就是唯一入口）。
+- **`docs/design/gear-*`（已处理 2026-11-14）**：5 个工作稿已入库（`122ee41`），3 个 `.DRAFT-not-adopted` 废弃稿已删除。后续同类比稿：**采用稿入库、废弃稿即删**，不要留 DRAFT 后缀的文件堆在仓库里。
 
 ## 7. 验证与调试
 
