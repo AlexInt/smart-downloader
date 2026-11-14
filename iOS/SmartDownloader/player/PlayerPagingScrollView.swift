@@ -107,6 +107,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: PagingScrollView, coordinator: Coordinator) {
         // 播放页销毁：全屏容器挂在 keyWindow 上，必须显式还原，否则泄漏在 window 上
         print("PERF_DBG exit t=\(PERF.ms()) phase=pagingDismantle begin")
+        // 兜底恢复系统 pan：手势若走异常路径（如视图被中途移除收不到结束回调）
+        // 漏了 unlock，也不能把「系统 pan 被禁」带出本页面
+        coordinator.unlockSystemPan(uiView, reason: "dismantle")
         coordinator.fullscreenController?.teardown()
         coordinator.gravityCancellable = nil
         coordinator.readyCancellable = nil
@@ -152,6 +155,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
         private var scrubBaseFraction: Double?
         private var edgeBackFired = false
+        /// 横向手势独占期间系统分页 pan 的锁定标志：幂等开关，防重复禁用/漏恢复
+        ///（seekPan 与 edgePan 都会 lock，两者结束顺序不定，unlock 幂等保护）
+        private var systemPanLocked = false
 
         init(_ parent: PlayerPagingScrollView) {
             self.parent = parent
@@ -162,12 +168,46 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         // 点按暂停 / 长按倍速已移回卡片内 SwiftUI 手势（见 DramaPlayerView body 末尾），
         // 这里不再挂 UITapGestureRecognizer / UILongPressGestureRecognizer。
 
+        // MARK: 系统 pan 独占（横滑上下晃动修复 2026-11-14）
+
+        /// 横向手势（seekPan / edgePan）起手时独占本次触摸：禁用系统分页 pan。
+        /// 根因：横滑时人手必有纵向分量，系统 pan 对纵向可滚方向启动阈值极低（几 pt），
+        /// 一旦 begin 即锁纵向驱动 contentOffset —— 横滑全程页面跟着手的 y 分量上下晃
+        ///（用户实报「每次左右滑动都会上下晃动」）；y 累计 >15% 屏高或松手 velocity.y>0.3
+        /// 还会被 scrollViewWillEndDragging 误判翻页。纵向滑动不受影响：seekPan 被
+        /// 方向过滤拒绝（shouldBegin），系统 pan 独占切集。「先起者独占本次触摸」
+        /// 从 2x↔seek 延伸到 seek↔scroll（同一仲裁哲学）。恢复时机：横向手势
+        /// 全部结束分支 + dismantle 兜底。
+        private func lockSystemPan(in scroll: UIScrollView, reason: String) {
+            guard !systemPanLocked else {
+                print("PLAYER_DBG [CHECK] panLock SKIP reason=alreadyLocked by=\(reason)")
+                return
+            }
+            systemPanLocked = true
+            scroll.panGestureRecognizer.isEnabled = false
+            // 系统 pan 启动阈值更低，常在 seekPan .began（~10pt）之前抢先 begin 并拖走
+            // 纵向位移——禁用即 cancel 它，随后立即归位当前页，消掉起手瞬间的弹跳。
+            // 归位目标用 currentSort 对应页而非 round(y/h)：滚动 delegate 已被禁，
+            // round 出的页可能与实际活跃页不一致
+            realignToCurrentPage(in: scroll)
+            print("PLAYER_DBG [CHECK] panLock ON by=\(reason) y=\(Int(scroll.contentOffset.y))")
+        }
+
+        func unlockSystemPan(_ scroll: UIScrollView, reason: String) {
+            guard systemPanLocked else { return }
+            systemPanLocked = false
+            scroll.panGestureRecognizer.isEnabled = true
+            print("PLAYER_DBG [CHECK] panLock OFF by=\(reason) y=\(Int(scroll.contentOffset.y))")
+        }
+
         /// 左缘右滑返回：拖过 50pt 即触发（不必等抬手），每次手势只触发一次
         @objc func didEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
             guard let view = pan.view else { return }
             switch pan.state {
             case .began:
                 edgeBackFired = false
+                // 左缘起手同样独占本次触摸：横滑返回期间系统 pan 的纵向响应同样会让页面上下晃
+                if let scroll = view as? UIScrollView { lockSystemPan(in: scroll, reason: "edgePan") }
                 print("PLAYER_DBG [CHECK] edgePan began")
             case .changed:
                 guard !edgeBackFired else { return }
@@ -177,6 +217,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                     print("PLAYER_DBG [CHECK] edgePan dx=\(Int(dx)) > 50 → back")
                     parent.onEdgeBack()
                 }
+            case .ended, .cancelled, .failed:
+                // 结束分支必须恢复系统 pan：漏恢复 = 播放页永久无法滑动（泄漏 lock）
+                if let scroll = view as? UIScrollView { unlockSystemPan(scroll, reason: "edgePan") }
             default: break
             }
         }
@@ -189,20 +232,26 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            // seekPan 只认横向/斜向滑动：纵向主导的翻页滑动直接拒绝，交给分页滚动。
+            // seekPan 只认横向主导滑动：纵向 / 45°（x≤y）直接拒绝，交给分页滚动。
             // 若不加此方向过滤，seekPan 不限方向、竖滑也 began（cancelsTouchesInView=false）→ 搅乱滚动
             // 对触摸的取消 → 卡片点按手势未被干净取消 → 抬手误判 TAP → 暂停（真机日志实证）。
-            // 横向/45° 斜向仍立即 begin，保住「拖动先起」的长按仲裁闸门（斜起手转水平不受影响）。
+            // 45°（x==y）交给系统 pan：纵向分量显著，切集更符合意图；起手后转水平的快滑
+            // 不受影响——.began 的 panLock 会 cancel 系统 pan 并归位，seekPan 自己累计的
+            // 位移在 x>y 的那一刻照样 begin（先起者独占的系统侧抢占）。
             guard gestureRecognizer === seekPan,
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
             let t = pan.translation(in: pan.view)
-            return abs(t.x) >= abs(t.y)
+            return abs(t.x) > abs(t.y)
         }
 
         @objc func didSeekPan(_ pan: UIPanGestureRecognizer) {
             guard let view = pan.view as? UIScrollView else { return }
             switch pan.state {
             case .began:
+                // 横向主导起手即独占本次触摸：禁用系统分页 pan（横滑上下晃动修复）。
+                // 放 .began 而非 shouldBegin：此刻系统 pan 即便已 begin 也只拖走极小
+                // 位移，realign 归位后视觉几乎无感
+                lockSystemPan(in: view, reason: "seekPan")
                 // 起手（约 10pt 位移）即判「拖动先起」，立刻翻转仲裁闸门（VM.beginSeekGesture）。
                 // 不能等 .changed 攒够「水平主导 + dx>6」才置位：斜起手快速转水平的快滑、
                 // 清屏下的横滑，都会给长按 0.15s 的 perform 留出插空窗误起 2x（闪倍速提示）。
@@ -234,6 +283,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                 // 也避免「2x 长按抬手先清了 isFastForwarding → .ended 的 seek 反而穿过闸门」的竞态跳变。
                 // 只结束「拖动独占」标记，下一次长按可正常起 2x
                 scrubBaseFraction = nil
+                unlockSystemPan(view, reason: "seekPan")
                 parent.playback.endSeekGesture()
             default: break
             }
@@ -332,7 +382,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         }
 
         /// 几何变化后把 currentSort 那一页同步顶对齐视口。
-        private func realignToCurrentPage(in scroll: PagingScrollView) {
+        /// 参数放宽为 UIScrollView：panLock 归位也从这里走（didSeekPan 手里只有 UIScrollView 类型）
+        private func realignToCurrentPage(in scroll: UIScrollView) {
             guard let start = parent.currentSort,
                   let index = parent.slots.firstIndex(where: { $0.sort == start }) else {
                 print("PLAYER_DBG [CHECK] realignOffset SKIP reason=noCurrentSort")
