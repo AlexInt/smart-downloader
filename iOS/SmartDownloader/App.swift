@@ -1,8 +1,23 @@
 import SwiftUI
 
+/// 统一毫秒时钟：ProcessInfo.systemUptime，与 stallProbe 的 t= / tabSwitch t= 同一坐标系，
+/// 各处 PERF_DBG 探针用它对齐时间线（排障期先对齐再判读，不各用各的钟）。
+/// 顶层 enum（App struct 内嵌套外部文件取不到），module 内可见
+enum PERF {
+    static func ms() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
+}
+
 @main
 struct SmartDownloaderApp: App {
-    @StateObject private var manager = DownloadManager()
+    @StateObject private var manager: DownloadManager
+    /// 下载页两个 VM 提升到 App 级（2026-11-14 主线程卡顿修复）：
+    /// DownloadsView 挂在 ZStack 的 `if selectedTab == .downloads` 下，切 tab 即销毁重建，
+    /// VM 级缓存（磁盘占用 episodeSizeCache / 剧身份 seriesCache）随实例一起丢——
+    /// 每次切 tab 都要全量重扫 97 集盘 + 全量 SQLite 读（日志里 episodesReused=0
+    /// episodesScanned=97 每次切 tab 重现的直接原因）。App 级持有后缓存跨切换存活，
+    /// 重算只扫新增/变更的集，剧身份也只查一次。
+    @StateObject private var downloadsVM: DownloadsViewModel
+    @StateObject private var progressVM = PlaybackProgressViewModel()
     /// 启动落在哪个 tab 由设置页配置（`AppLaunchPreferences`），Service 内部默认「下载」；
     /// 浏览页必须保持 tag 最小（.browser = 0），它是保活容器的底层
     @State private var selectedTab: MainTab = AppLaunchPreferences().launchTab
@@ -14,7 +29,17 @@ struct SmartDownloaderApp: App {
     private static var autoTestStarted = false
     private static var stallProbeStarted = false
 
-    private static func uptimeMs() -> Int { Int(ProcessInfo.processInfo.systemUptime * 1000) }
+    private static func uptimeMs() -> Int { PERF.ms() }
+
+    init() {
+        let managerInstance = DownloadManager()
+        _manager = StateObject(wrappedValue: managerInstance)
+        _downloadsVM = StateObject(wrappedValue: DownloadsViewModel(manager: managerInstance))
+        // 提前启动本地媒体服务（播放 HLS 文件夹时用）
+        DispatchQueue.global().async {
+            LocalMediaServer.shared.start { _ in }
+        }
+    }
 
     /// 主线程卡顿探针：20ms 心跳，单次 runloop 间隔 >100ms 打一条（真实卡顿）。
     /// tab 切换卡时靠它定位主线程被谁占住，与 tabSwitch 时间戳对照判读。
@@ -46,13 +71,6 @@ struct SmartDownloaderApp: App {
         }
     }
 
-    init() {
-        // 提前启动本地媒体服务（播放 HLS 文件夹时用）
-        DispatchQueue.global().async {
-            LocalMediaServer.shared.start { _ in }
-        }
-    }
-
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -64,7 +82,7 @@ struct SmartDownloaderApp: App {
                                 detailActive: $browserDetailActive)
                         .allowsHitTesting(selectedTab == .browser)
                     if selectedTab == .downloads {
-                        DownloadsView(manager: manager)
+                        DownloadsView(manager: manager, vm: downloadsVM, progressVM: progressVM)
                             .background(DWColor.background.ignoresSafeArea())
                     }
                     if selectedTab == .settings {

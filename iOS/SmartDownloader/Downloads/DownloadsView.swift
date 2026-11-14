@@ -76,13 +76,15 @@ enum DownloadPage: Int, Hashable {
 /// 排序与编辑（批量删除）在工具栏统一控制，两个区域都支持左滑删除。
 struct DownloadsView: View {
     @ObservedObject var manager: DownloadManager
-    @StateObject private var vm: DownloadsViewModel
-    /// 「播到哪」只读状态：进入页面 / 任务变化 / 播放入口关闭时刷新
-    @StateObject private var progressVM = PlaybackProgressViewModel()
+    /// VM 由 App 层注入（StateObject 所有权在 App）：本视图随 tab 切换销毁重建，
+    /// 缓存型 VM 不能在这里创建（否则每次切 tab 全量重扫盘 + 全量 SQLite 读）
+    @ObservedObject var vm: DownloadsViewModel
+    @ObservedObject var progressVM: PlaybackProgressViewModel
 
-    init(manager: DownloadManager) {
+    init(manager: DownloadManager, vm: DownloadsViewModel, progressVM: PlaybackProgressViewModel) {
         self.manager = manager
-        _vm = StateObject(wrappedValue: DownloadsViewModel(manager: manager))
+        self.vm = vm
+        self.progressVM = progressVM
     }
 
     var body: some View {

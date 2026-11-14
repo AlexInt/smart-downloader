@@ -16,7 +16,9 @@ import SQLite3
 // 幂等策略：建表一律 CREATE IF NOT EXISTS；加列先查 PRAGMA table_info 再 ALTER（不靠版本号判断列是否存在），
 // 这样即使旧库版本号被别的入口提前抬高，缺的列也补得上。
 // 旧数据搬迁另用 UserDefaults 标记门控，与 schema 版本解耦（避免「版本已被抬高 → 搬迁被跳过」丢用户数据）。
-// 主线程约定：与两个 Service 一致，全部调用 assume 主线程。
+// 线程约定（2026-11-14 更新）：读可以发生在后台队列（列表行为数据/磁盘占用的批量解析），
+// 写仍在主线程关键时机；sqlite3 连接按次开关不共享，跨线程安全，忙等由 busy_timeout(100ms) 兜底。
+// 迁移仍是「每进程一次」，首次开库可能在后台线程，标记读写由 migrationLock 互斥。
 
 let SQLITE_TRANSIENT = unsafeBitCast(OpaquePointer(bitPattern: -1), to: sqlite3_destructor_type.self)
 
@@ -24,6 +26,9 @@ enum DramaDatabase {
 
     static let schemaVersion = 3
     private static var migrated = false
+    /// 迁移标记锁：2026-11-14 起批量读走后台队列，开库不再只在主线程发生——
+    /// 首次开库（跑迁移）可能发生在任意线程，标记读写必须互斥
+    private static let migrationLock = NSLock()
     private static let legacyMigratedKey = "EpisodeActions.legacyMigrated"
 
     /// 打开库并确保 schema 就绪（每进程只迁移一次）
@@ -33,6 +38,11 @@ enum DramaDatabase {
             fail(db, "open")
             return nil
         }
+        // 后台批量读（列表刷新/磁盘占用重算）与主线程写（进度落库）可能同时进行：
+        // 忙等上限 100ms，锁冲突不再立刻报 SQLITE_BUSY 错
+        sqlite3_busy_timeout(db, 100)
+        migrationLock.lock()
+        defer { migrationLock.unlock() }
         if !migrated {
             migrated = true
             migrate(db)
