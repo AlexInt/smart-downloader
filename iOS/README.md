@@ -120,7 +120,7 @@ xcrun devicectl device process launch --console --device <设备ID> com.firefish
 | `SmartDownloader/Downloads/` | 下载域：`Downloader`（核心 + 任务/队列 + 两级库扫描）、`DownloadsViewModel`、`DownloadsView` |
 | `SmartDownloader/Browser/` | 浏览域：`BrowserView`（含 `WebViewContainer`）、`WebViewStore`（VM）、`SnifferScript`（注入 JS）、`AdCleanerScript`（广告弹窗清理注入 JS） |
 | `SmartDownloader/Settings/` | 设置域：`QuickLinkStore` / `AppLaunchPreferences` / `DramaRoutePreferences`（Service）、`SettingsViewModel`（VM）、`SettingsView` + `QuickLinkEditorSheet`（View） |
-| `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF） |
+| `SmartDownloader/Infra/` | 系统能力：`LocalMediaServer`（回环 HTTP，Range）、`WebKitFetcher`（WKDownload 兜底，过 TLS 指纹 WAF）、`KeyboardObserver`（键盘显隐，弹起时收起 tab bar 与浏览页底部工具条） |
 | `SmartDownloader/player/` | 播放域，五层齐全（详见 `HANDOFF.md` §3） |
 | `SmartDownloader/Components/` | 全局通用 UI（`ToastView`） |
 | `SmartDownloader/video_auto.py` | → 仓库根 video_auto.py 的 symlink，随包携带供 DramaAPI 解析账号/AES 常量（改动只需改仓库根一处） |

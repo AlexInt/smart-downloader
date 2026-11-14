@@ -25,6 +25,11 @@ struct SmartDownloaderApp: App {
     @State private var showSplash = true
     /// 浏览页推入剧集详情时隐藏自定义 tab bar（详情页沉浸式全屏）
     @State private var browserDetailActive = false
+    /// 键盘可见时收起 tab bar：系统会把底部安全区顶上来，tab bar 会被顶到键盘上方，
+    /// 既挡网页内容又白吃一层高度（用户实报 2026-11-14）
+    @State private var keyboardVisible = KeyboardObserver.shared.isVisible
+    /// 键盘订阅取消闭包（App 生命周期内不用摘，留着便于将来热重载/测试）
+    @State private var keyboardCancel: (() -> Void)?
     /// 防止 onAppear 重复触发自动冒烟（主线程约定，GCD 版无线程标注）
     private static var autoTestStarted = false
     private static var stallProbeStarted = false
@@ -92,7 +97,7 @@ struct SmartDownloaderApp: App {
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
-                    if !browserDetailActive {
+                    if !browserDetailActive && !keyboardVisible {
                         mainTabBar
                     }
                 }
@@ -112,6 +117,13 @@ struct SmartDownloaderApp: App {
             .onAppear {
                 Self.runDeviceAutoTest(manager: manager)
                 Self.startStallProbeIfNeeded()
+                // 键盘显隐 → tab bar 收起/恢复（Service 统一入口，View 只做可见性）
+                if keyboardCancel == nil {
+                    keyboardCancel = KeyboardObserver.shared.observe { visible in
+                        print("UI_DBG tabBar keyboard=\(visible) → \(visible ? "hidden" : "shown")")
+                        keyboardVisible = visible
+                    }
+                }
                 // splash 停留 1.2s 后淡出
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     withAnimation(.easeOut(duration: 0.45)) { showSplash = false }

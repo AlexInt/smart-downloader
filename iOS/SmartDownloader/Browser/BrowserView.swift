@@ -24,6 +24,9 @@ struct BrowserView: View {
     @State private var lastAutoDramaKey: String?
     /// 剧集页路由偏好（设置页开关，默认原生）：每次事件现读现判，改动立即生效
     private let routePreferences = DramaRoutePreferences()
+    /// 键盘可见时收起底部工具条（App 级 tab bar 同理由 KeyboardObserver 收起）
+    @State private var keyboardVisible = KeyboardObserver.shared.isVisible
+    @State private var keyboardCancel: (() -> Void)?
 
     var body: some View {
         NavigationStack {
@@ -71,25 +74,29 @@ struct BrowserView: View {
                              onDramaLinkClick: { pushDramaPage($0) },
                              onDramaURLDetected: { detectDrama($0, undoSPA: $1) })
 
-            HStack(spacing: 18) {
-                Button { store.goBack() } label: { Image(systemName: "chevron.left") }
-                Button { store.goForward() } label: { Image(systemName: "chevron.right") }
-                Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
-                Spacer()
-                Button {
-                    if manager.foundURLs.count > 1 {
-                        showPicker = true
-                    } else {
-                        store.beginDownload(from: manager.foundURLs.first, manager: manager)
+            if !keyboardVisible {
+                // 键盘弹起时整行收起：把这 56pt 让给网页输入区（Safari 同行为）。
+                // 不收起的话它和 App 级 tab bar 会一起被顶到键盘上方，白占两层高度
+                HStack(spacing: 18) {
+                    Button { store.goBack() } label: { Image(systemName: "chevron.left") }
+                    Button { store.goForward() } label: { Image(systemName: "chevron.right") }
+                    Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
+                    Spacer()
+                    Button {
+                        if manager.foundURLs.count > 1 {
+                            showPicker = true
+                        } else {
+                            store.beginDownload(from: manager.foundURLs.first, manager: manager)
+                        }
+                    } label: {
+                        Label(downloadButtonTitle, systemImage: downloadButtonIcon)
                     }
-                } label: {
-                    Label(downloadButtonTitle, systemImage: downloadButtonIcon)
+                    .disabled(manager.foundURLs.isEmpty || store.isSubmitting || singleURLAlreadyQueued)
+                    .buttonStyle(.borderedProminent)
                 }
-                .disabled(manager.foundURLs.isEmpty || store.isSubmitting || singleURLAlreadyQueued)
-                .buttonStyle(.borderedProminent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
         }
         // 浏览页不占导航条空间；推入的原生剧集页自行 .toolbar(.visible) 恢复
         .toolbar(.hidden, for: .navigationBar)
@@ -130,6 +137,13 @@ struct BrowserView: View {
             store.refreshQuickLinks()
             // 保活容器下浏览页启动即渲染（可能仍在其它 tab）：只在浏览页活跃时自动推入
             if selectedTab == .browser, let target = DramaTarget.parse(address) { detectDrama(target, undoSPA: false) }
+            // 键盘显隐 → 底部工具条收起/恢复（浏览页常驻，onAppear 只触发一次）
+            if keyboardCancel == nil {
+                keyboardCancel = KeyboardObserver.shared.observe { visible in
+                    print("BROWSER: keyboard=\(visible) → bottomBar \(visible ? "hidden" : "shown")")
+                    keyboardVisible = visible
+                }
+            }
         }
     }
 
