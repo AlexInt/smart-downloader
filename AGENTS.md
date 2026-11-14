@@ -164,10 +164,10 @@ View → ViewModel → Service → 系统能力 / Model
 - **语言模式锁定 Swift 5**（`SWIFT_VERSION = 5.0` + `SWIFT_STRICT_CONCURRENCY = minimal`，与 project.yml 一致）：全库 GCD 化后勿升 Swift 6 / 开严格并发检查，详见「并发与线程」节。
 - 新 Swift 文件放进 `SmartDownloader/` 自动参与编译；资源目录（Media.xcassets）同理。
 - **Info.plist 在同步文件夹内**：pbxproj 已用 `PBXFileSystemSynchronizedBuildFileExceptionSet` 排除它，否则与 `INFOPLIST_FILE` 冲突报 "Multiple commands produce Info.plist"。
-- App 图标：`ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`，AppIcon.appiconset 三个外观槽位（universal/dark/tinted）都要填 filename —— 三档图分别是 `sd.png`（纸底墨箭）/ `sd-dark.png`（墨底纸箭）/ `sd-tinted.png`（中性灰，交系统上色）。图标与 splash 记号**必须不带 alpha 通道**（带 alpha 打包会被 App Store 拒），CoreGraphics 渲染时用 `noneSkipLast`。
-- **品牌记号**：墨箭（下箭头，圆角笔锋）+ 朱砂承线（`#A05243` 短线）= 画布「我的」页选中 tab 那根朱砂短线的同源符号；浅底用墨 `#1C1E1F` 落纸 `#F2F0EA`，深底反过来。改记号只改渲染脚本的几何常量，别在 SwiftUI 里重画。
-- 启动屏分两层：系统层是 `UILaunchScreen → UIColorName = LaunchBackground`（颜色资源，纸底 `#F2F0EA`）；应用层 `iOS/LaunchSplashView.swift` 在同一纸底上把 `LaunchLogo`（透明底墨箭）淡入。**不要再退回整屏 PNG 启动图**：固定分辨率的图铺不满所有机型，边缘会露白。
-- App 显示名在 `Info.plist` 的 `CFBundleDisplayName`（当前 `DramaWave`），改这一个字符串即可，不动工程名/bundle id。
+- App 图标：`ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`。**只有一个 universal 槽位（`sd.png`，1024×1024、无 alpha、无圆角）**，圆角与遮罩全部交给系统；不要再拆 dark/tinted 变体（设计稿只出一版）。
+- **品牌资产的唯一来源是设计稿**（Ardot 文件 `746972112461422`）：App Icon = 节点 `19:278 App Icon · 1024×1024`（墨底 `#14171A` + 纸面板 `19:363` r160 + 一笔墨主体 `19:364` + 朱砂小印 `19:367`/印文「观」`19:368`）；品牌符号 = 节点 `19:356 一笔墨 · 品牌符号`。改图先改设计稿，再 `export_nodes`（scale 1 导出即 1024）；`19:363` 只是那块纸面板，单导它是张空白纸。**禁止在代码里重画记号**——曾用脚本自绘了一个「下箭头」图标，与设计稿的一笔墨完全不是一回事，返工一次。
+- 启动屏分两层：系统层是 `UILaunchScreen → UIColorName = LaunchBackground`（颜色资源，纸底 `#F2F0EA`）；应用层 `iOS/LaunchSplashView.swift` 在同一纸底上把 `LaunchLogo` 淡入。`LaunchLogo` 由 `19:356` 导出后**只做取景不改图形**（裁到 alpha 包围盒、居中放进 1024 方画布，图形高度占 78%），保留 alpha。**不要退回整屏 PNG 启动图**：固定分辨率铺不满所有机型，边缘会露白。
+- App 显示名在 `Info.plist` 的 `CFBundleDisplayName`，改这一个字符串即可，不动工程名/bundle id。注意设计稿朱砂印上的印文是「观」（产品名「观影」），当前显示名为 `DramaWave` —— 两者未对齐，待用户定名。
 - 底部 tab bar 是 `App.swift` 里的 `MainTabBar`（独立 View，不是 App 内联）。**`colorScheme` 必须由 View 树内的 View 读取**：写在 `App`/Scene 层读到的是初始值，实测深色外观下仍判成 light，栏会一直停在纸底。
 - iOS 26 符号集没有 `compass` SF Symbol；三个 tab 统一线稿（`safari` / `arrow.down.circle` / `person`），别把浏览换回 `safari.fill`（实心图标与另两个不同重，底部会一头沉）。`webView.downloadDelegate` 是 macOS-only，iOS 上 delegate 挂在 `WKDownload` 对象上。
 - 真机自动冒烟：`xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader -autoTestDownload "<m3u8URL>"`。
