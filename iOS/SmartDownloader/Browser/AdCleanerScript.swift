@@ -90,6 +90,94 @@ enum AdCleanerScript {
         } catch (e) {}
       }
 
+      function sayRaw(kind, text) {
+        try {
+          var w = window.webkit;
+          if (w && w.messageHandlers && w.messageHandlers.adClean) {
+            w.messageHandlers.adClean.postMessage(kind + ' ' + text);
+          }
+        } catch (e) {}
+      }
+
+      // ---- 滚动锁：站点弹窗的「副作用」，不是广告本身 ----
+      // 站点弹窗的标准玩法：弹窗出现时给 html/body 加 overflow:hidden（或 body
+      // position:fixed + top:-scrollY），点它自己那个「关闭」按钮时再还原。
+      // 我们把弹窗藏掉/删掉了，用户看不到弹窗，但站点的**还原回调永远不会执行**，
+      // 于是页面从此滑不动——用户实报「首页刚开始能滑动，后面滑不动了」（2026-11-14）。
+      // 所以每处理掉一个弹窗都要顺手解开滚动锁；只解「我们处理过弹窗之后」的那一次，
+      // 不常驻抢站点状态（正常站点的合法弹窗/全屏播放器不碰）。
+      function lockState() {
+        try {
+          var html = document.documentElement, body = document.body;
+          var hs = getComputedStyle(html);
+          var parts = ['html.overflow=' + (hs.overflowY || hs.overflow)];
+          if (body) {
+            var bs = getComputedStyle(body);
+            parts.push('body.overflow=' + (bs.overflowY || bs.overflow));
+            parts.push('body.position=' + bs.position);
+            parts.push('body.touchAction=' + bs.touchAction);
+          }
+          var se = document.scrollingElement || html;
+          parts.push('scrollTop=' + Math.round(se.scrollTop) + '/' +
+                     Math.round(Math.max(0, se.scrollHeight - se.clientHeight)));
+          return parts.join(' ');
+        } catch (e) { return 'lockState?'; }
+      }
+
+      function unlockScroll(reason, depth, forcePos) {
+        depth = depth || 0;
+        try {
+          var html = document.documentElement, body = document.body;
+          var fixes = [];
+          function fix(el, name) {
+            if (!el) return;
+            var cs = getComputedStyle(el);
+            if (cs.overflowY === 'hidden' || cs.overflow === 'hidden') {
+              el.style.setProperty('overflow-y', 'auto', 'important');
+              fixes.push(name + '.overflow');
+            }
+            if (cs.touchAction === 'none') {
+              el.style.setProperty('touch-action', 'auto', 'important');
+              fixes.push(name + '.touchAction');
+            }
+          }
+          fix(html, 'html');
+          fix(body, 'body');
+          var overflowLocked = fixes.length > 0;
+          // body position:fixed 锁：站点的常规写法是同时给 top:-scrollY，还原时要滚回去。
+          // 只在「确实是锁」时才动 position：负 top（iOS body-scroll-lock 标准写法）或
+          // 同时命中 overflow 锁，或诊断探针明确判定卡住（forcePos）——
+          // 少数 SPA 把 body 常设 fixed + 内层滚动，不该被我们掰成 double scroll。
+          if (body) {
+            var bs = getComputedStyle(body);
+            if (bs.position === 'fixed') {
+              var top = parseFloat(bs.top || '0') || 0;
+              var y = top < 0 ? -top : 0;
+              if (y > 0 || overflowLocked || forcePos) {
+                body.style.setProperty('position', 'static', 'important');
+                body.style.setProperty('top', 'auto', 'important');
+                body.style.setProperty('left', 'auto', 'important');
+                fixes.push('body.position');
+                if (y > 0) {
+                  setTimeout(function () { try { window.scrollTo(0, y); } catch (e) {} }, 0);
+                }
+              }
+            }
+          }
+          if (fixes.length) {
+            sayRaw('unlockScroll', 'depth=' + depth + ' reason=' + reason +
+                   ' fixes=' + fixes.join(',') + ' → [' + lockState() + ']');
+            // 站点的渲染钩子可能在我们之后又锁一次：延迟复核两次，仍锁才再解。
+            // depth 上限 2：复核本身的 unlockScroll 也有 fixes 就会再排复核，
+            // 不设上限会变成长跑定时器（每 320/1400ms 一轮，永不停止）
+            if (depth < 2) {
+              setTimeout(function () { unlockScroll('retry:' + reason, depth + 1, forcePos); }, 320);
+              setTimeout(function () { unlockScroll('retry:' + reason, depth + 1, forcePos); }, 1400);
+            }
+          }
+        } catch (e) {}
+      }
+
       // ---- 判据 ----
       function hasRealContent(el) {
         try {
@@ -118,6 +206,9 @@ enum AdCleanerScript {
             if (!parent) return true;
             parent.removeChild(el);
             say('removed', el, sel + '(sync)');
+            // 删掉的多半就是那个「锁着滚动」的弹窗：顺手把站点加的滚动锁解开
+            //（站点自己的关闭回调永远不会执行了，不解锁页面就永久滑不动）
+            unlockScroll('removed:' + sel, 0);
           } catch (e) {}
           return true;
         }
@@ -142,6 +233,8 @@ enum AdCleanerScript {
             f.style.setProperty('visibility', 'hidden', 'important');
             f.style.setProperty('pointer-events', 'none', 'important');
             say('candidate', f, 'fullsize-fixed(已隐藏,2s后仍空才删)');
+            // 全屏浮层多半配着滚动锁：藏掉它的同时把 html/body 的 overflow 解开
+            unlockScroll('popup-hidden', 0);
             return;
           }
           if (hasRealContent(f)) {
@@ -157,6 +250,7 @@ enum AdCleanerScript {
           if (now - seen < 1800) return;
           f.parentNode.removeChild(f);
           say('removed', f, 'fullsize-fixed(空浮层,存活' + (now - seen) + 'ms)');
+          unlockScroll('popup-removed', 0);
         } catch (e) {}
       }
 
@@ -172,6 +266,7 @@ enum AdCleanerScript {
               if (el.querySelector('video')) continue;
               el.parentNode.removeChild(el);
               say('removed', el, SELECTORS[i]);
+              unlockScroll('sweep:' + SELECTORS[i], 0);
             } catch (e) {}
           }
         }
@@ -205,6 +300,130 @@ enum AdCleanerScript {
           if (kid.parentNode === document.body) checkFixedLayer(kid, now);
         }
       }
+
+      // ---- 滚动诊断：查「滑不动」到底卡在哪 ----
+      // WebKit 不给「滚不动」事件，只能自己对账：按下时记下祖先链各滚动容器（含
+      // document.scrollingElement）的 scrollTop，拖拽（竖直位移 > 20px）抬手 300ms 后
+      // 若整条链一格都没动、且不在顶部/底部边界，就判定为卡住 → 打 `scrollStuck`
+      //（带 lockState）并顺手解一次滚动锁。全程 passive 只读，不影响正常滚动；
+      // 只在判定成立时打日志，3s 节流。
+      var probe = { startY: 0, targets: null, dragged: false, lastAt: 0, hit: '' };
+
+      // 手指底下到底是哪个元素：卡住时若页面没被锁，多半是某个透明浮层吃掉了触摸，
+      // 这一项就是抓它的线索（名字 + position + z-index）
+      function describeAt(x, y) {
+        try {
+          var el = document.elementFromPoint(x, y);
+          if (!el) return 'none';
+          var cs = getComputedStyle(el);
+          return sig(el) + '(pos=' + cs.position + ',z=' + (cs.zIndex || 'auto') + ')';
+        } catch (e) { return '?'; }
+      }
+
+      function scrollTargets(from) {
+        var out = [];
+        var node = from;
+        while (node && node.nodeType === 1) {
+          try {
+            if (node.scrollHeight - node.clientHeight > 4) {
+              out.push({ el: node, top: node.scrollTop });
+            }
+          } catch (e) {}
+          if (node === document.documentElement) break;
+          node = node.parentElement;
+        }
+        try {
+          var se = document.scrollingElement;
+          if (se && se.scrollHeight - se.clientHeight > 4) {
+            out.push({ el: se, top: se.scrollTop });
+          }
+        } catch (e) {}
+        return out;
+      }
+
+      document.addEventListener('touchstart', function (ev) {
+        try {
+          var t = ev.touches && ev.touches[0];
+          if (!t || ev.touches.length > 1) { probe.targets = null; return; }
+          probe.startY = t.clientY;
+          probe.dragged = false;
+          probe.targets = scrollTargets(ev.target);
+          probe.hit = describeAt(t.clientX, t.clientY);
+        } catch (e) { probe.targets = null; }
+      }, { passive: true, capture: true });
+
+      document.addEventListener('touchmove', function (ev) {
+        try {
+          var t = ev.touches && ev.touches[0];
+          if (!t) return;
+          if (Math.abs(t.clientY - probe.startY) > 20) probe.dragged = true;
+        } catch (e) {}
+      }, { passive: true, capture: true });
+
+      document.addEventListener('touchend', function (ev) {
+        try {
+          var targets = probe.targets, dragged = probe.dragged, hit = probe.hit, startY = probe.startY;
+          probe.targets = null;
+          if (!targets || !targets.length || !dragged) return;
+          var t = ev.changedTouches && ev.changedTouches[0];
+          var dy = t ? (startY - t.clientY) : 0;   // >0 = 往上推（内容下滚）
+          setTimeout(function () {
+            var moved = false, names = [];
+            for (var i = 0; i < targets.length; i++) {
+              var it = targets[i];
+              try {
+                if (!it.el.isConnected) continue;
+                var d = Math.abs(it.el.scrollTop - it.top);
+                names.push(sig(it.el) + '@' + Math.round(it.el.scrollTop) + (d > 1 ? '^' : '='));
+                if (d > 1.5) moved = true;
+              } catch (e) {}
+            }
+            if (moved) return;
+            // 顶部/底部边界：本来就滚不动，不算卡住
+            try {
+              var se = document.scrollingElement || document.documentElement;
+              var max = se.scrollHeight - se.clientHeight;
+              if (dy > 0 && max - se.scrollTop < 2) return;
+              if (dy < 0 && se.scrollTop < 2) return;
+            } catch (e) {}
+            var now = Date.now();
+            if (now - probe.lastAt < 3000) return;
+            probe.lastAt = now;
+            sayRaw('scrollStuck', 'dy=' + Math.round(dy) + ' hit=' + hit +
+                   ' chain=' + names.join(',') + ' → [' + lockState() + ']');
+            // 只在确实处于「滚动锁」状态时才动手解：
+            // 虚拟滚动（transform 位移、scrollTop 不变）与浮层吃触摸也会被这条探针
+            // 判成 stuck，那种情况绝不能改样式，只留日志由人判断（hit= 就是浮层线索）
+            if (isScrollLocked()) unlockScroll('scrollStuck', 0, true);
+          }, 300);
+        } catch (e) {}
+      }, { passive: true, capture: true });
+
+      // ---- 滚动锁状态探针：锁是在什么时候被加上的 ----
+      // 每秒比对一次「页面当前是否处于滚动锁状态」，只在翻转时打一条日志。
+      // 用户报「滑不动」时，日志里有没有 scrollLocked、时间是几点，一眼就能判读：
+      // 有 → 站点弹窗残留的锁；没有 → 问题不在锁上（再去查别的手势拦截）。
+      var lockWatch = { locked: null };
+      function isScrollLocked() {
+        try {
+          var html = document.documentElement, body = document.body;
+          var hs = getComputedStyle(html);
+          if (hs.overflowY === 'hidden' || hs.overflow === 'hidden') return true;
+          if (body) {
+            var bs = getComputedStyle(body);
+            if (bs.overflowY === 'hidden' || bs.overflow === 'hidden') return true;
+            if (bs.position === 'fixed' && (parseFloat(bs.top || '0') || 0) < 0) return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+      setInterval(function () {
+        var now = isScrollLocked();
+        if (lockWatch.locked === null) { lockWatch.locked = now; return; }
+        if (now === lockWatch.locked) return;
+        lockWatch.locked = now;
+        sayRaw(now ? 'scrollLocked' : 'scrollUnlocked', '[' + lockState() + ']');
+      }, 1000);
 
       injectCSS();
       sweepAll();
