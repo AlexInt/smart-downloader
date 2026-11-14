@@ -12,6 +12,11 @@ final class LocalMediaServer {
     private let stateQueue = DispatchQueue(label: "LocalMediaServer.state")
     private var listener: NWListener?
     private var port: UInt16 = 0
+    /// 首选端口序列：App 生命周期内端口尽量稳定——重启监听后 URL 不变，
+    /// 预热池资产继续有效、尚未 failed 的 item 可自行重连（省掉整条重建链）。
+    /// 全部被占用（回环端口系统共享，概率低）时回退系统分配 port 0，
+    /// 此时 URL 变化，由 portSnapshot 端口校验驱动 URL 重建。
+    private let preferredPorts: [UInt16] = [18731, 18732, 18733]
     /// 现役端口的跨队列快照（主线程可读）：只给「已构建 URL 是否仍指向现役服务」的校验用
     /// （预热池命中前比对端口）。写入在 stateQueue、读在主线程——短暂不一致可接受且方向安全：
     /// 不一致只会让调用方落到 MISS 重新解析 URL；反过来用旧值才会 HIT 到失效端口。
@@ -43,8 +48,9 @@ final class LocalMediaServer {
     }
 
     /// 强制重建监听（回前台恢复用）：不信任 port / state —— 系统静默回收 socket 后
-    /// NWListener.state 可能仍报 ready，但连接已经连不上。cancel 旧 listener 重新 bind，
-    /// 端口可能变化，调用方必须用返回的端口重建播放 URL（预热池资产同时作废）。
+    /// NWListener.state 可能仍报 ready，但连接已经连不上。cancel 旧 listener 后按首选端口
+    /// 重新 bind（端口稳定时 URL 不变：预热池保留、未 failed 的 item 可自行重连）。
+    /// 端口真的变化（被占用回退）时调用方必须用新端口重建播放 URL。
     func restart(completion: @escaping (UInt16) -> Void) {
         stateQueue.async {
             print("PLAYER_DBG [Server] restart fromPort=\(self.port) state=\(String(describing: self.listener?.state))")
@@ -56,7 +62,11 @@ final class LocalMediaServer {
             self.portSnapshot = 0
             self.started = false
             old?.cancel()
-            self.beginListening()
+            // 让出一拍再 bind：cancel 到内核真正释放监听端口之间有窗口，立刻 bind 同端口
+            // 可能 EADDRINUSE 跌到备选端口，白白丢掉「端口稳定」的收益（50ms 对恢复链路无感）
+            self.stateQueue.asyncAfter(deadline: .now() + 0.05) {
+                self.beginListening()
+            }
         }
     }
 
@@ -67,14 +77,17 @@ final class LocalMediaServer {
         return false
     }
 
-    /// 建监听并启动（只在 stateQueue 上调用）
-    private func beginListening() {
+    /// 建监听并启动（只在 stateQueue 上调用）。
+    /// preferredIndex 逐级尝试首选端口；越界 = 系统分配（port 0）兜底。
+    private func beginListening(preferredIndex: Int = 0) {
         started = true
+        let desired: UInt16 = preferredIndex < preferredPorts.count ? preferredPorts[preferredIndex] : 0
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
             // 仅绑定回环地址，避免监听局域网
-            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1",
+                                                                  port: NWEndpoint.Port(rawValue: desired) ?? 0)
             let listener = try NWListener(using: parameters)
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
@@ -99,11 +112,24 @@ final class LocalMediaServer {
                     switch state {
                     case .ready:
                         let value = listener.port?.rawValue ?? 0
-                        print("PLAYER_DBG [Server] listener ready port=\(value)")
+                        let note = desired != 0 && value == desired ? "（固定端口）" : "（系统分配）"
+                        print("PLAYER_DBG [Server] listener ready port=\(value)\(note)")
                         self.finishStart(port: value)
                     case .failed(let error):
-                        print("PLAYER_DBG [Server] listener failed error=\(error)")
-                        self.finishStart(port: 0)
+                        print("PLAYER_DBG [Server] listener failed port=\(desired) error=\(error)")
+                        guard desired != 0 else {
+                            self.finishStart(port: 0)
+                            return
+                        }
+                        // 端口被占用（回环端口全系统共享）：换下一个候选，耗尽后回退系统分配。
+                        // 摘掉引用让旧 listener 的 .cancelled 回调被引用校验忽略
+                        self.listener = nil
+                        self.started = false
+                        listener.cancel()
+                        let nextIndex = preferredIndex + 1
+                        let fallbackNote = nextIndex < self.preferredPorts.count ? "" : "（候选耗尽，回退系统分配）"
+                        print("PLAYER_DBG [Server] portUnavailable port=\(desired) → tryIndex=\(nextIndex)\(fallbackNote)")
+                        self.beginListening(preferredIndex: nextIndex)
                     case .cancelled:
                         print("PLAYER_DBG [Server] listener cancelled")
                         self.finishStart(port: 0)
@@ -173,6 +199,9 @@ final class HTTPConnectionHandler {
     private let root: URL
     private var buffer = Data()
     private var fileHandle: FileHandle?
+    /// finish 防重入：send 失败路径与 connection state .failed/.cancelled 路径都会触发，
+    /// 双路进入时第二次 cancel 就是日志里「is already cancelled, ignoring cancel」的来源
+    private var isFinished = false
     var onFinished: (() -> Void)?
 
     init(connection: NWConnection, root: URL) {
@@ -300,6 +329,8 @@ final class HTTPConnectionHandler {
     }
 
     private func finish() {
+        guard !isFinished else { return }
+        isFinished = true
         try? fileHandle?.close()
         fileHandle = nil
         connection.cancel()

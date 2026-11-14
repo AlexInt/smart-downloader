@@ -265,15 +265,23 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     /// 本地服务重启 + item 重建（前后台恢复 / item 网络失败自动重试共用）。
-    /// restart 会在 stateQueue 上回调端口（可能变化），回主线程再 load（load 只碰主线程状态）。
+    /// restart 会在 stateQueue 上回调端口，回主线程再 load（load 只碰主线程状态）。
+    /// 端口稳定（固定端口生效）时保留预热池——资产 URL 仍指向同一服务，重建可直接
+    /// 走秒开 HIT；只有端口真的变了（首选端口被占用回退到系统分配）才作废旧 URL。
     private func rebuildCurrentItem(episode: PlayableEpisode, autoplay: Bool, reason: String) {
         let position = player.currentTime().seconds
-        playerService.invalidatePreloaded()
-        print("PLAYER_DBG [Lifecycle] rebuild begin reason=\(reason) sort=\(episode.sort) at=\(String(format: "%.1f", position.isFinite ? position : 0))s autoplay=\(autoplay)")
+        let oldPort = LocalMediaServer.shared.portSnapshot
+        print("PLAYER_DBG [Lifecycle] rebuild begin reason=\(reason) sort=\(episode.sort) at=\(String(format: "%.1f", position.isFinite ? position : 0))s autoplay=\(autoplay) oldPort=\(oldPort)")
         LocalMediaServer.shared.restart { [weak self] port in
             DispatchQueue.main.async {
                 guard let self else { return }
                 print("PLAYER_DBG [Lifecycle] rebuild serverPort=\(port)")
+                if port != oldPort {
+                    self.playerService.invalidatePreloaded()
+                    print("PLAYER_DBG [Lifecycle] portChanged old=\(oldPort) new=\(port) → invalidatePool")
+                } else {
+                    print("PLAYER_DBG [Lifecycle] portStable port=\(port) → keepPreloaded")
+                }
                 // 进度跟踪器会按库里已 flush 的位置续播（进后台时与暂停时都落过盘）
                 self.load(episode: episode, autoplay: autoplay)
             }
