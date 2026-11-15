@@ -128,6 +128,10 @@ struct DramaDetailView: View {
     @State private var dotBreath = false
     /// 本次刷新的认领凭证：VM 回调与 10s 兜底谁先到谁收尾，另一条自动作废
     @State private var refreshToken: UUID?
+    /// 刷新期间回弹位移的诊断节流（真机排障用，见 `logRefreshScrollDuringRefresh`）
+    @State private var lastRefreshScrollLog = Date.distantPast
+    @State private var refreshScrollLogs = 0
+    @State private var refreshScrollSettled = false
     #if DEBUG
     /// 样张定帧时锁住跟手逻辑：否则首帧几何回调会把 pullDistance 打回 0
     @State private var previewPinned = false
@@ -177,6 +181,13 @@ struct DramaDetailView: View {
                     .onScrollGeometryChange(for: CGFloat.self) { g in
                         max(0, -(g.contentOffset.y + g.contentInsets.top))
                     } action: { _, pull in
+                        // 刷新中：回弹位移只做诊断（不驱动视觉）。
+                        // scrollDisabled 到底会不会中断系统的回弹动画没有实证，
+                        // 这条日志就是为真机判断「内容会不会被 holdDown 叠加成双倍位移」。
+                        if refreshPhase == .refreshing {
+                            logRefreshScrollDuringRefresh(pull)
+                            return
+                        }
                         // 刷新/完成态由状态机自己驱动，手指再怎么动都不跟手
                         guard refreshPhase == .idle || refreshPhase == .pulling else { return }
                         #if DEBUG
@@ -185,6 +196,8 @@ struct DramaDetailView: View {
                         // 峰值必须单独记：松手那一刻回弹会先把这个回调打成小值，
                         // 若只看当下 pullDistance，相位回调往往晚到一步就判不出"拉到过"。
                         // 回到 0 才复位——用户拉过阈值又自己拉回去，等于放弃，不该刷。
+                        let wasPulling = refreshPhase == .pulling
+                        let wasReady = peakPull >= refreshThreshold
                         if pull == 0 {
                             peakPull = 0
                         } else {
@@ -192,14 +205,29 @@ struct DramaDetailView: View {
                         }
                         pullDistance = pull
                         refreshPhase = pull > 0 ? .pulling : .idle
+                        // 诊断（AGENTS「开发即埋日志」）：只在相位/阈值翻转时打一条，
+                        // 跟手阶段每帧都会回调，逐帧打印会把真机日志刷爆
+                        if pull > 0 {
+                            if !wasPulling {
+                                print("PLAYER_DBG [Entry] pull begin pull=\(Int(pull)) peak=\(Int(peakPull)) threshold=\(Int(refreshThreshold)) safeTop=\(Int(topSafeInset))")
+                            }
+                            if !wasReady, peakPull >= refreshThreshold {
+                                print("PLAYER_DBG [Entry] pull ready peak=\(Int(peakPull)) >= threshold=\(Int(refreshThreshold))")
+                            }
+                        } else if wasPulling {
+                            print("PLAYER_DBG [Entry] pull end peak=\(Int(peakPull)) pull=0")
+                        }
                     }
                     // 抬手判定：本程峰值到过阈值就刷（不依赖回弹后的当下值）。
                     // 回弹先走 .animating 再回 .idle，认第一个到达的即可。
                     .onScrollPhaseChange { _, phase in
-                        guard refreshPhase == .pulling,
-                              peakPull >= refreshThreshold else { return }
-                        if phase == .idle || phase == .animating || phase == .decelerating {
+                        guard refreshPhase == .pulling else { return }
+                        guard phase == .idle || phase == .animating || phase == .decelerating else { return }
+                        if peakPull >= refreshThreshold {
+                            print("PLAYER_DBG [Entry] pull release phase=\(phase) peak=\(Int(peakPull)) threshold=\(Int(refreshThreshold)) → trigger")
                             beginRefresh()
+                        } else {
+                            print("PLAYER_DBG [Entry] pull release SKIP phase=\(phase) peak=\(Int(peakPull)) < threshold=\(Int(refreshThreshold))")
                         }
                     }
                     #if DEBUG
@@ -625,8 +653,15 @@ struct DramaDetailView: View {
     /// 收尾有两个来源：VM 回调，以及 10s 兜底——刷新期间滚动是锁着的，
     /// 万一请求卡住（弱网、域名解析挂起），不能让用户连着十几秒划不动页面。
     private func beginRefresh() {
-        guard refreshPhase != .refreshing, refreshPhase != .done else { return }
+        guard refreshPhase != .refreshing, refreshPhase != .done else {
+            print("PLAYER_DBG [Entry] refresh begin SKIP phase=\(refreshPhase)")
+            return
+        }
+        print("PLAYER_DBG [Entry] refresh begin peak=\(Int(peakPull)) threshold=\(Int(refreshThreshold)) safeTop=\(Int(topSafeInset)) releaseOpen=\(Int(pullDistance))")
         peakPull = 0
+        refreshScrollLogs = 0
+        refreshScrollSettled = false
+        lastRefreshScrollLog = .distantPast
         let token = UUID()
         refreshToken = token
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
@@ -644,20 +679,69 @@ struct DramaDetailView: View {
                 dotBreath = true
             }
         }
-        vm.refresh(quiet: true) { finishRefresh(token) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finishRefresh(token) }
+        vm.refresh(quiet: true) { success in
+            finishRefresh(token, outcome: success ? .success : .failure)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finishRefresh(token, outcome: .timeout) }
+    }
+
+    /// 刷新期间的回弹位移诊断：每 0.25s 最多一条，回弹归零或打满 12 条即停。
+    /// 用途：真机上判断 `scrollDisabled` 会不会中断系统回弹——
+    /// ①`pull` 归零 → 回弹正常走完，纸带 126 全由 holdDown 撑着；
+    /// ②`pull` 停在峰值不动 → 回弹被冻住，此时内容 = pull + holdDown，
+    ///   若两者都≈126 就是双倍位移（视觉上先往下蹦一段再回来）。
+    private func logRefreshScrollDuringRefresh(_ pull: CGFloat) {
+        guard !refreshScrollSettled else { return }
+        if pull <= 2 {
+            refreshScrollSettled = true
+            print("PLAYER_DBG [Entry] refreshing scroll settled pull=\(Int(pull)) hold=\(Int(holdDown)) band=\(Int(refreshBandBottom))")
+            return
+        }
+        guard refreshScrollLogs < 12,
+              Date().timeIntervalSince(lastRefreshScrollLog) > 0.25 else { return }
+        refreshScrollLogs += 1
+        lastRefreshScrollLog = Date()
+        print("PLAYER_DBG [Entry] refreshing scroll pull=\(Int(pull)) hold=\(Int(holdDown)) band=\(Int(refreshBandBottom))")
+    }
+
+    /// 收尾来源：VM 回调（成功/失败）或 10s 超时兜底。
+    /// **失败不能演「已更新」**：VM 已弹 toast，这里直接收回指示器；
+    /// 超时同理（请求可能还挂着，但界面必须先解锁，不能再宣称更新成功）。
+    private enum RefreshOutcome: String {
+        case success, failure, timeout
     }
 
     /// 收尾一次就够：回调与兜底谁先到谁收，另一条靠 token 认领失败自然作废。
-    private func finishRefresh(_ token: UUID) {
-        guard refreshToken == token, refreshPhase == .refreshing else { return }
+    private func finishRefresh(_ token: UUID, outcome: RefreshOutcome) {
+        guard refreshToken == token, refreshPhase == .refreshing else {
+            print("PLAYER_DBG [Entry] refresh finish SKIP outcome=\(outcome.rawValue) reason=staleTokenOrPhase")
+            return
+        }
         refreshToken = nil
+        print("PLAYER_DBG [Entry] refresh finish outcome=\(outcome.rawValue) hold=\(Int(holdDown))")
+        guard outcome == .success else {
+            // 失败/超时：不显示「已更新」，让 toast 说明原因后直接回位。
+            // 超时要自己提示：10s 兜底发生时请求可能还挂着（URLSession 默认 60s 才会有结果），
+            // 光收指示器等于什么都不说，用户会以为刷过了。
+            if outcome == .timeout {
+                vm.showToast("刷新超时，请稍后重试")
+            }
+            endRefreshToIdle(after: outcome == .failure ? 0.35 : 0.5)
+            return
+        }
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
             refreshPhase = .done
             dotBreath = false
         }
         // 「已更新」停一拍再收：太快看不见，太慢像卡住
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            endRefreshToIdle(after: 0)
+        }
+    }
+
+    private func endRefreshToIdle(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            print("PLAYER_DBG [Entry] refresh idle（收回指示器）")
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.28)) {
                 refreshPhase = .idle
                 pullDistance = 0

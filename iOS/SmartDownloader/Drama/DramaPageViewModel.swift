@@ -303,8 +303,10 @@ final class DramaPageViewModel: ObservableObject {
     ///   - quiet: 静默刷新。下拉刷新必须用它——`loading` 一置真整页会退回骨架屏，
     ///     海报和页内容当场消失，指示器还悬在上头，等于自己把自己拆了。
     ///     静默模式下网络失败也不撕页面（有内容就只弹提示条）。
-    ///   - completion: 拉取结束回调（成功与失败都回），供页面收尾三态指示器。
-    func refresh(quiet: Bool = false, completion: (() -> Void)? = nil) {
+    ///   - completion: 拉取结束回调，**带成功布尔**（成功与失败都回）。下拉刷新靠它
+    ///     区分「已更新」与「失败」——曾经失败也回调、页面一律演「已更新」，
+    ///     网络断了反而告诉用户更新成功，是明确的谎报。
+    func refresh(quiet: Bool = false, completion: ((Bool) -> Void)? = nil) {
         fetchAndCache(forceHarvest: true, quiet: quiet, completion: completion)
     }
 
@@ -532,9 +534,10 @@ final class DramaPageViewModel: ObservableObject {
 
     private func fetchAndCache(forceHarvest: Bool = false,
                                quiet: Bool = false,
-                               completion: (() -> Void)? = nil) {
+                               completion: ((Bool) -> Void)? = nil) {
         if !quiet { loading = true }
         loadError = nil
+        print("PLAYER_DBG [Entry] fetch begin quiet=\(quiet) forceHarvest=\(forceHarvest) site=\(target.site) dramaID=\(target.dramaID)")
         let session = DramaSession(target: target)
         self.session = session
         session.fetchInfo { [weak self] result in
@@ -548,23 +551,32 @@ final class DramaPageViewModel: ObservableObject {
                 self.applyLibraryState(for: info)
                 self.refreshRecommendations()
                 self.harvestIfNeeded(force: forceHarvest)
+                print("PLAYER_DBG [Entry] fetch OK quiet=\(quiet) name=\(info.name) episodes=\(info.episodes.count)")
+                if !quiet { self.loading = false }
+                completion?(true)
             case .failure(let error):
                 // 有缓存时网络失败不白屏：回退缓存继续用
-                if let entry = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID),
-                   let info = DramaCache.dramaInfo(from: entry) {
-                    self.info = info
+                let hadMemoryInfo = self.info != nil
+                let cached = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID)
+                    .flatMap { DramaCache.dramaInfo(from: $0) }
+                if let cached {
+                    self.info = cached
                     self.fromCache = true
-                    self.applyLibraryState(for: info)
-                } else if quiet, self.info != nil {
-                    // 静默刷新（下拉刷新）：页面上已经有内容，不能因为一次网络抖动
-                    // 就整页换成错误态——只弹一条提示条，用户自己决定要不要再拉。
+                    self.applyLibraryState(for: cached)
+                }
+                // 静默刷新（下拉刷新）：页面上已经有内容，不能因为一次网络抖动
+                // 就整页换成错误态——只弹一条提示条，用户自己决定要不要再拉。
+                // **无条件弹**（旧版只在「无缓存且已有内存内容」时弹，有缓存时静默吞掉，
+                // 下拉刷新失败就成了什么都不发生，用户以为刷过了）。
+                if quiet, self.info != nil {
                     self.showToast("刷新失败，请稍后重试")
-                } else {
+                } else if self.info == nil {
                     self.loadError = error.localizedDescription
                 }
+                print("PLAYER_DBG [Entry] fetch FAIL quiet=\(quiet) hasCache=\(cached != nil) hadMemoryInfo=\(hadMemoryInfo) error=\(error.localizedDescription)")
+                if !quiet { self.loading = false }
+                completion?(false)
             }
-            if !quiet { self.loading = false }
-            completion?()
         }
     }
 
