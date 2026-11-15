@@ -54,9 +54,11 @@ struct OverlayRateGlyph: View {
     }
 }
 
-// MARK: 画面适配（画布 19:37：18.8 r4.6 描边方 @2.6 + 两个 4.3×3.6 角标，描边 1.5）
+// MARK: 画面适配 / 清屏（画布 19:37：18.8 r4.6 描边方 @2.6 + 两个 4.3×3.6 角标，描边 1.5）
 
 /// 「收缩画面」：描边方框 + 右上/左下两枚角标。viewport 24×24。
+/// 2026-11-15 起 **竖屏清屏按钮用的就是这一枚**（用户拍板「画面适配的 icon 就是新的
+/// 清屏 icon」）：画面适配按钮本身已移除，别按名字以为它没用了。
 struct OverlayFitGlyph: View {
     var size: CGFloat = 24
     var color: Color = .white

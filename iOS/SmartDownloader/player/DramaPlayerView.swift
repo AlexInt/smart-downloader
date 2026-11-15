@@ -9,14 +9,16 @@ import SwiftUI
 ///   放卡片自身，Button 天然优先；水平 seek 与左缘返回在 UIKit 层
 ///   （判定逻辑在 PlayerGesturePolicy）。
 /// - 清屏模式（isCleanScreen，本地记住）：「界面信息组」整体淡出，
-///   常驻控件保留。清屏入口在右下角（与画面适配按钮并列，用户拍板 2026-11-15），
-///   静音紧随其左。
+///   常驻控件保留。清屏入口在右下角（2026-11-15 用户拍板：砍掉「画面适配」，
+///   清屏占它的画布位 350 并沿用它的图标；静音紧随其左，在 318）。
 ///
 /// 2026-11-15 按画布 2:11 重做（此前形制漂移，逐项归位）：
-/// - 集数：56×26 胶囊 → 47×22 文字 @(44,71)，15px Noto Serif SC Medium
+/// - 标题：47×22 文字 @(44,71)，15px Noto Serif SC Medium —— 2026-11-15 起内容与
+///   全屏一致「剧集名 + 第n集」
 /// - 返回：带黑底 44 命中区 → 无底 22×22 @(16,70)，命中区仍是 44（不影响观感）
 /// - 新增：倍速 54×26 @(272,68)、更多 20×20 @(344,72)、播放大按钮 56×56 @(167,392)、
-///   画面适配 24×24 @(350,776)、选集胶囊 326×38 @(16,770)
+///   右下角 24×24 两枚（静音 318 / 清屏 350，清屏沿用原画面适配的图标）、
+///   选集胶囊 @(16,770) 宽度按 `episodePillWidth` 推导（现 290）
 /// - 进度条：350 宽 3pt @(20,744) → 满宽 390×2 @(0,751) + 朱砂 8×8 圆点
 /// - 右侧互动列：44 图标 + 中文标签 → 26 图标 + 数值文字（23.7万 / 1万）
 /// - 左下信息：account/剧名/简介三段 → 起始提示 11px / 剧名 19px 衬线 / 热评 11px
@@ -37,7 +39,23 @@ struct DramaPlayerView: View {
     /// 真机日志实证：短按 2x 快速松手会被同时认成长按结束和单击
     /// （LONGPRESS ended → TAP → togglePlayback → 误暂停）
     @State private var suppressTapUntil = Date.distantPast
-    /// 本次触摸是否按满 0.15s 真正起过 2x（perform 里置位）：只有它才需要在
+
+    // MARK: - 布局常量（右下角两枚按钮与选集胶囊的宽度联动）
+
+    /// 静音钮画布位（2026-11-15：从 286 右移到 318，向清屏靠近、间距 32）
+    static let muteSlotX: CGFloat = 318
+    /// 清屏钮画布位（沿用原「画面适配」的 350，右缘 374 不变）
+    static let cleanSlotX: CGFloat = 350
+    /// 选集胶囊宽度：一路延伸到静音钮左缘前 12（16…306 → 290）。
+    /// 用户要求「选集自动变长」——不再写死数字，按钮位一改这里自动跟着变
+    static var episodePillWidth: CGFloat { muteSlotX - 12 - 16 }
+
+    /// 顶部标题：与全屏顶栏同一条文案（剧集名 + 第n集，两个空格分隔）
+    private var topTitle: String {
+        let name = playback.seriesName.isEmpty ? "" : "\(playback.seriesName)  "
+        return "\(name)第\(episode.episodeIndex)集"
+    }
+
     /// 抬手时吞松手误触；未起 2x 的触摸（快速滑动/普通点按）抬手不动作
     @State private var longPressOwnedTouch = false
     /// 相邻卡片（isActive=false）一律回落到静态稿面值：播放进度是当前集的共享状态，
@@ -254,12 +272,14 @@ struct DramaPlayerView: View {
                 .frame(width: 22, height: 22)
                 .zIndex(10)
 
-            // 集数（画布 2:93 47×22 @(44,71)，15px Noto Serif SC Medium，「第 3 集」）
-            Text("第 \(episode.episodeIndex) 集")
+            // 标题（2026-11-15 用户要求与全屏一致）：剧集名 + 第n集。
+            // 格式与 `PlayerFullscreenControlsView.updateTitle` 逐字相同（两个空格分隔、第n集不空格），
+            // 两处不要各写一套文案。宽度到 264（倍速钮左缘前 8），长剧名截断
+            Text(topTitle)
                 .font(DWFont.serif(15, .medium))
                 .foregroundStyle(DWColor.overlayInk)
                 .lineLimit(1)
-                .designFrame(44, 71, 47, 22, alignment: .leading)
+                .designFrame(44, 71, 220, 22, alignment: .leading)
                 .allowsHitTesting(false)
 
             // 倍速（画布 2:94 54×26 @(272,68)：16 表盘 + 5 间距 + 12px「倍速」）
@@ -280,24 +300,24 @@ struct DramaPlayerView: View {
                     .designFrame(167, 392, 56, 56)
             }
 
-            // ── 右下角：静音 / 清屏（2026-11-15 用户拍板：去掉「画面适配」，清屏占它原来的位置）──
-            // 清屏（画布未给，按用户要求补在右下角）：24×24，钉在画布最右的 350 位
+            // ── 右下角：静音 / 清屏（2026-11-15 用户拍板：去掉「画面适配」，清屏占它原来的
+            //    画布位、并沿用它的图标；静音向右靠近清屏，间距与原来三枚时的节奏一致）──
+            // 清屏（画布 19:37 位 350，图标 = 原「画面适配」那个描边方 + 两枚角标）
             cleanScreenButton
-                .designFrame(350, 776, 24, 24)
+                .designFrame(Self.cleanSlotX, 776, 24, 24)
 
-            // 静音（画布未给，按用户要求放清屏左侧）：24×24
+            // 静音（放清屏左侧，间距 32）
             muteButton
-                .designFrame(286, 776, 24, 24)
+                .designFrame(Self.muteSlotX, 776, 24, 24)
 
             // 选集胶囊（画布 2:130 326×38 r8 @(16,770)）
             // 清屏态画布 2:74 保留它（2:161）——清屏仍要知道「在看全多少集」
             //
-            // 宽度 326 → 258（2026-11-15）：右下角原本是「画面适配 / 清屏 / 静音」三个
-            // 24 宽按钮（占 286…374），326 宽的胶囊右缘到 342 会把静音与清屏整块盖住，
-            // 既看不见也点不到（模拟器样张实证：底部只剩胶囊 + 最右侧一个方框图标）。
-            // 用户后续砍掉画面适配、只剩静音 + 清屏（286…374 里的两枚），258 仍留足内边距。
+            // 宽度不再写死（2026-11-15 用户要求「选集自动变长」）：右下角砍掉一枚按钮、
+            // 静音右移到 318 后，胶囊一路延伸到静音钮左缘前 12 → 290（原 258）。
+            // 按钮位改了这里会自动跟着变，别再填魔法数字。
             episodePill
-                .designFrame(16, 770, 258, 38)
+                .designFrame(16, 770, Self.episodePillWidth, 38)
 
             // 长按倍速状态提示（瞬态反馈，清屏时保留）
             fastForwardCapsule
@@ -519,8 +539,9 @@ struct DramaPlayerView: View {
         .accessibilityLabel(playback.isPlaying ? "暂停" : "播放")
     }
 
-    /// 清屏（用户要求放右下角）：描边矩形 + 激活斜线的旧视觉语义，激活时斜线变金。
-    /// 画面适配按钮已于 2026-11-15 按用户要求移除、清屏占它原来的画布位（350）——
+    /// 清屏（用户要求放右下角）：图标沿用原「画面适配」那枚（`OverlayFitGlyph`，描边方 +
+    /// 两枚角标）——2026-11-15 用户拍板「画面适配的 icon 就是新的清屏 icon」。
+    /// 清屏中图标转金（与点赞/收藏同一「点亮即金」语义），不再画 45° 斜线。
     /// `videoFitMode` 偏好与 `cycleVideoGravity()` 仍留在 VM（gravity 仍按片源方向自动定），
     /// 只是不再有手动入口
     private var cleanScreenButton: some View {
@@ -528,20 +549,9 @@ struct DramaPlayerView: View {
             guard isActive else { return }
             playback.isCleanScreen.toggle()
         } label: {
-            ZStack {
-                RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(playback.isCleanScreen ? DWColor.textHint : .white,
-                                  lineWidth: 1.8)
-                    .frame(width: 16, height: 12)
-                if playback.isCleanScreen {
-                    Capsule()
-                        .fill(DWColor.gold)
-                        .frame(width: 21, height: 1.8)
-                        .rotationEffect(.degrees(45))
-                }
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+            OverlayFitGlyph(size: 24, color: playback.isCleanScreen ? DWColor.gold : .white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(playback.isCleanScreen ? "退出清屏" : "清屏")
@@ -579,7 +589,9 @@ struct DramaPlayerView: View {
                 OverlayChevronGlyph(size: 14, color: DWColor.overlayInk, pointsUp: true)
             }
             .padding(.horizontal, 16)
-            .frame(width: 258, height: 38)
+            // 宽度与调用方的 designFrame 同源（`episodePillWidth`）：只有一处写死就会
+            // 出现「外层给 290、内层还是 258，胶囊缩在框里」的错位（2026-11-15 实测踩到）
+            .frame(width: Self.episodePillWidth, height: 38)
             .background(DWColor.overlayChip,
                         in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
