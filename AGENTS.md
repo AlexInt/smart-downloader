@@ -199,6 +199,15 @@ View → ViewModel → Service → 系统能力 / Model
    - 环**不再因为选中而不画**（旧写法 `if !isSelected { progressRing(phase) }` 直接丢掉进度），改由 `progressRing(_:onCinnabar:)` 按底色换色：选中格（朱砂底）轨道 `paper@0.45`、进度 `paper`、完成环 `paper@0.9`、失败环 `paperInk`（朱砂底上朱砂不可见，换最重的墨保住「失败 = 最重一条线」的语义）；非选中格维持原三档（`paperTrack@0.55` / `paperTrackFill` / `paperInkSub`）。
    - 验收不能靠手指（模拟器点不了）：`-dramaPreview -dramaRingPreview active` 看「选中 + 42/100 白弧」、`-dramaRingPreview done` 看「选中 + 已下载白闭环」。
 
+24. **同一部剧的同一集只允许有一条记录**（2026-11-15 用户实报「下载的里面有两个同名文件，但只有一个可以播」）：
+   - 成因有三条，三条都在这次堵掉了：
+     ① **失败后重试**会新建一条同名任务（旧的 `.failed` 已结束，`queuedEpisodeSorts` 不再拦它）→ `manager.tasks` 里并列两条「第01集」，点旧的那条 `playIfDone` 因 `state != .done` 直接不播；
+     ② **`refreshLibrary` 只清 `isFromLibrary`**，会话里正在下/刚下完的任务还在，再扫一遍磁盘又补一条同名同目录记录；
+     ③ **重下同一集**会在剧目录里并出「第01集」+「第01集(1)」两个目录（`uniqueFolderName` 只给目录加后缀），列表两条、播放却只能落到其中一份。
+   - 规则：`DownloadManager.pruneSupersededAttempts(series:sort:keeper:)` 按**集号**（不是标题）收口，登记新尝试与落盘成功两处调用；`keeper` 为 done 时摘掉该集其余已结束记录，`keeper` 仍在下载时只摘已结束**且非 done** 的旧尝试（重下失败也不能丢掉能播的那份）。只摘列表条目、不动磁盘。
+   - 目录层面：`DownloadEngine` 保存时对**选集**先删掉同集号的旧目录再落新目录（切片此时已全在 tempDir，替换窗口只有 move 那几毫秒），不再生成 `(1)`；`loadLibrary` 对同集号目录去重，`downloadEpisodeFolders` 与它共用 `DownloadManager.preferredEpisodeFolder`（**无后缀的「第NN集」优先**，否则取最新创建的一份）——列表与播放必须落到同一份，否则就是「点 A 播 B」。散装条目不参与去重（同名不同目录是两条不同视频）。
+   - 验收：`iOS/smoke` 式独立冒烟（`swiftc` 编 `Downloader.swift` + `DownloadManager` 依赖，`SMARTDOWNLOADER_DIR` 指到 fixture）已覆盖「同集双目录只列一条 / 播放目录与列表一致 / 重试摘旧 / 落盘后只留一条 / 散装不去重」；模拟器看列表用 `-downloadsSeries <剧名>` 直接推入剧详情（点不了卡片），磁盘造 `第01集` + `第01集(1)` 时详情页只应有一行。
+
 ### 并发与线程（GCD 约定，2026-11-12 全量迁移）
 
 **全代码库已移除 Swift concurrency（async/await / Task / Actor 隔离 / Continuation / AsyncStream），统一 GCD。** 工程锁定 Swift 5 语言模式 + minimal 并发检查（`SWIFT_VERSION = 5.0`），勿再升 Swift 6 / 开严格检查——迁移就是为了消除编译期隔离/Sendable 摩擦。例外仅限「Apple 无同步/非废弃 API 的边界」，保留两处 async 岛（用户拍板）：`WebKitFetcher` 的 `startDownload(using:)`（无 completion 变体）、`PlaybackPlayerService` 的 `asset.load(.isPlayable)`（`loadValuesAsynchronously` 已 deprecated）。岛内只做该 async 调用，完成后回主线程碰状态，勿扩散。
@@ -281,6 +290,7 @@ cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader 
 | `-dramaRingPreview active\|done` | 配合 `-dramaPreview`：选集格「选中 + 下载中(42/100)」/「选中 + 已下载」叠加定帧，验收朱砂底上的纸白进度环 |
 | `-refreshAuto` | 启动 2s 后自动跑一遍刷新，验证「刷新 → 已更新 → 收起」会不会自己走回来 |
 | `-archiveExpandedPreview` | 剧集页档案区展开定帧（默认折叠；模拟器点不了，用它看展开态高度预算） |
+| `-downloadsSeries <剧名>` | 下载页启动即推入该剧详情（模拟器点不了海报卡；验证同集去重后「一集只有一行」） |
 | `-playerLocked` | 配合 `-playerPreview -playerFullscreen -playerPinControls`：进全屏后直接置锁定态，只剩解锁钮（看锁定视觉与控件收起） |
 | `-playerPaused` | 配合 `-playerPreview [-playerFullscreen]`：进页后立刻暂停，用于截「播放三角」那一态（默认片源在播 = 暂停双竖条） |
 | `-playerFreezePreview` | 配合 `-playerPreview -playerFullscreen`：进页 10s 后手动挂一次切集冻帧（6s 看门狗自动放掉）。模拟器切不了集，用它验证冻帧层在全屏容器里铺得对不对：间隔 2s 截两张、`diffimg` 比画面区应 0.000%（挂冻帧）/ 5%+（正常播放） |

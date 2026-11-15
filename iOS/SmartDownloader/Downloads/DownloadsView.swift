@@ -95,6 +95,8 @@ struct DownloadsView: View {
     @State private var pendingCancel: DownloadTask?
     /// 已下载 → 剧集二级页
     @State private var pushedSeries: SeriesRoute?
+    /// `-downloadsSeries` 只消费一次
+    @State private var debugSeriesPushed = false
 
     init(manager: DownloadManager, vm: DownloadsViewModel, progressVM: PlaybackProgressViewModel) {
         self.manager = manager
@@ -160,8 +162,29 @@ struct DownloadsView: View {
         .sheet(item: $vm.playerRequest, onDismiss: { progressVM.refresh(manager.tasks) }) { item in
             PlayerView(item: item)
         }
-        .onAppear { progressVM.refresh(manager.tasks) }
+        .onAppear {
+            progressVM.refresh(manager.tasks)
+            pushDebugSeriesIfNeeded()
+        }
         .onChange(of: manager.tasks.count) { _, _ in progressVM.refresh(manager.tasks) }
+    }
+
+    /// Debug 专用启动参数 `-downloadsSeries <剧名>`：模拟器点不了海报卡，
+    /// 直接推入该剧详情页（验证同集去重后「一集只有一条记录」）。Release 不编译。
+    private func pushDebugSeriesIfNeeded() {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-downloadsSeries"), arguments.count > index + 1,
+              !debugSeriesPushed else { return }
+        debugSeriesPushed = true
+        let name = arguments[index + 1]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            let episodes = manager.tasks.filter { $0.seriesName == name }
+            print("DOWNLOAD_DBG [CHECK] debug push series=\(name) exists=\(!episodes.isEmpty) "
+                  + "episodes=\(episodes.map { "\($0.title):\($0.state)" })")
+            pushedSeries = SeriesRoute(name: name)
+        }
+        #endif
     }
 
     // MARK: - 分段头（画布 2:29 分段与细线）
@@ -745,9 +768,14 @@ struct SeriesDetailView: View {
 
     /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
     /// 全剧集数同步与滑动调度交给 PlaybackQueueService，这里只说明剧名与起始集号。
+    /// 未完成的条目：失败点一下重试（直链仍在就重跑），其余状态只打日志。
     private func playIfDone(_ task: DownloadTask) {
         guard task.state == .done, let url = task.outputURL else {
-            print("PLAYER_DBG [Entry] playIfDone SKIP state=\(task.state) output=\(task.outputURL == nil ? "nil" : "yes")")
+            print("PLAYER_DBG [Entry] playIfDone SKIP state=\(task.state) output=\(task.outputURL == nil ? "nil" : "yes") title=\(task.title)")
+            if case .failed = task.state, !task.url.isEmpty {
+                print("PLAYER_DBG [Entry] playIfDone → retry failed title=\(task.title)")
+                manager.run(task)
+            }
             return
         }
         guard task.isHLSFolder else {

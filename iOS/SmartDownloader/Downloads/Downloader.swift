@@ -45,6 +45,8 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var foundURLs: [String] = []
     /// 转发每个任务的状态变化，驱动下载页分区实时重算（否则完成任务要重启才换区）
     private var stateCancellables: Set<AnyCancellable> = []
+    /// 同集去重的合批标记（一集落盘会连发多次 objectWillChange，只跑一次收尾）
+    private var pruneScheduled = false
 
     init() { loadLibrary() }
 
@@ -84,9 +86,49 @@ final class DownloadManager: ObservableObject {
         task.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.objectWillChange.send()
+                guard let self else { return }
+                self.objectWillChange.send()
+                // 落盘成功 → 同一集的旧记录（失败尝试 / 重下前扫进来的历史条目）摘掉。
+                // 放在下一个 runloop：在 objectWillChange 里改 tasks 会嵌套发布。
+                guard case .done = task.state, let series = task.seriesName,
+                      let sort = Self.episodeSort(fromFolderName: task.title) else { return }
+                guard !self.pruneScheduled else { return }
+                self.pruneScheduled = true
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.pruneScheduled = false
+                    self.pruneSupersededAttempts(series: series, sort: sort, keeper: task)
+                }
             }
             .store(in: &stateCancellables)
+    }
+
+    /// 同一剧同一集只保留一条可见记录（用户实报「两个同名文件，但只有一个可以播」）。
+    ///
+    /// 成因：一集失败后用户重试，`SeriesDownloadCoordinator` 会**新建**一条同名任务
+    /// （旧任务是 `.failed` 已结束，`queuedEpisodeSorts` 不再拦它），于是 manager.tasks 里
+    /// 并列两条「第01集」：点旧的那条 `playIfDone` 因 state != done 直接不播。
+    /// 另外 `refreshLibrary` 只清 `isFromLibrary`，会话里刚下完的任务还在，再扫一遍磁盘
+    /// 又会补一条同名同目录的记录。
+    ///
+    /// 规则：`keeper` 为 done 时摘掉该集所有已结束的其他记录；`keeper` 仍在下载时只摘掉
+    /// 已结束且**非 done** 的旧尝试（完成的那份必须留着，重下失败也不该丢掉能播的）。
+    /// 只摘列表条目、不动磁盘文件 —— 同集旧目录由引擎在保存时替换（见 perform 的保存段）。
+    func pruneSupersededAttempts(series: String, sort: Int, keeper: DownloadTask) {
+        let isDone: (DownloadTask) -> Bool = { if case .done = $0.state { return true }; return false }
+        let keeperIsDone = isDone(keeper)
+        let doomed = tasks.filter { candidate in
+            candidate.id != keeper.id
+                && candidate.seriesName == series
+                && candidate.state.isFinished
+                && Self.episodeSort(fromFolderName: candidate.title) == sort
+                && (keeperIsDone || !isDone(candidate))
+        }
+        guard !doomed.isEmpty else { return }
+        let ids = Set(doomed.map(\.id))
+        tasks.removeAll { ids.contains($0.id) }
+        print("LIBRARY: 同集去重 series=\(series) sort=\(sort) "
+              + "keep=\(keeper.title)(\(keeper.state)) drop=\(doomed.map(\.title))")
     }
 
     /// 启动已登记任务；onFinish 在任务结束（成功/失败）后于主线程回调（多集调度依赖它接力）
@@ -134,6 +176,10 @@ final class DownloadManager: ObservableObject {
         let task = DownloadTask(url: "", title: title, seriesName: seriesName)
         tasks.insert(task, at: 0)
         observeTaskState(task)
+        // 重试同一集：上一条失败尝试与新任务同名并列在剧详情页，点旧的那条不播
+        if let sort = Self.episodeSort(fromFolderName: title) {
+            pruneSupersededAttempts(series: seriesName, sort: sort, keeper: task)
+        }
         return task
     }
 
@@ -211,14 +257,38 @@ final class DownloadManager: ObservableObject {
         let fm = FileManager.default
         let seriesDir = DownloadEngine.seriesDirectory(for: rawSeriesName)
         guard let subs = try? fm.contentsOfDirectory(at: seriesDir, includingPropertiesForKeys: nil) else { return [:] }
-        var map: [Int: String] = [:]
+        // 同一集号可能有多个目录（历史重下留下的后缀目录）：按与本剧列表扫描同一条规则取一份，
+        // 否则「列表显示的那条」与「播放实际打开的那份」会各自随机命中一个（点 A 播 B）
+        var bySort: [Int: [URL]] = [:]
         for sub in subs {
             guard fm.fileExists(atPath: sub.appendingPathComponent("playlist.m3u8").path) else { continue }
-            if let sort = Self.episodeSort(fromFolderName: sub.lastPathComponent) {
-                map[sort] = sub.lastPathComponent
+            guard let sort = Self.episodeSort(fromFolderName: sub.lastPathComponent) else { continue }
+            bySort[sort, default: []].append(sub)
+        }
+        var map: [Int: String] = [:]
+        for (sort, urls) in bySort {
+            guard let pick = Self.preferredEpisodeFolder(urls, sort: sort) else { continue }
+            map[sort] = pick.lastPathComponent
+            if urls.count > 1 {
+                print("LIBRARY: 同集多目录 series=\(rawSeriesName) sort=\(sort) "
+                      + "pick=\(pick.lastPathComponent) all=\(urls.map(\.lastPathComponent))")
             }
         }
         return map
+    }
+
+    /// 同一集有多个目录时的优先规则：**无后缀的「第NN集」优先**，都带后缀则取最新创建的一份。
+    /// 列表扫描（loadLibrary）与播放定位（downloadedEpisodeFolders）必须共用这一条规则，
+    /// 否则同一条目在列表与播放里会落到两份不同的目录上。
+    static func preferredEpisodeFolder(_ urls: [URL], sort: Int) -> URL? {
+        guard urls.count > 1 else { return urls.first }
+        let base = String(format: "第%02d集", sort)
+        if let exact = urls.first(where: { $0.lastPathComponent == base }) { return exact }
+        func stamp(_ url: URL) -> Date {
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            return values?.creationDate ?? values?.contentModificationDate ?? .distantPast
+        }
+        return urls.max { stamp($0) < stamp($1) }
     }
 
     /// 旧版散装下载收编：把顶层「标题含剧名+第N集」的旧文件夹搬进 Downloads/<剧名>/第NN集/。
@@ -302,24 +372,57 @@ final class DownloadManager: ObservableObject {
             if let date = fileCreatedAt(playlist.deletingLastPathComponent()) { task.createdAt = date }
             return task
         }
+        /// 同一份 playlist 可能已经由本次会话的任务占位（刚下完 / 正在下）：
+        /// `refreshLibrary` 只清 `isFromLibrary`，会话任务还在，再扫一遍就会补一条同名记录
+        let livePaths = Set(tasks.map { $0.outputURL?.standardizedFileURL.path }.compactMap { $0 })
+        func alreadyRegistered(_ playlist: URL) -> Bool {
+            livePaths.contains(playlist.standardizedFileURL.path)
+        }
         for entry in entries.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
             let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             if isDirectory {
                 let playlist = entry.appendingPathComponent("playlist.m3u8")
                 if fm.fileExists(atPath: playlist.path) {
                     // 散装 HLS 条目
+                    guard !alreadyRegistered(playlist) else { continue }
                     tasks.append(makeHLSTask(title: entry.lastPathComponent, playlist: playlist, series: nil))
                     continue
                 }
                 // 剧目录：其下每个含 playlist.m3u8 的子目录算一集
                 guard let subs = try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil) else { continue }
-                for ep in subs.filter({ fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path) })
-                              .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let playlists = subs
+                    .filter { fm.fileExists(atPath: $0.appendingPathComponent("playlist.m3u8").path) }
+                    .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+                // 同一集号可能残留多个目录（历史重下留下的「第01集(1)」/「第01集」）：
+                // 每个集号只列一份，规则与 downloadedEpisodeFolders 同源，
+                // 否则列表出现两条同名、点哪条都落到同一份，看起来就是「只有一集能播」。
+                var bySort: [Int: URL] = [:]
+                var unparsed: [URL] = []
+                for sub in playlists {
+                    guard let sort = Self.episodeSort(fromFolderName: sub.lastPathComponent) else {
+                        unparsed.append(sub)
+                        continue
+                    }
+                    if let existing = bySort[sort] {
+                        let keep = Self.preferredEpisodeFolder([existing, sub], sort: sort) ?? existing
+                        let dropped = keep == existing ? sub : existing
+                        bySort[sort] = keep
+                        print("LIBRARY: 同集目录去重 series=\(entry.lastPathComponent) sort=\(sort) "
+                              + "keep=\(keep.lastPathComponent) drop=\(dropped.lastPathComponent)")
+                    } else {
+                        bySort[sort] = sub
+                    }
+                }
+                let kept = bySort.values.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) + unparsed
+                for ep in kept {
+                    let epPlaylist = ep.appendingPathComponent("playlist.m3u8")
+                    guard !alreadyRegistered(epPlaylist) else { continue }
                     tasks.append(makeHLSTask(title: ep.lastPathComponent,
-                                             playlist: ep.appendingPathComponent("playlist.m3u8"),
+                                             playlist: epPlaylist,
                                              series: entry.lastPathComponent))
                 }
             } else if ["mp4", "m4v", "mov"].contains(entry.pathExtension.lowercased()) {
+                guard !alreadyRegistered(entry) else { continue }
                 let task = DownloadTask(url: "", title: entry.deletingPathExtension().lastPathComponent)
                 task.state = .done
                 task.outputURL = entry
@@ -458,6 +561,19 @@ final class DownloadEngine {
             // 选集下载落到 Downloads/<剧名>/<集>/，散装仍是 Downloads/<标题>/
             let parentDir = task.seriesName.map { Self.seriesDirectory(for: $0) } ?? Self.downloadsDir
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            // 重下同一集 = 替换旧目录，不生成「第01集(1)」：
+            // 同集两个目录会让剧详情页并列两条同名记录，而播放只能落到其中一份
+            // （用户实报「两个同名文件，但只有一个可以播」）。切片此时已全部落在
+            // tempDir，替换窗口只有移动文件那几毫秒。
+            if task.seriesName != nil, let sort = DownloadManager.episodeSort(fromFolderName: task.title) {
+                let siblings = (try? FileManager.default.contentsOfDirectory(
+                    at: parentDir, includingPropertiesForKeys: nil)) ?? []
+                for sibling in siblings
+                where DownloadManager.episodeSort(fromFolderName: sibling.lastPathComponent) == sort {
+                    try? FileManager.default.removeItem(at: sibling)
+                    print("DL[\(task.title)]: 替换同集旧目录 \(sibling.lastPathComponent)")
+                }
+            }
             let folderName = Self.uniqueFolderName(base: task.title, in: parentDir)
             let folder = parentDir.appendingPathComponent(folderName, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
