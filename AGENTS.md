@@ -95,7 +95,7 @@ View → ViewModel → Service → 系统能力 / Model
   - **恢复默认 = 三项一起回默认**（启动 tab `.downloads`、剧集页开关 `false`、快捷站点回内置列表），会清掉用户自建站点，所以先弹 `confirmationDialog` 确认。
   - 站点行有**两个平级 Button**（左侧整行进编辑器、右侧圆圈改默认），不能嵌套——外层 Button 会吞掉内层点击。
   - 隐藏系统导航栏会连带关掉右滑返回，用 `swipeBackEnabled()`（`Infra/SwipeBackSupport.swift`，只在导航栈深度 > 1 时放行，防止栈根起手卡死）补回。
-- `Profile/`：我的域（纸本轨视觉）。`ProfileViewModel`（VM：四分类数据装配——历史/收藏/追更/点赞，口径全在 Service 层的关系查询上）、`ProfileView`（View + 组装：`NavigationStack(path:)` 值驱动路由，`ProfileRoute` 定义二级页）。**顶栏区（身份行 + 分类 tab + 筛选胶囊）用 `safeAreaInset(edge: .top)` 钉住**，封面墙上滑时不动（用户要求：分类与筛选不应随上滑消失）；**底部必须 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)`**：自定义 tab bar 是 App 层 `safeAreaInset` 注入的，**栏本身 62pt 不传进页面**（详见「纸本单轨视觉」第 3 条承重规则），不补的话封面墙最后一行被 bar 盖住（实测 contentInsets.bottom 只有 34 家区、内容区画到 840 而 bar 占 794…840）；补完 contentInsets.bottom = 111（34+62+15）、内容止于 763，与 bar 顶（779）留 15pt 呼吸。`path.isEmpty` 是「是否在二级页」唯一事实来源，经 `detailActive` 绑定让 App 隐藏 tab bar（设置页/剧集页都算）
+- `Profile/`：我的域（纸本轨视觉）。`ProfileViewModel`（VM：四分类数据装配——历史/收藏/追更/点赞，口径全在 Service 层的关系查询上）、`ProfileView`（View + 组装：`NavigationStack(path:)` 值驱动路由，`ProfileRoute` 定义二级页）。**四个分类是分页 `TabView`（`.tabViewStyle(.page)`）**，点分类 tab 或左右滑都能切（与下载页「下载中/已下载」同一套路，用户 2026-11-15 要求「应该与下载-已下载一样可以左右滑动」）；VM 一次读全四个分类（`rawItems[Category]` + `items(for:)`），因为四页同时在场，按需再查库会让滑动闪空态。**顶栏区（身份行 + 分类 tab + 筛选胶囊）用 `safeAreaInset(edge: .top)` 钉住**，封面墙上滑时不动（用户要求：分类与筛选不应随上滑消失）；**底部必须 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)`**：自定义 tab bar 是 App 层 `safeAreaInset` 注入的，**栏本身 62pt 不传进页面**（详见「纸本单轨视觉」第 3 条承重规则），分页页面同样不接收，所以补在外层 VStack 上（照下载页写法）；不补的话封面墙最后一行被 bar 盖住。`path.isEmpty` 是「是否在二级页」唯一事实来源，经 `detailActive` 绑定让 App 隐藏 tab bar（设置页/剧集页都算）；回到根页（`path` 变空）重读一次，收藏/点赞可能在二级页改过
 - `Infra/`：系统能力。`LocalMediaServer`（本地回环 HTTP）、`WebKitFetcher`（WKDownload 兜底）、`AppHaptics`（全 App 触觉反馈唯一入口）、`KeyboardObserver`（键盘显隐唯一入口：弹起时收起自定义 tab bar 与浏览页底部工具条，避免被系统顶到键盘上方）
 - `player/`：播放域，五层齐全。Model（`PlaybackModels` / `DramaEpisode`）、Service（`PlaybackQueueService` / `EpisodePanelService` 选集面板数据装配与单集下载 / `PlayerPreferences` / `PlaybackPlayerService` / `PlayerGesturePolicy` / `PlaybackProgressTracker` 进度落库与续播 / `PlayerOrientationTrigger` CoreMotion 姿态判稳 / `PlayerFullscreenController` 全屏搬运动画）、ViewModel（`DramaPlayerViewModel` / `PlayerFeedViewModel`）、View（`DramaPlayerView` / `PlayerFeedView` / `PlayerPagingScrollView` / `PlayerSurfaceContainer` 单例视频容器 `PlayerSurfaceUIView` / `PlayerFullscreenControlsView` 全屏控制层）、组装根（`DramaPlayerContainer`）
 - `Components/`：**全局**通用 UI，不依赖任何业务模块或页面坐标系，命名不带业务前缀（如 `ToastView`，不要 `PlayerToastView`）；位置由调用方决定。`PosterGrid.swift` = 纸本海报卡 + 可配列数的网格（推荐 2 列 / 我的·已下载 3 列，三处共用，见「纸本单轨视觉」第 16 条）。
@@ -111,7 +111,7 @@ View → ViewModel → Service → 系统能力 / Model
 
 1. **栏底恒为纸**：`MainTabBar` 已删掉 `forcePaper` 参数与 `@Environment(\.colorScheme)` 双轨判定。页面色值全是写死的十六进制，深色外观下照样是宣纸底，「深色外观压墨」只会造成一屏里深浅两截。**不要再加回双轨**，也不要在 Scene 层加 `preferredColorScheme(.light)`（`DramaDetailView` 与播放页会跟着变浅）。
 2. **纸底统一上提到 App 容器**（`App.swift`）：`.background(DWColor.paper.ignoresSafeArea())` 只写一次。**各页不要自己 `ignoresSafeArea()` 铺纸底**——那会连**顶部**安全区一起吃掉，页面根视图于是多拿一个状态栏高度、底边溢出到 tab bar 后面（浏览页底部工具条整行被盖，就是这么丢的）。
-3. **【承重规则】`safeAreaInset` 的 62pt 不会传下来**：自定义 tab bar 走 App 层 `.safeAreaInset(edge: .bottom)`，系统**只把它自带的 34pt 底部安全区**算进内容区，**栏本身 62pt 的实高不传给任何页面**（也传不进 NavigationStack / 分页 TabView 内的页面）。任何页面的根视图若只依赖系统 safe area，底边恒落在「屏幕高 − 34」（如 874−34 = 840），而 bar 占 778…840 → 底部内容被整行盖住。**必须在页面根视图显式 `.safeAreaPadding(.bottom, MainTab.barReservedHeight)`**（=62）：下载页 `DownloadsView.swift:125`、我的页 `ProfileView.swift:33`（另加 15pt 呼吸）、浏览页 `BrowserView.swift`。新增任何带底部内容的全屏页，一律先加这一句，改 `MainTab.barReservedHeight` 时三处同步。
+3. **【承重规则】`safeAreaInset` 的 62pt 不会传下来**：自定义 tab bar 走 App 层 `.safeAreaInset(edge: .bottom)`，系统**只把它自带的 34pt 底部安全区**算进内容区，**栏本身 62pt 的实高不传给任何页面**（也传不进 NavigationStack / 分页 TabView 内的页面）。任何页面的根视图若只依赖系统 safe area，底边恒落在「屏幕高 − 34」（如 874−34 = 840），而 bar 占 778…840 → 底部内容被整行盖住。**必须在页面根视图显式 `.safeAreaPadding(.bottom, MainTab.barReservedHeight)`**（=62）：下载页 `DownloadsView.swift`（分页 TabView 外层 VStack）、我的页 `ProfileView.swift`（四个分类的分页 TabView 外层 VStack，另加 15pt 呼吸）、浏览页 `BrowserView.swift`。新增任何带底部内容的全屏页，一律先加这一句，改 `MainTab.barReservedHeight` 时三处同步。
 4. **`PaperGlyphs.swift` 是纸本轨的线稿图元库**：10 个 1pt 线稿 `Shape`（chevron / 锁 / 屏 / 下载徽章 / 重载 / 叉 / 勾 / 铅笔 / 排序 / 加号）替代 SF Symbols。理由是符号的字重、留白、端点全由系统决定，与画布上 1pt 线稿对不上（同一位置换 `Image(systemName:)` 会明显粗一圈、端点带圆角）。**尺寸与线宽照画布节点实读**，不要「看起来差不多」自己定。
 5. **几何常量**：`DWLayout.edge = 20`（设置页/我的页）、`DWLayout.pageEdge = 22`（浏览页/下载页，画布左右边距就是 22）、`MainTab.barReservedHeight = 62`（bar 自身 `padding(.top, 10).padding(.bottom, 6)` + 内容 46）。下载页行高 82 / 封面 60×82 r5 / 组内 gap **5**（2026-11-15 用户拍板；画布 19:304 原为 12，`DownloadsView.completedCellSpacing`，行内边距上下各 2.5）、浏览页地址栏行 52（输入框 34，描边 1pt `paperFieldLine.opacity(0.8)`）/ 快捷站点行 44（胶囊 26）/ 底部工具条 54。
 6. **纸本轨 token 全在 `DWColor`**：`paper` `#F2F0EA` / `paperInk` `#1C1E1F` / `paperInkSub` `#8C9190` / `paperIcon` `#5A5F60` / `paperCinnabar` `#A05243` / `paperChipSel` `#E2DED5` / `paperChipIdle` `#EAE7DF` / `paperHairline` `#E0DBD1` / `paperDivider` `#DDD9D0` / `paperRule` `#E4E0D6` / `paperLineIdle` `#B9BCB9` / `paperSwitchOff` `#C9CCC9` / `paperKnob` `#F7F5F0` / `paperField` `#E7E4DE` / `paperFieldLine` `#C2BFB8` / `paperCanvas` `#EDEAE2` / `paperTrack` `#C4C7C3` / `paperTrackFill` `#35393B` / `paperFaint` `#A2A6AD`。**新色必须先在画布上量出来再进 `DWColor`**，不要在 View 里写裸 `Color(hex:)`。
@@ -169,6 +169,21 @@ View → ViewModel → Service → 系统能力 / Model
    - 视觉（墨本轨，与剧集页语义对应）：当前集 = 朱砂数字 + 4pt 点 + 朱砂描边底；已下载 = 墨白数字；未下载且可播 = 数字压暗（`overlayInkSub`）+ 右下角 7×8 下箭头（`EpisodeTodoGlyph` / `EpisodeTodoGlyphView`，对应剧集页 `.dl-todo`）；站点未开放 = 更淡且无箭头；排队 = 淡环、下载中 = 朱砂弧（可带 `strokeEnd` 进度）、失败 = 朱砂整环。**箭头落位顺序：先 `.frame(7×8)` + `.padding(4)` 再 `.frame(边,边,alignment:.bottomTrailing)`**——反过来会把整块放大 8pt 溢出格子、箭头被裁在边缘外（模拟器实测踩到）。
    - 一次性提示（已加入下载队列 / 正在下载 / 站点未开放 / 缺元数据）显示在**面板标题位**（`选集` 处，12pt 朱砂，2.4s 后恢复），竖屏与抽屉共用同一口径；不要另加 toast 层（全屏容器里没有 toast 通道）。
    - 验收：模拟器无法点按，只能造目录态 + 定帧截图 —— 例如把样张目录改成「第 01/02/10/11/12 集存在、第 03 集缺失」，面板应显示 `1 2 3 10 11 12`（3 带下箭头），抽屉与竖屏弹层一致。
+
+20. **「我的」页四个分类是分页容器，与下载页「下载中/已下载」同一个套路**（2026-11-15 用户要求「应该与下载-已下载一样可以左右滑动」）：
+   - 分类 tab 与封面墙一起放进 `TabView(selection: $vm.category)` + `.tabViewStyle(.page(indexDisplayMode: .never))`，点 tab 与左右滑是同一条 selection 通道；**别再退回「Switch 内容 + 只有 tab 能切」**。
+   - **数据必须一次读全四个分类**（`ProfileViewModel.rawItems[Category]` + `items(for:)`）：四页同时在场，按需再查库会让滑到的那页先闪一下空态。`watchFilter` 的「已看完/未看完」也按分类各自索引（`finishedIndex[Category]`），别只保留一份。
+   - 顶部两段（身份行 + 分类 tab + 筛选胶囊）仍走 `safeAreaInset(edge: .top)` 钉在**页面级**（不是塞进每页），否则四页各钉一份、滑动时位置还会抖。
+   - 底部 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)` 补在**外层 VStack** 上（分页页面不接收祖先安全区，见「纸本单轨视觉」第 3 条）。
+   - 回到根页（`path` 变空）时 `reload()` 一次：二级页里可能改过收藏/点赞，分类不再各自 reload，不重读会看到旧数据。
+   - 验收：模拟器点不了也滑不了，用 `-profilePreview 历史|收藏|追更|点赞` 直接落到某一页截图（Debug 专用），四页的空态/有数据态都要过一遍。
+
+21. **接口失败必须把错误信息爆出来，不许只留系统那句「未能读取数据，因为它的格式不正确」**（2026-11-15 用户要求）：
+   - `DramaAPI.apiPost` 里 `JSONSerialization` 解析失败 → 一律转成 `DramaError.badBody(status:contentType:bytes:snippet:)`，带上 **HTTP 状态 / Content-Type / 字节数 / 响应体片段**（`DramaAPI.snippet` 把空白压成单空格、截 200 字）。`errcode != 0` 走 `apiError` 时同样带 `HTTP 状态 + errcode + msg`，响应体片段进日志。
+   - 剧集页错误态（`DramaDetailView.errorState`）= 一句摘要 + **可滚动的等宽详情块**（`vm.loadErrorDetail`，来自 `DramaPageViewModel.diagnosticText(for:target:)`，含站点/剧 ID/时间）+ **复制错误信息**（`UIPasteboard`）+ 重试。别再只显示一行 `localizedDescription`。
+   - 下拉刷新失败（静默路径）的提示条也要带原因摘要（`shortReason(for:)`，28 字截断），不能只说「刷新失败，请稍后重试」。
+   - 日志：`PLAYER_DBG [API] POST <path> status/type/bytes/error`、`[CHECK] API decode FAIL domain/code/debug`、`[CHECK] API decode body=<片段>`、`[CHECK] Entry errorDetail`（多行）。这些是排障的主证据，**不要删**。
+   - 单集取直链失败同样打 `drama.diagnostic`（`SeriesDownloadCoordinator`），任务行仍显示 `localizedDescription`。
 
 ### 并发与线程（GCD 约定，2026-11-12 全量迁移）
 
