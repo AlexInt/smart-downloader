@@ -205,14 +205,7 @@ struct ProfileView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 封面墙（19:200 wrap gap10；卡宽 106，封面 106×114 r6）
-
-    /// 390 - 20×2 = 350 可用宽：3 列 106 + 2 缝 10 = 338，余 12 由 spacing 吸收
-    private let columns: [GridItem] = [
-        GridItem(.fixed(106), spacing: 10),
-        GridItem(.fixed(106), spacing: 10),
-        GridItem(.fixed(106))
-    ]
+    // MARK: - 封面墙（19:200；2026-11-15 起与剧集页「为你推荐」同一套双列海报卡）
 
     /// 列表末行与 tab bar 之间的呼吸间距（用户要求 2026-11-14：再加大 15pt）
     static let bottomGap: CGFloat = 15
@@ -222,72 +215,32 @@ struct ProfileView: View {
         if viewModel.items.isEmpty {
             emptyState
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                ForEach(viewModel.items) { item in
-                    NavigationLink(value: ProfileRoute.drama(item.target)) {
-                        dramaCard(item)
-                    }
-                    .buttonStyle(.plain)
+            // 双列海报卡组件与剧集页推荐 / 下载页「已下载」共用（Components/PosterGrid.swift）：
+            // 封面 3:4 + 固定 67 文字块，列宽按容器现算（不再写死 3 列 106×114）
+            PosterGrid(items: viewModel.items) { item in
+                NavigationLink(value: ProfileRoute.drama(item.target)) {
+                    PosterCardView(model: cardModel(item))
                 }
+                .buttonStyle(.plain)
             }
         }
     }
 
-    /// 单卡（19:201）：封面 + 剧名（衬线 fs11）+ 进度（fs10）
-    private func dramaCard(_ item: ProfileViewModel.Item) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            coverThumb(item)
-                .frame(width: 106, height: 114)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            Text(item.name)
-                .font(DWFont.serif(11))
-                .foregroundStyle(DWColor.paperInk)
-                .lineLimit(1)
-            Text(item.progress)
-                .font(DWFont.cn(10))
-                .foregroundStyle(DWColor.paperInkSub)
-                .lineLimit(1)
-        }
-        .frame(width: 106, alignment: .leading)
+    /// 封面墙一张卡：剧名 + 该分类进度 + 分类状态（推荐卡同一套三行文字块）
+    private func cardModel(_ item: ProfileViewModel.Item) -> PosterCardModel {
+        PosterCardModel(
+            id: item.id,
+            title: item.name,
+            subtitle: item.progress,
+            stat: viewModel.statusText,
+            cover: coverSource(item.coverURL)
+        )
     }
 
-    /// 封面三态：图 / 占位色。本地文件直接 Image（AsyncImage 对 file:// 不走缓存还闪），
-    /// 远程 URL 用 AsyncImage。与 DramaDetailView 的封面目的一致（coverPlaceholder 是墨本色，纸本下加深一档对比可接受）
-    @ViewBuilder
-    private func coverThumb(_ item: ProfileViewModel.Item) -> some View {
-        if let url = item.coverURL, url.isFileURL {
-            if let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                coverFallback
-            }
-        } else if let url = item.coverURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                case .failure:
-                    coverFallback
-                default:
-                    coverFallback
-                }
-            }
-        } else {
-            coverFallback
-        }
-    }
-
-    /// 无图兜底：与画布封面位（106×114 深色块）一致的中性色
-    private var coverFallback: some View {
-        Rectangle()
-            .fill(DWColor.coverPlaceholder)
-            .overlay {
-                Image(systemName: "film")
-                    .font(.system(size: 18, weight: .light))
-                    .foregroundStyle(DWColor.placeholderIcon)
-            }
+    /// 封面来源：本地缓存文件直接读盘（AsyncImage 对 file:// 不走缓存还闪），远程走 AsyncImage
+    private func coverSource(_ url: URL?) -> PosterCoverSource {
+        guard let url else { return .none }
+        return url.isFileURL ? .local(url) : .remote(url)
     }
 
     private var emptyState: some View {

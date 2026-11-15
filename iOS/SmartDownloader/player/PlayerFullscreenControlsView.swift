@@ -256,10 +256,12 @@ final class PlayerFullscreenControlsView: UIView {
         saveButton.addSubview(saveGlyph)
         addSubview(saveButton)
 
-        // 右栏工具（画布 22:68「倍速」12px / 22:69「1080P」12px Inter Medium / 22:70「选集」12px）
+        // 右栏工具（画布 22:68「倍速」12px / 22:69 清晰度 12px Inter Medium / 22:70「选集」12px）
+        // 清晰度标题按片源实际分辨率更新（VM.videoQualityText），初始值只是占位
         configureTool(rateButton, title: "倍速", font: Self.sansFont(12, weight: .regular),
                       action: #selector(rateTapped))
-        configureTool(qualityButton, title: "1080P", font: Self.monoFont(12, weight: .medium),
+        configureTool(qualityButton, title: playback.videoQualityText,
+                      font: Self.monoFont(12, weight: .medium),
                       action: #selector(qualityTapped))
         configureTool(episodeButton, title: "选集", font: Self.sansFont(12, weight: .regular),
                       action: #selector(episodeTapped))
@@ -343,6 +345,15 @@ final class PlayerFullscreenControlsView: UIView {
             .sink { [weak self] rate in
                 let title = abs(rate - 1.0) < 0.001 ? "倍速" : "\(Self.trimmed(rate))×"
                 self?.rateButton.setTitle(title, for: .normal)
+            }
+            .store(in: &cancellables)
+        // 清晰度：按片源实际分辨率（1920×1080 → 1080P / 1280×720 → 720P / 3840×2160 → 4K）
+        playback.$videoQualityText
+            .removeDuplicates()
+            .sink { [weak self] text in
+                self?.qualityButton.setTitle(text, for: .normal)
+                self?.qualityButton.accessibilityLabel = "清晰度 \(text)"
+                print("PLAYER_DBG [Fullscreen] quality label → \(text)")
             }
             .store(in: &cancellables)
         playback.$isScrubbing

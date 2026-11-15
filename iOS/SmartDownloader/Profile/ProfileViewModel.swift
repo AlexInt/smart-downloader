@@ -178,4 +178,14 @@ final class ProfileViewModel: ObservableObject {
         case .liked: return "还没有点赞过的剧"
         }
     }
+
+    /// 封面墙卡片统计行的状态文案（与分类 tab 同源，只做如实展示，不猜）
+    var statusText: String {
+        switch category {
+        case .history: return "观看中"
+        case .favorites: return "已收藏"
+        case .chasing: return "连载中"
+        case .liked: return "已点赞"
+        }
+    }
 }

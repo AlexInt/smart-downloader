@@ -35,17 +35,21 @@ private enum DetailLayout {
     // 为你推荐（设计稿 .reco / .reco-grid / .reco-card）
     // 2026-11-15 用户拍板：封面不再三档瀑布流，统一「两列平分 + 3:4」——
     // 宽度 = (390 - 左右 20×2 - 中缝 10) / 2 = 170，高度按宽度等比（170×4/3）。
+    // 卡片本身的几何已抽到 `PosterCardMetrics`（与「我的」/下载页共用），这里只留页面预算。
     static let recoTopPadding: CGFloat = 16
     static let recoTitleBlock: CGFloat = 34      // 22 标题 + 12 margin
     /// 卡片底 → 档案之间不再叠三段留白（原 28 + 8 + 16 = 52，用户反馈太大）
     static let recoBottomPadding: CGFloat = 14
-    static let recoColumnGap: CGFloat = 10
-    static let recoCardGap: CGFloat = 12
-    static let recoColumnWidth: CGFloat = 170   // (390 - 20*2 - 10) / 2
-    static let recoCoverHeight: CGFloat = recoColumnWidth * 4 / 3   // 226.7，3:4 竖版
-    static let recoTextInset: CGFloat = 8       // 卡内文字左右内缩（卡片细线要留呼吸）
+    static let recoColumnGap: CGFloat = PosterCardMetrics.columnGap
+    static let recoCardGap: CGFloat = PosterCardMetrics.rowGap
+    static let recoColumnWidth: CGFloat =
+        (DWLayout.designWidth - PosterCardMetrics.horizontalPadding * 2
+         - PosterCardMetrics.columnGap) / 2   // 170
+    static let recoCoverHeight: CGFloat = recoColumnWidth
+        * (1 / PosterCardMetrics.coverAspect)  // 226.7，3:4 竖版
+    static let recoTextInset: CGFloat = PosterCardMetrics.textInset
     /// 卡内文字块：上 6 + 标题 20 + 2 + 标签 14 + 3 + 统计 14 + 下 8
-    static let recoTextHeight: CGFloat = 67
+    static let recoTextHeight: CGFloat = PosterCardMetrics.textHeight
 
     // 剧集档案
     static let archiveTopPadding: CGFloat = 16
@@ -1402,101 +1406,29 @@ struct DramaDetailView: View {
     /// 一张推荐卡。2026-11-15 用户拍板：所有封面统一「列宽 3:4」+ 固定文字块，
     /// 不再按序号取三档高度——原来 `scaledToFit` 会把窄卡裁成两侧露纸底的小图，
     /// 一眼看过去大小不齐。现在 `scaledToFill` 等比铺满、超出部分居中裁掉。
-    /// 整卡再描 0.5 细线：浅色封面在宣纸上容易化开，靠这条线分割。
+    /// 卡片视觉与「我的」封面墙、下载页「已下载」共用 `PosterCardView`（Components/PosterGrid.swift），
+    /// 这里只负责把推荐数据翻成展示模型 + 点击意图，几何沿用画布 170 宽。
     private func recoCard(_ item: RecoCardItem) -> some View {
         Button { vm.openRecommendation(item.drama) } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topLeading) {
-                    if let cover = item.drama.cover, let url = URL(string: cover) {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                                    .frame(width: DetailLayout.recoColumnWidth,
-                                           height: DetailLayout.recoCoverHeight)
-                                    .clipped()
-                            default:
-                                recoCoverPlaceholder(title: item.drama.displayTitle)
-                            }
-                        }
-                    } else {
-                        recoCoverPlaceholder(title: item.drama.displayTitle)
-                    }
-                    if let badge = item.drama.displayBadge {
-                        Text(badge)
-                            .font(DWFont.cn(10, .semibold))
-                            .foregroundStyle(DWColor.paper)
-                            .padding(.horizontal, 7)
-                            .frame(height: 18)
-                            // 角标压在图/纸块上，必须自己带底：墨底 + 纸白字
-                            .background(DWColor.paperInk.opacity(0.82), in: Capsule())
-                            .padding(8)
-                    }
-                }
-                .frame(width: DetailLayout.recoColumnWidth, height: DetailLayout.recoCoverHeight)
-
-                // 文字块：上 6 + 标题 20 + 2 + 标签 14 + 3 + 统计 14 + 下 8 = 67。
-                // 标题限一行（用户反馈 title 与 tags 之间空太多）：两行会把 36pt 的
-                // 标题框撑出来，单行标题下面就留出一整行空白，比行距本身还显眼。
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(item.drama.displayTitle)
-                        .font(DWFont.serif(13, .medium))
-                        .foregroundStyle(DWColor.paperInk)
-                        .lineLimit(1)
-                        .frame(height: 20, alignment: .leading)
-                        .padding(.top, 6)
-
-                    Text(item.drama.tags.isEmpty ? "—" : item.drama.tags.joined(separator: " / "))
-                        .font(DWFont.cn(10))
-                        .foregroundStyle(DWColor.paperInkSub)
-                        .lineLimit(1)
-                        .frame(height: 14, alignment: .leading)
-                        .padding(.top, 2)
-
-                    HStack(spacing: 3) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(DWColor.paperFaint)
-                        Text(item.drama.displayPlayCount)
-                            .font(DWFont.cn(10, .semibold))
-                            .foregroundStyle(DWColor.paperCinnabar)
-                        if let status = item.drama.serializeStatusText, !status.isEmpty {
-                            Text("· \(status)")
-                                .font(DWFont.cn(10))
-                                .foregroundStyle(DWColor.paperFaint)
-                        }
-                    }
-                    .frame(height: 14, alignment: .leading)
-                    .padding(.top, 3)
-                }
-                .frame(width: DetailLayout.recoColumnWidth - DetailLayout.recoTextInset * 2,
-                       height: DetailLayout.recoTextHeight, alignment: .topLeading)
-                .padding(.horizontal, DetailLayout.recoTextInset)
-            }
-            // 整卡裁圆 + 0.5 细线：封面只有上缘两角被裁圆，下缘与文字块齐平，
-            // 细线沿整卡外缘走一圈，两列卡片之间才有清楚的边界。
-            .background(DWColor.paper)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
-            }
+            PosterCardView(model: recoModel(item.drama))
+                .frame(width: DetailLayout.recoColumnWidth)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("推荐：\(item.drama.displayTitle)")
     }
 
-    /// 推荐卡无封面兜底：纸块 + 首字（下载页 `PaperCover.fallback` 同一说法）。
-    /// 深色轨这里原本是三色紫渐变，纸本轨没有紫色可用，也不该给一块死灰。
-    private func recoCoverPlaceholder(title: String) -> some View {
-        ZStack {
-            DWColor.paperChipIdle
-            Text(String(title.prefix(1)))
-                .font(DWFont.serif(34))
-                .tracking(2)
-                .foregroundStyle(DWColor.paperLineIdle)
-        }
-        .frame(width: DetailLayout.recoColumnWidth, height: DetailLayout.recoCoverHeight)
+    /// 推荐剧 → 共享海报卡数据（纯映射，不碰 IO）
+    private func recoModel(_ drama: RecommendedDrama) -> PosterCardModel {
+        PosterCardModel(
+            id: "reco:\(drama.id)",
+            title: drama.displayTitle,
+            subtitle: drama.tags.isEmpty ? "—" : drama.tags.joined(separator: " / "),
+            stat: drama.displayPlayCount,
+            statIcon: .play,
+            statTrailing: drama.serializeStatusText,
+            badge: drama.displayBadge,
+            cover: drama.cover.flatMap { URL(string: $0) }.map { PosterCoverSource.remote($0) } ?? .none
+        )
     }
 
     // MARK: ⑥ 剧集档案（详情接口整包字段，尽量全展示）

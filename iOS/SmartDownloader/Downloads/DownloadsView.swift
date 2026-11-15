@@ -308,12 +308,26 @@ struct DownloadsView: View {
         }
     }
 
-    // MARK: - 右页：已下载（画布 19:272 / 34:1）
+    // MARK: - 右页：已下载（画布 19:272 / 34:1；2026-11-15 起改为双列海报卡）
 
-    /// 已下载列表的相邻 cell 间距（用户 2026-11-15 拍板 5pt；画布 19:304 原本是 12）。
-    /// 行内边距上下各给一半：`.paperListRow(vertical:)` 的 top/bottom 相邻相加即为间距——
-    /// 实测 `.listRowInsets` 为 0 时 List 不再追加任何行距（封面块是贴着的），所以这里给多少就是多少。
-    private static let completedCellSpacing: CGFloat = 5
+    /// 已下载列表一个卡片：剧分组或散装单条。两类的点击/勾选语义不同，
+    /// 统一成一个枚举让网格按同一顺序（先剧、后散装）排布。
+    private enum CompletedCard: Identifiable {
+        case series(name: String, episodes: [DownloadTask])
+        case standalone(DownloadTask)
+
+        var id: String {
+            switch self {
+            case .series(let name, _): return "series:\(name)"
+            case .standalone(let task): return "task:\(task.id.uuidString)"
+            }
+        }
+    }
+
+    private var completedCards: [CompletedCard] {
+        vm.seriesGroups.map { .series(name: $0.name, episodes: $0.episodes) }
+            + vm.standaloneItems.map(CompletedCard.standalone)
+    }
 
     @ViewBuilder
     private var completedPage: some View {
@@ -321,40 +335,93 @@ struct DownloadsView: View {
             paperEmpty(title: "还没有下载完的内容",
                        hint: "下载完成后，剧集和单条视频会出现在这里")
         } else {
-            List {
-                seriesHeaderRow
-                    .paperListRow()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    seriesHeaderRow
+                    // 双列海报卡组件与剧集页推荐 / 「我的」封面墙共用（Components/PosterGrid.swift）
+                    PosterGrid(items: completedCards) { card in
+                        completedCard(card)
+                    }
+                }
+                .padding(.horizontal, DWLayout.pageEdge)
+                .padding(.top, 6)
+                .padding(.bottom, 12)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
 
-                ForEach(vm.seriesGroups, id: \.name) { group in
-                    Button {
-                        if vm.selectionMode {
-                            vm.toggleSeriesSelection(group)
-                        } else {
-                            pushedSeries = SeriesRoute(name: group.name)
-                        }
+    /// 已下载卡片：剧卡点击进剧详情（编辑模式勾选整剧），散装卡点击播放（编辑模式勾选单条）。
+    /// 剧卡长按给「删除全剧」（原来靠 List 左滑，改网格后保留同一能力）。
+    @ViewBuilder
+    private func completedCard(_ card: CompletedCard) -> some View {
+        switch card {
+        case .series(let name, let episodes):
+            let group = (name: name, episodes: episodes)
+            Button {
+                if vm.selectionMode {
+                    vm.toggleSeriesSelection(group)
+                } else {
+                    pushedSeries = SeriesRoute(name: name)
+                }
+            } label: {
+                PosterCardView(
+                    model: seriesCardModel(name: name, episodes: episodes),
+                    selection: vm.selectionMode ? vm.seriesAllSelected(group) : nil
+                )
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                if !vm.selectionMode {
+                    Button(role: .destructive) {
+                        vm.pendingDeleteSeries = name
                     } label: {
-                        seriesRow(group)
+                        Label("删除全剧", systemImage: "trash")
                     }
-                    .buttonStyle(.plain)
-                    .paperListRow(vertical: Self.completedCellSpacing / 2)
-                }
-                .onDelete { offsets in
-                    guard !vm.selectionMode else { return }
-                    if let index = offsets.first, vm.seriesGroups.indices.contains(index) {
-                        vm.pendingDeleteSeries = vm.seriesGroups[index].name
-                    }
-                }
-
-                if !vm.standaloneItems.isEmpty {
-                    ForEach(vm.standaloneItems) { task in
-                        standaloneRow(task)
-                            .paperListRow(vertical: Self.completedCellSpacing / 2)
-                    }
-                    .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.standaloneItems)) }
                 }
             }
-            .paperList()
+        case .standalone(let task):
+            Button {
+                if vm.selectionMode {
+                    vm.toggleSelection(task.id)
+                } else {
+                    vm.handleTap(task, identity: progressVM.identity(for: task))
+                }
+            } label: {
+                PosterCardView(
+                    model: standaloneCardModel(task),
+                    selection: vm.selectionMode ? vm.selected.contains(task.id) : nil
+                )
+            }
+            .buttonStyle(.plain)
         }
+    }
+
+    /// 剧卡数据：剧名 + 「全 N 集 · 占用 · 时间」+ 可离线播放（推荐卡同一套三行文字块）
+    private func seriesCardModel(name: String, episodes: [DownloadTask]) -> PosterCardModel {
+        PosterCardModel(
+            id: "series:\(name)",
+            title: name,
+            subtitle: seriesSubtitle((name: name, episodes: episodes)),
+            stat: "可离线播放",
+            cover: coverSource(vm.seriesCovers[name])
+        )
+    }
+
+    /// 散装卡数据：标题 + 本地文件时间 + 可离线播放
+    private func standaloneCardModel(_ task: DownloadTask) -> PosterCardModel {
+        PosterCardModel(
+            id: "task:\(task.id.uuidString)",
+            title: task.title,
+            subtitle: "本地文件 · \(task.createdAt.downloadsListText)",
+            stat: "可离线播放"
+        )
+    }
+
+    /// 本地封面文件 → 共享卡片的封面来源（无图退纸本占位）
+    private func coverSource(_ url: URL?) -> PosterCoverSource {
+        guard let url else { return .none }
+        return url.isFileURL ? .local(url) : .remote(url)
     }
 
     /// 分组头（画布 30:38 / 34:22）：左边统计，右边「编辑 + 排序」；
@@ -415,92 +482,6 @@ struct DownloadsView: View {
         return text
     }
 
-    /// 已下载的剧行（画布 19:306）：封面 + 剧名 / 说明 / 「可离线播放」胶囊，右侧完成勾。
-    /// 编辑模式下左侧多一枚 22 的勾选位（画布 34:39），右侧完成勾让位。
-    private func seriesRow(_ group: (name: String, episodes: [DownloadTask])) -> some View {
-        HStack(spacing: 14) {
-            if vm.selectionMode {
-                selectionMark(vm.seriesAllSelected(group))
-            }
-
-            PaperCover(title: group.name, url: vm.seriesCovers[group.name])
-
-            VStack(alignment: .leading, spacing: 9) {
-                Text(group.name)
-                    .font(DWFont.serif(15, .medium))
-                    .foregroundStyle(DWColor.paperInk)
-                    .lineLimit(1)
-
-                Text(seriesSubtitle(group))
-                    .font(DWFont.cn(11))
-                    .foregroundStyle(DWColor.paperInkSub)
-                    .lineLimit(1)
-
-                Text("可离线播放")
-                    .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.paperIcon)
-                    .padding(.horizontal, 8)
-                    .frame(height: 20)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(DWColor.paperField))
-            }
-
-            Spacer(minLength: 0)
-
-            if !vm.selectionMode {
-                doneMark
-            }
-        }
-        .frame(height: 82)
-        .contentShape(Rectangle())
-    }
-
-    /// 散装单条（不属于任何剧的已完成下载）：沿用同一行骨架，右侧换成播放入口
-    private func standaloneRow(_ task: DownloadTask) -> some View {
-        HStack(spacing: 14) {
-            if vm.selectionMode {
-                selectionMark(vm.selected.contains(task.id))
-            }
-
-            PaperCover(title: task.title, url: nil)
-
-            VStack(alignment: .leading, spacing: 9) {
-                Text(task.title)
-                    .font(DWFont.serif(15, .medium))
-                    .foregroundStyle(DWColor.paperInk)
-                    .lineLimit(1)
-
-                Text("本地文件 · \(task.createdAt.downloadsListText)")
-                    .font(DWFont.cn(11))
-                    .foregroundStyle(DWColor.paperInkSub)
-                    .lineLimit(1)
-
-                Text("可离线播放")
-                    .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.paperIcon)
-                    .padding(.horizontal, 8)
-                    .frame(height: 20)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(DWColor.paperField))
-            }
-
-            Spacer(minLength: 0)
-
-            if !vm.selectionMode {
-                doneMark
-            }
-        }
-        .frame(height: 82)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if vm.selectionMode {
-                vm.toggleSelection(task.id)
-            } else {
-                vm.handleTap(task, identity: progressVM.identity(for: task))
-            }
-        }
-    }
-
     /// 剧行说明（画布 19:310「全 32 集 · 1.1 GB · 昨日 21:40」）：集数 + 占用 + 时间
     private func seriesSubtitle(_ group: (name: String, episodes: [DownloadTask])) -> String {
         var parts = ["全 \(group.episodes.count) 集"]
@@ -510,37 +491,6 @@ struct DownloadsView: View {
             parts.append(key.downloadsListText)
         }
         return parts.joined(separator: " · ")
-    }
-
-    /// 完成勾（画布 19:313）：18 圆环 + 内嵌勾，纯状态指示，不是按钮
-    private var doneMark: some View {
-        ZStack {
-            Circle()
-                .stroke(DWColor.paperInkSub, lineWidth: 1)
-                .frame(width: 18, height: 18)
-            PaperCheckShape()
-                .stroke(DWColor.paperIcon,
-                        style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
-                .frame(width: 7.6, height: 5.2)
-        }
-        .frame(width: 22, height: 22)
-    }
-
-    /// 勾选位（画布 34:39 已选 = 朱砂实心 + 纸白勾）
-    private func selectionMark(_ selected: Bool) -> some View {
-        ZStack {
-            if selected {
-                Circle().fill(DWColor.paperCinnabar).frame(width: 18, height: 18)
-                PaperCheckShape()
-                    .stroke(DWColor.paper,
-                            style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                    .frame(width: 7.6, height: 5.2)
-            } else {
-                // 画布 34:63 未选圈是 #8C9190（与完成勾的圆环同一档），不是更浅的轨道色
-                Circle().stroke(DWColor.paperInkSub, lineWidth: 1).frame(width: 18, height: 18)
-            }
-        }
-        .frame(width: 22, height: 22)
     }
 
     // MARK: - 编辑工具条（画布 34:84）

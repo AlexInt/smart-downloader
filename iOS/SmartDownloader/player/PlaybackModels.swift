@@ -34,3 +34,18 @@ enum PlaybackDirection {
     case next
     case previous
 }
+
+// MARK: - 清晰度标签（纯函数，无 IO）
+
+/// 片源像素尺寸 → 全屏底栏的清晰度文案。
+/// 口径：按**短边**（横屏片源的高、竖屏片源的宽）折算，因为「1080P / 720P」说的就是短边；
+/// 2160 以上统一叫「4K」（行业惯例），其余如实给 `1080P` / `720P` / `540P` …
+/// 未知尺寸给 "—"（页面在 isReady 之前不会进全屏，正常看不到这个兜底）。
+enum VideoQualityLabel {
+    static func text(for size: CGSize) -> String {
+        let shortSide = min(size.width, size.height)
+        guard shortSide > 0 else { return "—" }
+        if shortSide >= 2000 { return "4K" }
+        return "\(Int(shortSide.rounded()))P"
+    }
+}

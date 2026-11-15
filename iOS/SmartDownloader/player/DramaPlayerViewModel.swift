@@ -54,6 +54,9 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 片源像素尺寸（presentationSize）：全屏进/出动画以「视频显示带」（surface 内 fit 的
     /// 居中矩形）为起点/终点，据此换算；0×0 = 未知，退回 surface 全框（旧路径）。
     private(set) var videoPixelSize: CGSize = .zero
+    /// 全屏底栏清晰度文案：按片源实际分辨率更新（1920×1080 → 1080P、1280×720 → 720P、
+    /// 3840×2160 → 4K）。旧实现写死 "1080P"，720P 片源也标成 1080P（用户 2026-11-15 实报）。
+    @Published private(set) var videoQualityText = "—"
     /// 画面适配模式（画布 19:37 按钮）：自动跟随片源方向 / 强制完整 / 强制铺满。
     /// 持久化在本 VM 内存（不进 PlayerPreferences——这是「本次观看」的画面临时口径，
     /// 跨集也不该被记住：新一集方向可能相反，记住旧口径反而每次都错）。
@@ -882,9 +885,17 @@ final class DramaPlayerViewModel: ObservableObject {
 
     /// 片源方向刷新：presentationSize 有效（宽高 > 0）才更新，未知不动。
     /// 读取点 = ready 与 0.25s 周期回调；横屏片源在竖屏持机要 fit 完整显示（用户要求：不统一竖屏拉满）。
-    private func refreshVideoOrientation(reason: String) {        let size = player.currentItem?.presentationSize ?? .zero
+    /// 同一处顺手刷新清晰度文案（全屏底栏「1080P」按实际分辨率显示，用户 2026-11-15 要求）。
+    private func refreshVideoOrientation(reason: String) {
+        let size = player.currentItem?.presentationSize ?? .zero
         guard size.width > 0, size.height > 0 else { return }
         videoPixelSize = size
+        let quality = VideoQualityLabel.text(for: size)
+        if quality != videoQualityText {
+            let old = videoQualityText
+            videoQualityText = quality
+            print("PLAYER_DBG [Playback] quality \(old) → \(quality) size=\(Int(size.width))x\(Int(size.height)) reason=\(reason)")
+        }
         let landscape = size.width > size.height
         guard landscape != videoIsLandscape else { return }
         videoIsLandscape = landscape
