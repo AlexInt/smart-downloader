@@ -25,6 +25,8 @@ final class PlayerOrientationTrigger {
     private var isFlatLogged = false
     /// 竖屏中进全屏被阻断状态（只在状态翻转时打日志）
     private var isBlockedLogged = false
+    /// 锁定态冻结方向的日志闸门
+    private var isLockFrozenLogged = false
     private var stableSince: Date?
     /// 最近一次重力角（度，0=竖屏持机，±90=两个横屏转向）：进全屏时据此定旋转方向
     private var lastAngleDeg: Double = 0
@@ -62,6 +64,7 @@ final class PlayerOrientationTrigger {
         stableSince = nil
         isFlatLogged = false
         isBlockedLogged = false
+        isLockFrozenLogged = false
         print("PLAYER_DBG [Orientation] trigger stopped")
     }
 
@@ -88,6 +91,21 @@ final class PlayerOrientationTrigger {
         let absAngle = abs(angleDeg)
 
         if playback.isFullscreen {
+            // 锁定态（画布 22:31 锁）：冻结当前方向——转回竖屏不退出全屏、左右转向也不转体。
+            // 行业做法是「锁定 = 方向与手势一起锁住，只剩解锁钮可点」；不冻结的话躺着看片
+            // 手一歪就掉回竖屏（2026-11-15 用户拍板）。
+            if playback.isFullscreenLocked {
+                if !isLockFrozenLogged {
+                    isLockFrozenLogged = true
+                    print("PLAYER_DBG [Orientation] frozen reason=fullscreenLocked angle=\(Int(angleDeg))")
+                }
+                resetStability()
+                return
+            }
+            if isLockFrozenLogged {
+                isLockFrozenLogged = false
+                print("PLAYER_DBG [Orientation] frozen RESUME angle=\(Int(angleDeg))")
+            }
             // 全屏中：回竖稳（滞后带下沿）退出；越进入阈值且转向与当前旋转角不同 → 左右转体
             if absAngle <= exitThreshold {
                 accumulate(target: false)

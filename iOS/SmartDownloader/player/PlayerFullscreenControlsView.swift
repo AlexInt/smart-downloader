@@ -4,16 +4,21 @@ import AVFoundation
 
 // MARK: - 全屏控制层（UIKit，横屏坐标空间，挂在全屏容器内随容器自转）
 //
-// 按画布 22:1「观影控件层」（844×390）1:1 重做。三栏布局，全部坐标来自画布节点实读：
-//   顶栏：返回 18×20 @(98,30)｜剧名与集数 13px serif @(122,30)｜更多 16×20 @(745,31)
-//   中部：亮度 26×26 @(106,180)｜暂停双竖条 48×48 @(398,174)｜锁 44×44 @(734,118)｜音量 44×44 @(734,172)
-//   底栏：播放/暂停 20×20 @(98,310)（原画布此位是「下一集」，2026-11-15 用户改）
-//        ｜当前时间贴轨道左端（轨道 166…701，画布原 206…762；两端按「左右留白相等」收窄）
-//        ｜总时长贴轨道右端｜点赞 @(98,344)｜收藏 @(176,344)｜倍速 @(596,347)｜1080P @(658,347)｜选集 @(726,347)
+// 按画布 22:1「观影控件层」（844×390）1:1 重做。三栏布局：
+//   顶栏：返回 18×20（左缘钉 edge）｜剧名与集数 16px serif｜更多 16×20（右缘钉 edgeRight）
+//   中部：亮度 26×26（左缘钉 edge）｜暂停双竖条 48×48 @(398,174)｜锁 / 音量 44×44（右缘钉 edgeRight）
+//   底栏第一行：播放/暂停 20×20（左缘钉 edge，原画布此位是「下一集」，2026-11-15 用户改）
+//        ｜当前时间贴轨道左端｜轨道 166…(edgeRight - 时长宽 - gap)｜总时长（墨迹右缘钉 edgeRight）
+//   底栏第二行：点赞（左缘钉 edge）｜收藏 @176｜倍速 @596｜1080P @658｜选集（右缘钉 edgeRight）
 //   字幕：23px Noto Sans SC Bold 居中 @(326,330)
 //
-// 配色：全白（#FFFFFF）+ 朱砂进度点（#A05243）。旧版用的 #FF5A5F 进度 / #F5C451 金色激活线
-// 属已废弃的深色轨，本次全部弃用。
+// **左右边距只有一个常量 `M.edge`**（2026-11-15 用户拍板）：返回 / 亮度 / 点赞 / 底栏播放键的
+// 左缘、更多 / 锁定音量 / 选集的右缘、以及进度行整行两端，全部钉在 X(edge) 与 X(844-edge) 两条竖线上。
+// 不合适只改 `M.edge` 一个数，别再往各自位置写死坐标。
+//
+// 配色与竖屏卡片同源（DramaPlayerView.progressHud）：叠层文字纸白 #E8E6DF、进度已播段 #E8E6DF、
+// 未播轨道 #E8E6DF @0.30、当前点朱砂 #A05243。旧版横屏用的纯白 0.45/0.95 + 白点色温不一致
+// （2026-11-15 用户实报「全屏进度条颜色与竖屏不一致」）。
 //
 // 可见性 = 手动呼出（点按/进入全屏，3s 自动收起）或 scrubbing（seek 中常驻）。
 // insets 为容器本地坐标的安全区（由控制器按旋转方向从窗口安全区映射，避灵动岛）。
@@ -115,29 +120,32 @@ final class PlayerFullscreenControlsView: UIView {
     // 画布几何常量（844×390 基准，落到实际容器时按宽高比换算）
     private enum M {
         static let design = CGSize(width: 844, height: 390)
+        /// 【左右边距 · 唯一常量】画面左右各留 edge 宽的空白。
+        /// 钉在这两条竖线上的元素（2026-11-15 用户拍板）：
+        ///   左缘 = 返回 / 亮度 / 点赞 / 底栏播放键 / 底栏进度行起点
+        ///   右缘 = 更多 / 锁定 / 音量 / 选集 / 底栏总时长
+        /// 换机型按 sx 等比换算，所以这是「画布单位」，真机上是 edge×sx 点。
+        static let edge: CGFloat = 98
+        /// 右缘镜像（画布 844 − edge）
+        static var edgeRight: CGFloat { design.width - edge }
         /// 顶栏基线 y（画布返回 y=30 h=20 → 中心 40）
         static let topRowMidY: CGFloat = 40
-        /// 左栏起点（画布返回 x=98）
-        static let leadingX: CGFloat = 98
-        /// 右栏起点（画布更多 x=745 w=16 → 右缘 761，距右 83）
-        static let trailingX: CGFloat = 745
         /// 底部进度条 y（画布 318）
         static let trackY: CGFloat = 318
-        /// 轨道左缘：画布是 206，但那时左标右缘在 161、距播放键 43pt，中间一大段空当
-        /// （2026-11-15 用户要求收紧）。整块左移 40 → 166，左标随轨道贴到播放键右侧
-        /// （暂停双竖条墨迹止于 111.4 → 左标 ~124，间隙约 13pt）；右端 762 不变，轨道因此加长 40pt。
+        /// 轨道左缘（画布 206 收紧后的值，左标右缘与播放键的间隙已调过两轮）
         static let trackLeading: CGFloat = 166
-        /// 轨道右缘：**按「左右边距相等」定**（2026-11-15 用户实报行内左紧右松）。
-        /// 播放三角墨迹起于 104.3，对称留白 → 总时长墨迹应止于 844-104.3 ≈ 740；
-        /// 「00:24」宽约 29、与轨道间隙 10 → 轨道止于 ≈701。
-        /// 原值 762（画布 206+556）会让时长右缘顶到 801，右留白只剩 42，左侧却是 104。
-        static let trackTrailing: CGFloat = 701
-        /// 时间文字与轨道端点的间隙（左右同一口径，2026-11-15 用户要求收紧）
+        /// 时间文字与轨道端点的间隙（左右同一口径）
         static let timeGap: CGFloat = 10
         /// 互动行 y（画布 344 h=22 → 中心 355）
         static let actionMidY: CGFloat = 355
         /// 右栏工具 y（画布 347）
         static let toolMidY: CGFloat = 355
+        /// 点赞 / 收藏图标相对画布的放大倍数（2026-11-15 用户要求整体放大 20%）
+        static let actionIconScale: CGFloat = 1.2
+        /// 更多「⋮」的墨迹补偿：三枚圆点只有 2.8 宽、居中在 16 宽的画布盒里，
+        /// 盒子钉到边距线时墨迹会缩进 6.6。把盒子右移同样的量，让**墨迹**右缘与边距线齐平
+        /// （锁定/音量的 44 方钮底是整盒填充，本来就被盒子代表，不补）。
+        static let moreInkInset: CGFloat = 6.6
     }
 
     init(playback: DramaPlayerViewModel) {
@@ -219,12 +227,14 @@ final class PlayerFullscreenControlsView: UIView {
         currentTimeLabel.textAlignment = .right   // 贴轨道左端（layoutSubviews 里落位）
         addSubview(currentTimeLabel)
 
-        progressTrack.backgroundColor = UIColor.white.withAlphaComponent(0.45)
+        // 进度轨道：与竖屏卡片同一套色（DramaPlayerView.progressHud）
+        //   未播 #E8E6DF @0.30 / 已播 #E8E6DF / 当前点朱砂 #A05243
+        progressTrack.backgroundColor = UIColor(hex: "#E8E6DF").withAlphaComponent(0.30)
         addSubview(progressTrack)
-        progressFill.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+        progressFill.backgroundColor = UIColor(hex: "#E8E6DF")
         progressTrack.addSubview(progressFill)
-        // 进度圆点：画布 22:47 是白色 8×8（横屏没有用朱砂；朱砂只出现在竖屏 2:129）
-        progressDot.backgroundColor = .white
+        // 进度圆点：竖屏（画布 2:129）与横屏（画布 22:47）都是朱砂，别再用纯白
+        progressDot.backgroundColor = UIColor(hex: "#A05243")
         progressDot.layer.cornerRadius = 4
         addSubview(progressDot)
 
@@ -366,8 +376,9 @@ final class PlayerFullscreenControlsView: UIView {
         updateVisibility(animated: true)
     }
 
-    /// 锁定态翻转后重算可见性（控制器订阅 $isFullscreenLocked 调）
+    /// 锁定态翻转后重算可见性与锁图标外观（控制器订阅 $isFullscreenLocked 调）
     func refreshLockState() {
+        lockGlyph.isLocked = playback.isFullscreenLocked
         updateVisibility(animated: true)
     }
 
@@ -446,19 +457,24 @@ final class PlayerFullscreenControlsView: UIView {
         bottomScrim.frame = bottomScrimView.bounds
 
         // ── 顶栏 ──
-        // 返回：画布 18×20 @(98,30)，命中区 44
-        backButton.frame = centered(at: CGPoint(x: X(107), y: Y(40)), size: 44)
+        // 返回：18×20，左缘钉 X(edge)，命中区 44
+        backButton.frame = centered(at: CGPoint(x: X(M.edge) + 9, y: Y(M.topRowMidY)), size: 44)
         backGlyph.frame = CGRect(x: (44 - 18) / 2, y: (44 - 20) / 2, width: 18, height: 20)
-        // 剧名与集数：画布 197×19 @(122,30)
-        titleLabel.frame = CGRect(x: X(122), y: Y(30), width: min(197 * geo.sx, w - X(122) - 70), height: 19 * s)
-        titleLabel.font = Self.serifFont(13 * s, weight: .medium)
-        // 更多：画布 16×20 @(745,31)，命中区 44
-        moreButton.frame = centered(at: CGPoint(x: X(753), y: Y(41)), size: 44)
+        // 剧名与集数：左缘 122（返回墨迹右缘 + 6），右缘不撞更多按钮。
+        // 字号由 13 提到 16（2026-11-15 用户实报「太小了」），高度随之放大并保持中心在顶栏中线
+        let titleLeft = X(122)
+        let titleRight = X(M.edgeRight - 20)
+        let titleH = 22 * s
+        titleLabel.frame = CGRect(x: titleLeft, y: Y(M.topRowMidY) - titleH / 2,
+                                  width: max(titleRight - titleLeft, 40), height: titleH)
+        titleLabel.font = Self.serifFont(16 * s, weight: .medium)
+        // 更多：16×20，**墨迹**右缘钉 X(edgeRight)（⋮ 圆点窄，盒子补 moreInkInset），命中区 44
+        moreButton.frame = centered(at: CGPoint(x: X(M.edgeRight + M.moreInkInset) - 8, y: Y(41)), size: 44)
         moreGlyph.frame = CGRect(x: (44 - 16) / 2, y: (44 - 20) / 2, width: 16, height: 20)
 
         // ── 中部 ──
-        // 亮度：画布 26×26 @(106,180)，命中区 44
-        brightnessButton.frame = centered(at: CGPoint(x: X(119), y: Y(193)), size: 44)
+        // 亮度：26×26，左缘钉 X(edge)，命中区 44
+        brightnessButton.frame = centered(at: CGPoint(x: X(M.edge) + 13, y: Y(193)), size: 44)
         brightnessGlyph.frame = CGRect(x: (44 - 26) / 2, y: (44 - 26) / 2, width: 26, height: 26)
         // 暂停/播放：画布 48×48 @(398,174)，命中区 48（本身够大，不再扩）
         playPauseButton.frame = CGRect(x: X(398), y: Y(174), width: 48 * s, height: 48 * s)
@@ -466,10 +482,11 @@ final class PlayerFullscreenControlsView: UIView {
         pauseGlyph.frame = glyph48
         // 播放三角：同尺寸容器内居中（画布只给了暂停态）
         playGlyph.frame = glyph48
-        // 锁 / 音量：画布 44×44 @(734,118) / @(734,172)
-        lockButton.frame = CGRect(x: X(734), y: Y(118), width: 44 * s, height: 44 * s)
+        // 锁 / 音量：44×44，右缘钉 X(edgeRight)（画布 734+44=778 时右留白只有 66，和其他行不齐）
+        let sideBox = 44 * s
+        lockButton.frame = CGRect(x: X(M.edgeRight) - sideBox, y: Y(118), width: sideBox, height: sideBox)
         lockGlyph.frame = lockButton.bounds
-        volumeButton.frame = CGRect(x: X(734), y: Y(172), width: 44 * s, height: 44 * s)
+        volumeButton.frame = CGRect(x: X(M.edgeRight) - sideBox, y: Y(172), width: sideBox, height: sideBox)
         volumeGlyph.frame = volumeButton.bounds
         lockGlyph.glyphScale = s
         volumeGlyph.glyphScale = s
@@ -481,24 +498,30 @@ final class PlayerFullscreenControlsView: UIView {
         subtitleLabel.font = Self.sansFont(23 * s, weight: .bold)
 
         // ── 底栏 ──
-        // 播放/暂停：占原「下一集」位（画布 20×20 @(98,310)，命中区 44）
-        barPlayButton.frame = centered(at: CGPoint(x: X(108), y: Y(320)), size: 44)
+        // 播放/暂停：20×20，左缘钉 X(edge)（整行左端 = 左边距线），命中区 44
+        barPlayButton.frame = centered(at: CGPoint(x: X(M.edge) + 10, y: Y(320)), size: 44)
         let barGlyphRect = CGRect(x: (44 - 20) / 2, y: (44 - 20) / 2, width: 20, height: 20)
         barPlayGlyph.frame = barGlyphRect
         barPauseGlyph.frame = barGlyphRect
         barPlayGlyph.glyphScale = s
         barPauseGlyph.glyphScale = s
-        // 当前时间 / 总时长：都贴着自己那一侧的轨道端点，间隙统一 10（2026-11-15 用户要求收紧——
-        // 画布原坐标 132 / 774 是从整条画面排的，轨道改短后左 41pt、右 24pt 的空当太散）。
-        // 左标右对齐、右标左对齐，数字跟着轨道走，换机型缩放时不会漂。
+        // 当前时间：右对齐，贴轨道左端 -timeGap（盒宽 70 以容 1:23:45）
         let timeW = 70 * geo.sx
         currentTimeLabel.textAlignment = .right
         currentTimeLabel.frame = CGRect(x: X(M.trackLeading - M.timeGap) - timeW,
                                         y: Y(311), width: timeW, height: 14 * s)
         currentTimeLabel.font = Self.monoFont(11 * s)
-        // 进度轨道：画布 556×2 @(206,318)
+        // 总时长：右对齐，墨迹右缘钉 X(edgeRight) —— 整行右端 = 右边距线。
+        // 盒宽按时长文字实测宽度（00:24 与 1:23:45 不一样），这样轨道右端能恒留 timeGap
+        totalTimeLabel.font = Self.monoFont(11 * s)
+        totalTimeLabel.textAlignment = .right
+        let totalW = ceil(totalTimeLabel.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                            height: 14 * s)).width)
+        totalTimeLabel.frame = CGRect(x: X(M.edgeRight) - totalW, y: Y(311),
+                                      width: totalW, height: 14 * s)
+        // 进度轨道：左端 166，右端 = 时长墨迹左缘 - timeGap
         let trackX = X(M.trackLeading)
-        let trackRight = X(M.trackTrailing)
+        let trackRight = X(M.edgeRight) - totalW - X(M.timeGap)
         let trackW = max(trackRight - trackX, 1)
         let trackH = max(2 * s, 2)
         progressTrack.frame = CGRect(x: trackX, y: Y(M.trackY), width: trackW, height: trackH)
@@ -506,27 +529,23 @@ final class PlayerFullscreenControlsView: UIView {
         let fillW = min(max(progress, 0), 1) * trackW
         progressFill.frame = CGRect(x: 0, y: 0, width: fillW, height: trackH)
         progressFill.layer.cornerRadius = trackH / 2
-        // 圆点 8×8 @(264,315)：中心落在轨道中线上
+        // 圆点 8×8：中心落在轨道中线上
         let dotSize = max(8 * s, 8)
         progressDot.frame = CGRect(x: trackX + fillW - dotSize / 2,
                                    y: Y(M.trackY) + trackH / 2 - dotSize / 2,
                                    width: dotSize, height: dotSize)
         progressDot.layer.cornerRadius = dotSize / 2
-        totalTimeLabel.textAlignment = .left
-        totalTimeLabel.frame = CGRect(x: X(M.trackTrailing + M.timeGap),
-                                      y: Y(311), width: timeW, height: 14 * s)
-        totalTimeLabel.font = Self.monoFont(11 * s)
 
-        // 点赞 / 收藏：只留图标（数字已移除），画布 18×18 @(98,344) / @(176,344)
+        // 点赞 / 收藏：只留图标（数字已移除）。左缘钉 X(edge)，图标放大 20%
         layoutAction(button: likeButton, glyph: likeGlyph,
-                     designX: 98, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
+                     designX: M.edge, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
         layoutAction(button: saveButton, glyph: saveGlyph,
                      designX: 176, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
 
-        // 右栏工具：倍速 @596 / 1080P @658 / 选集 @726，y=347（中心 355）
+        // 右栏工具：倍速 @596 / 1080P @658 按画布原位，选集右缘钉 X(edgeRight)
         layoutTool(rateButton, designX: 596, designW: 24, scale: s, X: X, Y: Y)
         layoutTool(qualityButton, designX: 658, designW: 36, scale: s, X: X, Y: Y)
-        layoutTool(episodeButton, designX: 726, designW: 24, scale: s, X: X, Y: Y)
+        layoutToolTrailing(episodeButton, scale: s, X: X, Y: Y)
 
         // 一次性布局对账日志（排障用，按约定保留）
         if !didLogLayout {
@@ -545,13 +564,15 @@ final class PlayerFullscreenControlsView: UIView {
                               designX: CGFloat, designMidY: CGFloat,
                               scale s: CGFloat,
                               X: (CGFloat) -> CGFloat, Y: (CGFloat) -> CGFloat) {
-        // 画布：图标 18，命中区图标 +10。数字已移除，整体只有一枚图标
-        let iconSize = 18 * s
+        // 画布：图标 18，命中区图标 +10。数字已移除，整体只有一枚图标。
+        // 2026-11-15 用户要求「点赞和收藏整体放大 20%」→ 18 → 21.6（M.actionIconScale）
+        let iconSize = 18 * M.actionIconScale * s
+        let pad = 5 * s
         let midY = Y(designMidY)
-        button.frame = CGRect(x: X(designX) - 5, y: midY - iconSize / 2 - 5,
-                              width: iconSize + 10, height: iconSize + 10)
-        glyph.frame = CGRect(x: 5, y: 5, width: iconSize, height: iconSize)
-        glyph.glyphScale = s
+        button.frame = CGRect(x: X(designX) - pad, y: midY - iconSize / 2 - pad,
+                              width: iconSize + pad * 2, height: iconSize + pad * 2)
+        glyph.frame = CGRect(x: pad, y: pad, width: iconSize, height: iconSize)
+        glyph.glyphScale = s * M.actionIconScale
     }
 
     private func layoutTool(_ button: UIButton, designX: CGFloat, designW: CGFloat,
@@ -562,6 +583,17 @@ final class PlayerFullscreenControlsView: UIView {
         button.frame = CGRect(x: X(designX) - 12, y: midY - 20,
                               width: max(designW * s, 24) + 24, height: 40)
         button.titleLabel?.font = button.titleLabel?.font.withSize(12 * s)
+    }
+
+    /// 右缘钉死版：文字整体右对齐到 X(edgeRight)（选集这种贴右边距线的工具用）
+    private func layoutToolTrailing(_ button: UIButton, scale s: CGFloat,
+                                    X: (CGFloat) -> CGFloat, Y: (CGFloat) -> CGFloat) {
+        button.titleLabel?.font = button.titleLabel?.font.withSize(12 * s)
+        let textW = ceil(button.titleLabel?.intrinsicContentSize.width ?? 24 * s)
+        let hitW = max(textW + 24, 44)
+        button.contentHorizontalAlignment = .right
+        button.frame = CGRect(x: X(M.edgeRight) - hitW, y: Y(M.toolMidY) - 20,
+                              width: hitW, height: 40)
     }
 
     // MARK: 动作

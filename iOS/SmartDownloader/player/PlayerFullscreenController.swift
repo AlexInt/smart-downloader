@@ -775,6 +775,12 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=drawerOpen")
             return false
         }
+        // 锁定态：除「点按呼出解锁钮」外一切手势不接——不 seek、不起 2x（行业做法：
+        // 锁定后手里握着的机器不该因为误触改进度，2026-11-15 用户拍板）
+        if playback.isFullscreenLocked, !(gestureRecognizer is UITapGestureRecognizer) {
+            print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=locked")
+            return false
+        }
         // seek 只认横向/斜向主导（保持与卡片同规则；全屏无分页滚动可干扰）
         guard gestureRecognizer === seekPan, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let t = pan.translation(in: pan.view)
@@ -891,6 +897,11 @@ extension PlayerFullscreenController {
     /// 进入全屏动画结束后调（performEnter 的 completion 里）
     func previewApplyAfterEnter() {
         guard PlayerPreviewFlags.enabled else { return }
+        if PlayerPreviewFlags.locked {
+            // 锁定态视觉定帧：锁上后只应剩「解锁」一枚（配 -playerPinControls 保活）
+            playback.isFullscreenLocked = true
+            print("PLAYER_DBG [Preview] locked forced isFullscreenLocked=\(playback.isFullscreenLocked)")
+        }
         if PlayerPreviewFlags.pinControls {
             controls?.showTransient()
             previewPinTimer?.invalidate()

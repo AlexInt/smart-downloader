@@ -37,6 +37,9 @@ enum PlayerPreviewFlags {
     /// `-playerPinControls`：每 2s 重置一次控件显隐计时（否则 3s 后自动收起，截到空屏）
     static var pinControls: Bool { args.contains("-playerPinControls") }
 
+    /// `-playerLocked`：全屏后直接置锁定态（只剩解锁钮），用于截锁定态视觉
+    static var locked: Bool { args.contains("-playerLocked") }
+
     /// 样张剧名（默认用装进模拟器的「横屏样张」，三集 1280×720 真片源）
     static var seriesName: String { value(after: "-playerSeries") ?? "横屏样张" }
 
