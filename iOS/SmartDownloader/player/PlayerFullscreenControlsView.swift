@@ -128,6 +128,8 @@ final class PlayerFullscreenControlsView: UIView {
         /// **不能写成总时长右缘（774+45=819）**：那会让轨道从「00:24」底下穿过去，
         /// 时间数字压在一条白线上（2026-11-15 用户实机实报）。总时长起点在 774，留 12pt 间隙。
         static let trackTrailing: CGFloat = 762
+        /// 时间文字与轨道端点的间隙（左右同一口径，2026-11-15 用户要求收紧）
+        static let timeGap: CGFloat = 10
         /// 互动行 y（画布 344 h=22 → 中心 355）
         static let actionMidY: CGFloat = 355
         /// 右栏工具 y（画布 347）
@@ -210,7 +212,7 @@ final class PlayerFullscreenControlsView: UIView {
 
         currentTimeLabel.font = Self.monoFont(11)
         currentTimeLabel.textColor = .white
-        currentTimeLabel.textAlignment = .left
+        currentTimeLabel.textAlignment = .right   // 贴轨道左端（layoutSubviews 里落位）
         addSubview(currentTimeLabel)
 
         progressTrack.backgroundColor = UIColor.white.withAlphaComponent(0.45)
@@ -224,7 +226,7 @@ final class PlayerFullscreenControlsView: UIView {
 
         totalTimeLabel.font = Self.monoFont(11)
         totalTimeLabel.textColor = .white
-        totalTimeLabel.textAlignment = .right
+        totalTimeLabel.textAlignment = .left    // 贴轨道右端（layoutSubviews 里落位）
         addSubview(totalTimeLabel)
 
         // 点赞（画布 22:49：心形 18；数字已按用户要求移除，只记本地状态不报数）
@@ -474,10 +476,15 @@ final class PlayerFullscreenControlsView: UIView {
         barPauseGlyph.frame = barGlyphRect
         barPlayGlyph.glyphScale = s
         barPauseGlyph.glyphScale = s
-        // 当前时间：画布 46×13 @(132,311)
-        currentTimeLabel.frame = CGRect(x: X(132), y: Y(311), width: 60 * geo.sx, height: 14 * s)
+        // 当前时间 / 总时长：都贴着自己那一侧的轨道端点，间隙统一 10（2026-11-15 用户要求收紧——
+        // 画布原坐标 132 / 774 是从整条画面排的，轨道改短后左 41pt、右 24pt 的空当太散）。
+        // 左标右对齐、右标左对齐，数字跟着轨道走，换机型缩放时不会漂。
+        let timeW = 70 * geo.sx
+        currentTimeLabel.textAlignment = .right
+        currentTimeLabel.frame = CGRect(x: X(M.trackLeading - M.timeGap) - timeW,
+                                        y: Y(311), width: timeW, height: 14 * s)
         currentTimeLabel.font = Self.monoFont(11 * s)
-        // 进度轨道：画布 556×2 @(206,318)；总时长 45×13 @(774,311)
+        // 进度轨道：画布 556×2 @(206,318)
         let trackX = X(M.trackLeading)
         let trackRight = X(M.trackTrailing)
         let trackW = max(trackRight - trackX, 1)
@@ -493,7 +500,9 @@ final class PlayerFullscreenControlsView: UIView {
                                    y: Y(M.trackY) + trackH / 2 - dotSize / 2,
                                    width: dotSize, height: dotSize)
         progressDot.layer.cornerRadius = dotSize / 2
-        totalTimeLabel.frame = CGRect(x: X(774), y: Y(311), width: 45 * geo.sx, height: 14 * s)
+        totalTimeLabel.textAlignment = .left
+        totalTimeLabel.frame = CGRect(x: X(M.trackTrailing + M.timeGap),
+                                      y: Y(311), width: timeW, height: 14 * s)
         totalTimeLabel.font = Self.monoFont(11 * s)
 
         // 点赞 / 收藏：只留图标（数字已移除），画布 18×18 @(98,344) / @(176,344)
