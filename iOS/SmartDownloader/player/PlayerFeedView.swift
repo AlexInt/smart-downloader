@@ -127,29 +127,33 @@ struct PlayerFeedView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { showEpisodePanel = false }
                     .transition(.opacity)
-
-                VStack {
-                    Spacer(minLength: 0)
-                    EpisodePanel(
-                        total: currentEpisodeTotal,
-                        current: currentEpisodeIndex,
-                        onSelect: { index in
-                            showEpisodePanel = false
-                            jumpToEpisode(index)
-                        },
-                        onClose: { showEpisodePanel = false }
-                    )
-                    // 底部弹层：占屏高 62%，圆角只收顶部两角（照横屏抽屉的 36 圆角语言）
-                    .frame(height: UIScreen.main.bounds.height * 0.62)
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20))
-                    .transition(.move(edge: .bottom))
-                }
-                .ignoresSafeArea(edges: .bottom)
             }
+
+            // 选集面板（2026-11-15 用户拍板）：高度 = 屏高 46.5%（原 62% 降 25%），
+            // 出现 = 自底部弹出、消失 = 向底部缩短（由 BottomSheet 的贴底高度窗驱动）。
+            // **面板本体常驻、只切高度**：用 `if` 插拔的话插入那一帧高度已是满值，
+            // 展开动画会被整段吞掉（只剩遮罩淡入），这是原来「弹出感不明显」的原因。
+            BottomSheet(isPresented: showEpisodePanel,
+                        height: UIScreen.main.bounds.height * Self.episodePanelHeightRatio) {
+                EpisodePanel(
+                    total: currentEpisodeTotal,
+                    current: currentEpisodeIndex,
+                    onSelect: { index in
+                        showEpisodePanel = false
+                        jumpToEpisode(index)
+                    },
+                    onClose: { showEpisodePanel = false }
+                )
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(showEpisodePanel)
         }
         .animation(.easeInOut(duration: 0.22), value: showRatePanel)
         .animation(.easeInOut(duration: 0.26), value: showEpisodePanel)
     }
+
+    /// 选集面板占屏高的比例（原 0.62，2026-11-15 用户要求降低 25% → 0.465）
+    private static let episodePanelHeightRatio: CGFloat = 0.465
 
     /// 当前集的「第几集 / 共几集」：选集网格要用真实集号（槽位的 sort 就是集号）
     private var currentEpisodeIndex: Int {

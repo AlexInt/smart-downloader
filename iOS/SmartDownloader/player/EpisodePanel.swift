@@ -122,6 +122,38 @@ struct EpisodePanel: View {
     }
 }
 
+// MARK: - 底部弹层容器（选集面板用）
+
+/// 自底部弹出 / 向底部缩短的弹层（2026-11-15 用户拍板）。
+///
+/// 实现 = **贴底的高度窗 + clipped**：内容始终按目标高度排布、底边钉在屏幕底，
+/// 窗高 0 → H 就是把整块从底边「长出来」（观感是自底部弹出），H → 0 就是缩回底边
+/// （观感是向底部缩短）。**不要换成 `.transition(.move(edge: .bottom))`**：那是整块
+/// 上下平移，消失时内容会一边下移一边露出后面的画面；也不要 `.scaleEffect`，
+/// 格子会被纵向压扁。用高度动画则内容不参与缩放、格子比例不变。
+struct BottomSheet<Content: View>: View {
+    /// 是否展开（外层配 `.animation(_:value:)` 驱动高度）
+    let isPresented: Bool
+    /// 展开后的高度
+    let height: CGFloat
+    var topRadius: CGFloat = 20
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            content()
+                .frame(height: height)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: topRadius,
+                                                  topTrailingRadius: topRadius))
+                // 高度窗：0 时整块被裁掉，H 时完整露头；对齐 .bottom 让底边始终钉在屏幕底
+                .frame(height: isPresented ? height : 0, alignment: .bottom)
+                .clipped()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// 关闭 X（画布 22:89：20×20 内 12×12 叉，描边 1.8）
 struct OverlayCloseGlyph: View {
     var size: CGFloat = 20

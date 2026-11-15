@@ -143,6 +143,10 @@ final class PlayerFullscreenControlsView: UIView {
         static let toolMidY: CGFloat = 355
         /// 点赞 / 收藏图标相对画布的放大倍数（2026-11-15 用户要求整体放大 20%）
         static let actionIconScale: CGFloat = 1.2
+        /// 收藏（星形）在点赞基础上再放大 20%（2026-11-15 用户二次反馈「全屏收藏放大 20%」）：
+        /// 星形墨迹只占 18 框里的 14×13.4，同样 1.2 倍下比爱心（14×12）看起来更小，
+        /// 所以收藏单独再加一档 → 18 × 1.2 × 1.2 = 25.9
+        static let saveIconScale: CGFloat = actionIconScale * 1.2
         /// 更多「⋮」的墨迹补偿：三枚圆点只有 2.8 宽、居中在 16 宽的画布盒里，
         /// 盒子钉到边距线时墨迹会缩进 6.6。把盒子右移同样的量，让**墨迹**右缘与边距线齐平
         /// （锁定/音量的 44 方钮底是整盒填充，本来就被盒子代表，不补）。
@@ -531,10 +535,11 @@ final class PlayerFullscreenControlsView: UIView {
                                    width: dotSize, height: dotSize)
         progressDot.layer.cornerRadius = dotSize / 2
 
-        // 点赞 / 收藏：只留图标（数字已移除）。左缘钉 X(edge)，图标放大 20%
-        layoutAction(button: likeButton, glyph: likeGlyph,
+        // 点赞 / 收藏：只留图标（数字已移除）。左缘钉 X(edge)；
+        // 点赞 × M.actionIconScale，收藏再 ×1.2（星形墨迹天生偏小）
+        layoutAction(button: likeButton, glyph: likeGlyph, glyphScale: M.actionIconScale,
                      designX: M.edge, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
-        layoutAction(button: saveButton, glyph: saveGlyph,
+        layoutAction(button: saveButton, glyph: saveGlyph, glyphScale: M.saveIconScale,
                      designX: 176, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
 
         // 右栏工具：倍速 @596 / 1080P @658 按画布原位，选集右缘钉 X(edgeRight)
@@ -556,18 +561,19 @@ final class PlayerFullscreenControlsView: UIView {
     }
 
     private func layoutAction(button: UIButton, glyph: FullscreenGlyphView,
+                              glyphScale: CGFloat,
                               designX: CGFloat, designMidY: CGFloat,
                               scale s: CGFloat,
                               X: (CGFloat) -> CGFloat, Y: (CGFloat) -> CGFloat) {
         // 画布：图标 18，命中区图标 +10。数字已移除，整体只有一枚图标。
-        // 2026-11-15 用户要求「点赞和收藏整体放大 20%」→ 18 → 21.6（M.actionIconScale）
-        let iconSize = 18 * M.actionIconScale * s
+        // 放大倍数由调用方给（点赞 M.actionIconScale / 收藏 M.saveIconScale）
+        let iconSize = 18 * glyphScale * s
         let pad = 5 * s
         let midY = Y(designMidY)
         button.frame = CGRect(x: X(designX) - pad, y: midY - iconSize / 2 - pad,
                               width: iconSize + pad * 2, height: iconSize + pad * 2)
         glyph.frame = CGRect(x: pad, y: pad, width: iconSize, height: iconSize)
-        glyph.glyphScale = s * M.actionIconScale
+        glyph.glyphScale = s * glyphScale
     }
 
     private func layoutTool(_ button: UIButton, designX: CGFloat, designW: CGFloat,

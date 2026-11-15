@@ -565,27 +565,16 @@ struct DramaPlayerView: View {
         .accessibilityLabel(playback.isCleanScreen ? "退出清屏" : "清屏")
     }
 
-    /// 静音（用户要求放清屏旁）：素材库有 ic_sound，静音时图标变灰 + 金斜线
+    /// 静音（用户要求放清屏旁）：图标与全屏音量钮同一套几何（`OverlayVolumeGlyph`，无钮底），
+    /// 静音态多一道白斜线——不再用素材 `ic_sound` + 金色斜线（2026-11-15 用户要求两处一致）
     private var muteButton: some View {
         Button {
             guard isActive else { return }
             playback.isMuted.toggle()
         } label: {
-            ZStack {
-                Image("ic_sound")
-                    .renderingMode(.template)
-                    .resizable().scaledToFit()
-                    .foregroundStyle(playback.isMuted ? DWColor.textHint : .white)
-                    .frame(width: 20, height: 20)
-                if playback.isMuted {
-                    Capsule()
-                        .fill(DWColor.gold)
-                        .frame(width: 26, height: 1.8)
-                        .rotationEffect(.degrees(45))
-                }
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+            OverlayVolumeGlyph(size: 44, muted: playback.isMuted, color: .white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(playback.isMuted ? "取消静音" : "静音")

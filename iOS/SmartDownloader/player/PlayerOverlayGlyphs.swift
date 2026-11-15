@@ -169,16 +169,25 @@ struct OverlayLockGlyph: View {
 }
 
 // MARK: 音量（画布 22:36：44×44 r11 底；喇叭 10×18 @(14,13) 描边 2 + 声波 7×14 @(28,15) 描边 1.8）
+//
+// **竖屏静音钮与全屏音量钮共用这一枚**（2026-11-15 用户要求「竖屏的静音与非静音 icon
+// 改为与全屏的一致」）：全屏带 44 方钮底（`showsChip = true`），竖屏右下角没有钮底，
+// 直接画在画面上（默认 false）。几何与全屏 `VolumeGlyphView` 逐点一致——喇叭
+// 14…24 / 13…31 描边 2，声波圆心 (24,22) r9 ±55° 描边 1.8，静音斜线 (15,15)-(31,31) 描边 2.2。
 
 struct OverlayVolumeGlyph: View {
     var size: CGFloat = 44
     var muted: Bool
     var color: Color = .white
+    /// 是否画 44 方钮底（全屏有、竖屏没有）
+    var showsChip: Bool = false
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 11)
-                .fill(DWColor.overlayButton.opacity(0.42))
+            if showsChip {
+                RoundedRectangle(cornerRadius: 11 * (size / 44))
+                    .fill(DWColor.overlayButton.opacity(0.42))
+            }
             Canvas { ctx, canvasSize in
                 let s = canvasSize.width / 44
                 // 喇叭：矩形 + 三角（画布 10×18 @(14,13)）
@@ -193,16 +202,16 @@ struct OverlayVolumeGlyph: View {
                 ctx.stroke(horn, with: .color(color),
                            style: StrokeStyle(lineWidth: 2 * s, lineCap: .round, lineJoin: .round))
                 if muted {
-                    // 静音：一道斜线划过（与竖屏静音同一手势语言，但这里是实心细线）
+                    // 静音：一道斜线划过（与全屏同一条线：15,15 → 31,31）
                     var slash = Path()
                     slash.move(to: CGPoint(x: 15 * s, y: 15 * s))
                     slash.addLine(to: CGPoint(x: 31 * s, y: 31 * s))
                     ctx.stroke(slash, with: .color(color),
                                style: StrokeStyle(lineWidth: 2.2 * s, lineCap: .round))
                 } else {
-                    // 声波：7×14 的弧 @(28,15)
+                    // 声波：圆弧，圆心与全屏一致 (24,22) r9
                     var wave = Path()
-                    wave.addArc(center: CGPoint(x: 26 * s, y: 22 * s), radius: 9 * s,
+                    wave.addArc(center: CGPoint(x: 24 * s, y: 22 * s), radius: 9 * s,
                                 startAngle: .degrees(-55), endAngle: .degrees(55), clockwise: false)
                     ctx.stroke(wave, with: .color(color),
                                style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round))
