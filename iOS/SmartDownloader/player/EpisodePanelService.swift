@@ -47,6 +47,7 @@ final class EpisodePanelService {
             )
         }
         print("PLAYER_DBG [Service] panelItems series=\(seriesName) cells=\(items.count) "
+              + "sorts=\(items.map(\.sort)) "
               + "downloaded=\(items.filter(\.isDownloaded).map(\.sort)) "
               + "playable=\(items.filter(\.playable).count) cachedPlayable=\(playableBySort.count)")
         return items

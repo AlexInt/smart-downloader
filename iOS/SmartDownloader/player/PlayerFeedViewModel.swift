@@ -53,7 +53,10 @@ final class PlayerFeedViewModel: ObservableObject {
     var seriesName: String { queue?.seriesName ?? "" }
     var intro: String? { queue?.intro }
     var tags: String? { queue?.tags }
-    var totalEpisodes: Int { slots.count }
+    /// 本剧一共多少集（「选集 · 全 N 集」与全屏「下一集」边界都用它）。
+    /// 队列的总集数来自剧集元数据，不是「磁盘上现在有几集」——只下了 7~11 集的剧
+    /// 也必须显示 11 集（用户实报 2026-11-15「竖屏的选集显示共5集」）。
+    var totalEpisodes: Int { queue?.totalEpisodes ?? slots.count }
 
     func configure(request: ImmersivePlaybackRequest, manager: DownloadManager? = nil) {
         guard !configured else {
@@ -73,7 +76,7 @@ final class PlayerFeedViewModel: ObservableObject {
         // 全屏控制层要的元信息（顶栏剧名集数 / 选集抽屉全集数）：本类持有队列知识，
         // 播放 VM 不持有——一次性注入，避免播放侧自己反查
         playback.seriesName = q.seriesName
-        playback.episodeTotal = q.slots.count
+        playback.episodeTotal = q.totalEpisodes
         // 选集面板（2026-11-15）：格子由本类装配后推进播放 VM 的 subject，
         // 点按也统一收口到 selectEpisode（持有队列/下载知识的是本类，不是播放 VM）
         playback.onEpisodeSelected = { [weak self] sort in
@@ -87,7 +90,7 @@ final class PlayerFeedViewModel: ObservableObject {
             playerService.preload([current] + neighbors)
             print("PLAYER_DBG [VM] preload entry sort=\(current.sort) neighbors=\(neighbors.map(\.sort))")
         }
-        print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil") manager=\(manager != nil)")
+        print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) totalEpisodes=\(q.totalEpisodes) current=\(currentSort.map(String.init) ?? "nil") manager=\(manager != nil)")
         // 姿态触发：设备稳定转横自动进全屏（仅横屏片源），稳定回竖自动退出
         let trigger = PlayerOrientationTrigger(playback: playback)
         trigger.start()
@@ -159,6 +162,13 @@ final class PlayerFeedViewModel: ObservableObject {
         }
         if scanDisk, self.queue?.refreshAvailability() == true, let refreshed = self.queue {
             slots = refreshed.slots
+            print("PLAYER_DBG [CHECK] panel slots refreshed source=\(reason) cells=\(refreshed.slots.count) total=\(refreshed.totalEpisodes)")
+        }
+        // 总集数跟着队列走：面板补出来的格数 / 缓存刚写入的 episode_count 都要反映到
+        // 「选集 · 全 N 集」上（refreshAvailability 之后 totalEpisodeCount 可能变大）
+        if playback.episodeTotal != totalEpisodes {
+            print("PLAYER_DBG [CHECK] episodeTotal \(playback.episodeTotal) → \(totalEpisodes) source=\(reason)")
+            playback.episodeTotal = totalEpisodes
         }
         let items = panelService.items(slots: slots, seriesName: queue.seriesName,
                                        target: playbackTarget, manager: manager)

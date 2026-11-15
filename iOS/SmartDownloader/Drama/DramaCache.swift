@@ -50,25 +50,123 @@ enum DramaCache {
             return []
         }
         defer { sqlite3_close(db) }
-        let sql = """
-        SELECT e.sort FROM drama_episodes e
-        JOIN drama_cache c ON c.site = e.site AND c.drama_id = e.drama_id
-        WHERE c.name = ? ORDER BY e.sort;
-        """
+        guard let resolved = resolveDramaID(forSeriesName: name, db: db) else { return [] }
+        let sorts = episodeSorts(site: resolved.site, dramaID: resolved.dramaID, db: db)
+        print("PLAYER_DBG [Service] DramaCache.allSorts name=\(name) matchedBy=\(resolved.matchedBy) "
+              + "\(resolved.site)#\(resolved.dramaID) rows=\(sorts.count) sorts=\(Array(sorts.prefix(20)))")
+        return sorts
+    }
+
+    /// 全剧总集数（「选集 · 全 N 集」与面板应显示多少格用它）：
+    /// 取详情接口的 `episode_count` 与已缓存最大集号的较大者。
+    /// **下载页入口只有剧名**，这是「本剧一共多少集」唯一可离线得知的字段——
+    /// 没有它，只下了第 7~11 集的剧在选集面板里就只剩 5 格（用户实报 2026-11-15）。
+    /// 从未抓过详情（缓存行缺失）返回 nil：我们绝不凭空编一个总集数。
+    static func episodeTotal(forSeriesName name: String) -> Int? {
+        guard let db = openDB() else {
+            print("PLAYER_DBG [Service] DramaCache.episodeTotal FAIL reason=openDB name=\(name)")
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        guard let resolved = resolveDramaID(forSeriesName: name, db: db) else {
+            print("PLAYER_DBG [Service] DramaCache.episodeTotal MISS reason=noDramaByName name=\(name)")
+            return nil
+        }
+        return episodeTotal(site: resolved.site, dramaID: resolved.dramaID, db: db)
+    }
+
+    static func episodeTotal(site: String, dramaID: String) -> Int? {
+        guard let db = openDB() else { return nil }
+        defer { sqlite3_close(db) }
+        return episodeTotal(site: site, dramaID: dramaID, db: db)
+    }
+
+    private static func episodeTotal(site: String, dramaID: String, db: OpaquePointer) -> Int? {
+        var declared = 0
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            DramaDatabase.fail(db, "allSorts prepare")
-            print("PLAYER_DBG [Service] DramaCache.allSorts FAIL reason=prepare name=\(name)")
+        if sqlite3_prepare_v2(db, "SELECT episode_count FROM drama_cache WHERE site=? AND drama_id=?;",
+                              -1, &stmt, nil) == SQLITE_OK {
+            DramaDatabase.bind(stmt, 1, site)
+            DramaDatabase.bind(stmt, 2, dramaID)
+            if sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL {
+                declared = Int(sqlite3_column_int(stmt, 0))
+            }
+            sqlite3_finalize(stmt)
+        } else {
+            DramaDatabase.fail(db, "episodeTotal prepare")
+        }
+        let maxSort = episodeSorts(site: site, dramaID: dramaID, db: db).max() ?? 0
+        let total = max(declared, maxSort)
+        print("PLAYER_DBG [Service] DramaCache.episodeTotal \(site)#\(dramaID) "
+              + "declared=\(declared) maxSort=\(maxSort) → \(total)")
+        return total > 0 ? total : nil
+    }
+
+    private static func episodeSorts(site: String, dramaID: String, db: OpaquePointer) -> [Int] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT sort FROM drama_episodes WHERE site=? AND drama_id=? ORDER BY sort;",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "episodeSorts prepare")
             return []
         }
-        DramaDatabase.bind(stmt, 1, name)
+        DramaDatabase.bind(stmt, 1, site)
+        DramaDatabase.bind(stmt, 2, dramaID)
         var sorts: [Int] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            sorts.append(Int(sqlite3_column_int(stmt, 0)))
+            // sort 列缺失（markDownloaded 早于 saveInfo 建的行）读出来是 NULL → 0，
+            // 0 不是合法集号，直接跳过（否则面板第一格会显示「0」）
+            guard sqlite3_column_type(stmt, 0) != SQLITE_NULL else { continue }
+            let sort = Int(sqlite3_column_int(stmt, 0))
+            if sort > 0 { sorts.append(sort) }
         }
         sqlite3_finalize(stmt)
-        print("PLAYER_DBG [Service] DramaCache.allSorts name=\(name) rows=\(sorts.count) sorts=\(Array(sorts.prefix(20)))")
         return sorts
+    }
+
+    /// 剧名 → (site, drama_id)。下载页入口只有「剧目录名」，而 `drama_cache.name` 存的是
+    /// 接口原名：原名里带 `/ : （）` 之类字符时，落盘目录名会被 `DownloadEngine.sanitizeTitle`
+    /// 改写，两者不再相等。只做精确匹配就会让整条反查落空（面板于是只剩磁盘上那几集）。
+    /// 所以先精确匹配，未命中再按同一套安全化规则比对一次；同名多剧取最近抓取的一条。
+    private static func resolveDramaID(forSeriesName name: String, db: OpaquePointer)
+        -> (site: String, dramaID: String, matchedBy: String)? {
+        let normalized = DownloadEngine.sanitizeTitle(name) ?? name
+        var exact: (String, String)?
+        var exactRows = 0
+        var tolerant: (String, String)?
+        var tolerantRows = 0
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT site, drama_id, name FROM drama_cache ORDER BY fetched_at DESC;",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "resolveDramaID prepare")
+            return nil
+        }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let site = DramaDatabase.text(stmt, 0) ?? ""
+            let dramaID = DramaDatabase.text(stmt, 1) ?? ""
+            let cachedName = DramaDatabase.text(stmt, 2) ?? ""
+            if cachedName == name {
+                exactRows += 1
+                if exact == nil { exact = (site, dramaID) }
+            } else if (DownloadEngine.sanitizeTitle(cachedName) ?? cachedName) == normalized {
+                tolerantRows += 1
+                if tolerant == nil { tolerant = (site, dramaID) }
+            }
+        }
+        sqlite3_finalize(stmt)
+        if let exact {
+            if exactRows > 1 {
+                print("PLAYER_DBG [Service] resolveDramaID AMBIGUOUS name=\(name) rows=\(exactRows) "
+                      + "取最近抓取的一条 \(exact.0)#\(exact.1)")
+            }
+            return (exact.0, exact.1, "exact")
+        }
+        if let tolerant {
+            print("PLAYER_DBG [Service] resolveDramaID MATCH reason=sanitizedName name=\(name) "
+                  + "→ \(tolerant.0)#\(tolerant.1) rows=\(tolerantRows)")
+            return (tolerant.0, tolerant.1, "sanitized")
+        }
+        print("PLAYER_DBG [Service] resolveDramaID MISS reason=noDramaByName name=\(name) normalized=\(normalized)")
+        return nil
     }
 
     /// 剧的「行为数据身份」：按剧名反查 site/drama_id 与 集号→服务端集 id 映射。
@@ -86,31 +184,8 @@ enum DramaCache {
             return nil
         }
         defer { sqlite3_close(db) }
-        var site: String?
-        var dramaID: String?
-        var candidates = 0
-        let dramaSQL = "SELECT site, drama_id FROM drama_cache WHERE name=? ORDER BY fetched_at DESC;"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, dramaSQL, -1, &stmt, nil) == SQLITE_OK else {
-            DramaDatabase.fail(db, "seriesIdentity prepare"); return nil
-        }
-        DramaDatabase.bind(stmt, 1, name)
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            candidates += 1
-            if site == nil {
-                site = DramaDatabase.text(stmt, 0)
-                dramaID = DramaDatabase.text(stmt, 1)
-            }
-        }
-        sqlite3_finalize(stmt)
-        guard let realSite = site, let realID = dramaID else {
-            print("PLAYER_DBG [Service] seriesIdentity MISS reason=noDramaByName name=\(name)")
-            return nil
-        }
-        if candidates > 1 {
-            print("PLAYER_DBG [Service] seriesIdentity AMBIGUOUS name=\(name) rows=\(candidates) 取最近抓取的一条 \(realSite)#\(realID)")
-        }
-        return seriesIdentity(site: realSite, dramaID: realID)
+        guard let resolved = resolveDramaID(forSeriesName: name, db: db) else { return nil }
+        return seriesIdentity(site: resolved.site, dramaID: resolved.dramaID)
     }
 
     /// 已知 (site, drama_id) 时直接走这条：剧集页入口带 target 过来，不必按剧名猜

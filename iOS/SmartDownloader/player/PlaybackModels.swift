@@ -38,7 +38,8 @@ struct EpisodePanelState: Equatable {
 
 /// 拉起沉浸式播放页的请求。
 /// knownSorts = 调用方已经掌握的全剧集号（剧集页直接持有 info.episodes）；
-/// 为空时由 service 反查本地缓存，再退化为「真实已下载的集」。全程不凭空造集号。
+/// 为空时由 service 反查本地缓存（按剧名，含「落盘目录名 vs 接口原名」的容错匹配），
+/// 再用剧集总集数把 1…N 补齐，最后才退化为「真实已下载的集」。
 struct ImmersivePlaybackRequest: Identifiable {
     let id = UUID()
     let seriesName: String

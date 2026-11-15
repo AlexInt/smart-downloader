@@ -50,6 +50,12 @@ enum PlayerPreviewFlags {
     /// 样张剧名（默认用装进模拟器的「横屏样张」，三集 1280×720 真片源）
     static var seriesName: String { value(after: "-playerSeries") ?? "横屏样张" }
 
+    /// `-playerNoKnown`：请求里**不带** knownSorts（模拟下载页入口：只有剧名 + 磁盘）
+    static var noKnownSorts: Bool { args.contains("-playerNoKnown") }
+
+    /// `-playerStart <n>`：样张从第 n 集起播（默认 1）
+    static var startSort: Int { value(after: "-playerStart").flatMap(Int.init) ?? 1 }
+
     private static func value(after key: String) -> String? {
         guard let i = args.firstIndex(of: key), i + 1 < args.count else { return nil }
         let next = args[i + 1]
@@ -61,8 +67,8 @@ enum PlayerPreviewFlags {
 func makePreviewPlaybackRequest() -> ImmersivePlaybackRequest {
     ImmersivePlaybackRequest(seriesName: PlayerPreviewFlags.seriesName,
                              intro: nil,
-                             startSort: 1,
-                             knownSorts: [1, 2, 3])
+                             startSort: PlayerPreviewFlags.startSort,
+                             knownSorts: PlayerPreviewFlags.noKnownSorts ? [] : [1, 2, 3])
 }
 
 /// 样张宿：与正式入口同一套 DramaPlayerContainer，不复制任何播放逻辑
