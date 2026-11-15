@@ -226,7 +226,8 @@ final class DramaPageViewModel: ObservableObject {
         return Array(tags.split(separator: " ").map(String.init).prefix(3))
     }
 
-    var episodeCountText: String { "共 \(info?.episodes.count ?? 0) 集" }
+    // 「共 N 集」不再单独出文案（选集标题右侧那行已按用户要求删掉），
+    // 集数只在下面 hintText 里与「已完结 · 已下载」并列出现一次。
 
     /// 前 12 集固定主屏，其余每 6 集一行内联展开（设计稿 13–68 集 = 10 行 × 56pt）
     var extraEpisodeRows: Int {
@@ -297,8 +298,15 @@ final class DramaPageViewModel: ObservableObject {
     /// 重试按钮：换 reload 版本号触发 onChange 重新加载
     func reload() { reloadID = UUID() }
 
-    /// ↻ 强制更新：走网络拉取并按集 ID 合并新集（保留下载标记）；详情采集也强制重抓
-    func refresh() { fetchAndCache(forceHarvest: true) }
+    /// 强制更新：走网络拉取并按集 ID 合并新集（保留下载标记）；详情采集也强制重抓
+    /// - Parameters:
+    ///   - quiet: 静默刷新。下拉刷新必须用它——`loading` 一置真整页会退回骨架屏，
+    ///     海报和页内容当场消失，指示器还悬在上头，等于自己把自己拆了。
+    ///     静默模式下网络失败也不撕页面（有内容就只弹提示条）。
+    ///   - completion: 拉取结束回调（成功与失败都回），供页面收尾三态指示器。
+    func refresh(quiet: Bool = false, completion: (() -> Void)? = nil) {
+        fetchAndCache(forceHarvest: true, quiet: quiet, completion: completion)
+    }
 
     func selectAll() { selected = Set(selectableEpisodes.map(\.id)) }
     func clearSelection() { selected.removeAll() }
@@ -522,8 +530,10 @@ final class DramaPageViewModel: ObservableObject {
         }
     }
 
-    private func fetchAndCache(forceHarvest: Bool = false) {
-        loading = true
+    private func fetchAndCache(forceHarvest: Bool = false,
+                               quiet: Bool = false,
+                               completion: (() -> Void)? = nil) {
+        if !quiet { loading = true }
         loadError = nil
         let session = DramaSession(target: target)
         self.session = session
@@ -545,11 +555,16 @@ final class DramaPageViewModel: ObservableObject {
                     self.info = info
                     self.fromCache = true
                     self.applyLibraryState(for: info)
+                } else if quiet, self.info != nil {
+                    // 静默刷新（下拉刷新）：页面上已经有内容，不能因为一次网络抖动
+                    // 就整页换成错误态——只弹一条提示条，用户自己决定要不要再拉。
+                    self.showToast("刷新失败，请稍后重试")
                 } else {
                     self.loadError = error.localizedDescription
                 }
             }
-            self.loading = false
+            if !quiet { self.loading = false }
+            completion?()
         }
     }
 

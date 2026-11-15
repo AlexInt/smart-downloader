@@ -122,6 +122,8 @@ View → ViewModel → Service → 系统能力 / Model
 11. **剧集页（`DramaDetailView`）转纸本时只换材质、不动几何**：原文件是按 390 宽设计稿逐节点 `designFrame` 落位的，纸本化只改颜色/字体/卡片材质，**尺寸预算（`DetailLayout` / `PageLayout`）、区块顺序、`descShift` 位移一律不动**。深色轨 → 纸本轨的对应关系：`background`→`paper`、`surface`→`paperChipIdle`/`paperCanvas`、`primary`(#FF5A5F)→`paperCinnabar`、`gold`(#F5C451)→`paperCinnabar`（动作文字）/`paperTrackFill`（进度）、`textBody`→`paperInk`、`textHint`→`paperInkSub` 或 `paperFaint`、`posterTop/Mid/Bottom`(紫渐变)→`paperInkTop/Mid/Bottom`（墨块）。
 12. **简介展开/折叠块（`DramaDetailView.swift:398–625`）是用户点名的禁区**：逻辑、几何、CoreText 测量（`introOverflow` / `introLastLineWidth` / `introLastLineDelta` / `introCollapsedHeight`）、胶囊贴行尾的落位规则一律不许动，纸本化时**只改颜色**（正文 `textBody`→`paperInk`、两个动作 `gold`→`paperCinnabar`、胶囊渐隐底 `background`→`paper`，共 4 处）。改别处的配色时要回头确认这 4 处还在。
 13. **海报是纸本页里唯一的"墨"**：剧名/标签是白字压在底部 scrim 上，所以无封面时的占位**必须是墨色**（`paperInkPlate` / `paperInkTop…Bottom`），不能顺手改成纸色——纸色会让白字直接消失。同一页的顶栏要跟着换底：海报还盖着顶栏 → 墨色 scrim + 白图标；滚过去 → 纸底 + 0.5 细线 + 墨图标（`onScrollGeometryChange` 判 `contentOffset.y + 96*scale < 376*scale`）。**别把深色轨那层顶部 scrim 直接留在纸面上**，滚到选集以后会是一条灰雾。
+14. **下拉刷新沿用画布三态（`30:69`），且指示器不能钉在页面最顶**：墨环 22×22（`trim 0…0.75` + 2pt 圆头）/ 朱砂点 6×6 居中于环心 / 完成态环消失、点收拢成 8×8 / 态标 10px 在下一行；文案 ①`松手即刷新` ②`正在更新剧集…` ③`已更新`。**触发阈值 = 顶部安全区 + 64**（`refreshThreshold`），因为环要整只落在安全区之下 —— 画布样张的「环心 32」照搬到真机正好被灵动岛的黑胶囊吃掉（实测 402 宽机型岛体压到 y46、安全区 59）。同理整组只有在纸带够高时（`refreshStart = 安全区+49`）才淡入，否则会露出一小截压在岛上的黑弧。刷新期间必须 `holdDown` 把内容按住（否则回弹后海报立刻盖住纸带，墨环落到剧照上等于消失）+ `scrollDisabled`，并留 10s 兜底收尾（滚动是锁着的，请求卡住不能让用户划不动页面）。**不用 `.refreshable`**：系统给的是转圈 spinner，与这套墨环朱砂点不是一回事。
+15. **刷新走「静默」路径**：`vm.refresh(quiet: true, completion:)`。默认 `fetchAndCache` 会把 `loading` 置真，整页当场退回骨架屏，海报与内容全消失、指示器还悬在上头。静默模式下网络失败也不撕页面（有内容只弹 toast）。
 
 ### 具体约定
 
@@ -235,6 +237,10 @@ cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader 
 | `-perfLog` | Release 启用主线程卡顿探针（Debug 常开） |
 | `-dramaPreview` | 直接弹剧集页纸本样张（注入固定 30 集 + 推荐 + 档案，全程不联网） |
 | `-dramaPreviewBottom` | 配合上一条：内容直接落到页底，用于看档案区与「滚过海报后的顶栏」 |
+| `-refreshPreview pull\|ready\|refreshing\|done` | 下拉刷新定帧：让页面停在某一态供截图（下拉靠手指，模拟器滑不了） |
+| `-refreshAuto` | 启动 2s 后自动跑一遍刷新，验证「刷新 → 已更新 → 收起」会不会自己走回来 |
+
+**合成鼠标事件进不了 App**（2026-11-14 实测）：`CGEvent` 造的 `leftMouseDown/Dragged/Up` 能被 Simulator 窗口收到位置，但点击、拖拽都不生效——终端侧没有辅助功能授权，事件被系统丢弃。**别指望用它验证手势**；手势类改动只能靠状态定帧参数 + 真机回归。
 
 例：`xcrun simctl launch booted com.firefish.smartdownloader -startDownloadedPage -startEditMode`。
 

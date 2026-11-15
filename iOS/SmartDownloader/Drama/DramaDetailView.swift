@@ -15,7 +15,9 @@ import CoreText
 //  4. 新增「为你推荐」双列瀑布流 + 「剧集档案」，数据全部来自本地 SQLite（离线可用）。
 //  保留此前真机迭代成果：海报 376、≤12 集固定栅格。
 //  5. 同日追加三项设计稿还原：右下 18×18 状态角标、进度环由绿改回金色 #F5C451、
-//     「查看全部」由 sheet 改为内联展开 13+ 集（全选/清空/下载所选进内联工具条，刷新移到选集行 ↻）。
+//     「查看全部」由 sheet 改为内联展开 13+ 集（全选/清空/下载所选进内联工具条）。
+//  6. 2026-11-14 纸本化同日二次调整（用户拍板）：选集行去掉「共 N 集」小字与 ↻ 按钮，
+//     刷新改为**下拉刷新**（三态照画布 30:69 样张，自绘不用系统 spinner）。
 //
 // 本文件只渲染 + 转发用户意图；业务状态与编排在 DramaPageViewModel（AGENTS.md MVVM 约定）。
 
@@ -58,6 +60,25 @@ private struct RecoCardItem: Identifiable {
     var id: Int { drama.id }
 }
 
+/// 下拉刷新三态（画布 `30:69 下拉刷新 Loading 三态样张` 的实测值）：
+/// 刷新区 h64，墨环 22×22，朱砂点 6×6 居中于环心；完成态环消失、朱砂点收拢成 8×8。
+/// 触发阈值不在这里——它要跟着顶部安全区走（见 `refreshThreshold`），
+/// 因为墨环必须落在灵动岛之下，固定值在窄边/无岛机型上都会错位。
+private enum RefreshMetrics {
+    static let zone: CGFloat = 64          // 刷新区高（设计 30:71，阈值基准用）
+    static let ringSize: CGFloat = 22      // 30:72 墨环 22×22
+    static let dotIdle: CGFloat = 6        // 30:74 朱砂点 6×6 r3
+    static let dotDone: CGFloat = 8        // 30:93 朱砂点·收拢 8×8 r4
+    static let labelGap: CGFloat = 8       // 态标在刷新区下方一行（30:75）
+    /// 顶栏在多长的下拉里退完：退满后纸带上只剩墨环与态标，深色 scrim 不压在纸面上
+    static let headerFadeSpan: CGFloat = 40
+}
+
+/// 下拉刷新状态机：idle → pulling（跟手，≥阈值即"松手即刷新"）→ refreshing → done → idle
+private enum PaperRefreshPhase {
+    case idle, pulling, refreshing, done
+}
+
 /// 滚动画布的尺寸预算。设计坐标是固定的，但推荐/档案条数随真实数据变化，
 /// 必须算出总高才能让 ScrollView 的 contentSize 正确（缩放后的 frame 也依赖它）。
 private struct PageLayout {
@@ -91,6 +112,26 @@ struct DramaDetailView: View {
     /// 滚过去之后顶栏换纸底 + 细线 + 墨色图标。没有这个开关，滚到选集以后会剩一条
     /// 灰雾压在宣纸上——深色轨的 scrim 直接搬到纸面上就是坏掉的样子。
     @State private var posterUnderHeader = true
+    /// 下拉刷新（2026-11-14）：取代选集行那个 ↻。三态照画布 30:69 样张自绘，
+    /// 不用 `.refreshable`——系统给的是转圈 spinner，跟纸本这套「墨环 + 朱砂印」不是一回事。
+    @State private var refreshPhase: PaperRefreshPhase = .idle
+    /// 跟手距离（屏幕点）：0…threshold，驱动指示器下滑、顶栏退场、阈值判定
+    @State private var pullDistance: CGFloat = 0
+    /// 本次拖拽的峰值跟手距离：松手回弹会把 pullDistance 打小，判定得靠这个
+    @State private var peakPull: CGFloat = 0
+    /// 刷新中把内容「按住不下弹」：真实下拉刷新在旋转期间内容停在拉下的位置。
+    /// 否则松手即回弹，海报会立刻盖住纸带，墨环落在剧照上等于消失。
+    @State private var holdDown: CGFloat = 0
+    /// 刷新中墨环的连续旋转角（pulling 阶段改由手指驱动，两者互斥）
+    @State private var ringSpin: Double = 0
+    /// 朱砂点的呼吸（仅 refreshing 态）
+    @State private var dotBreath = false
+    /// 本次刷新的认领凭证：VM 回调与 10s 兜底谁先到谁收尾，另一条自动作废
+    @State private var refreshToken: UUID?
+    #if DEBUG
+    /// 样张定帧时锁住跟手逻辑：否则首帧几何回调会把 pullDistance 打回 0
+    @State private var previewPinned = false
+    #endif
 
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
@@ -118,8 +159,12 @@ struct DramaDetailView: View {
                             .frame(width: DWLayout.designWidth * scale,
                                    height: layout.totalHeight * scale,
                                    alignment: .topLeading)
+                            // 刷新期间整块内容跟着被"按住"，露出顶上那条纸带给墨环站
+                            .offset(y: holdDown)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
+                    // 刷新中锁住滚动：内容已被按住，此时再滑会让位移叠加成两层
+                    .scrollDisabled(refreshPhase == .refreshing || refreshPhase == .done)
                     // 顶栏随滚动换底：海报底边（设计 376，按 scale 换算成屏幕点）压过
                     // 顶栏底（96）就切纸底。offset 是屏幕点，两边同一口径。
                     .onScrollGeometryChange(for: Bool.self) { g in
@@ -127,13 +172,52 @@ struct DramaDetailView: View {
                     } action: { _, overPoster in
                         posterUnderHeader = overPoster
                     }
+                    // 下拉距离：静止在顶部时 contentOffset.y == -contentInsets.top，
+                    // 所以取负值即"拉出了多少"，与是否 ignoresSafeArea 无关。
+                    .onScrollGeometryChange(for: CGFloat.self) { g in
+                        max(0, -(g.contentOffset.y + g.contentInsets.top))
+                    } action: { _, pull in
+                        // 刷新/完成态由状态机自己驱动，手指再怎么动都不跟手
+                        guard refreshPhase == .idle || refreshPhase == .pulling else { return }
+                        #if DEBUG
+                        guard !previewPinned else { return }
+                        #endif
+                        // 峰值必须单独记：松手那一刻回弹会先把这个回调打成小值，
+                        // 若只看当下 pullDistance，相位回调往往晚到一步就判不出"拉到过"。
+                        // 回到 0 才复位——用户拉过阈值又自己拉回去，等于放弃，不该刷。
+                        if pull == 0 {
+                            peakPull = 0
+                        } else {
+                            peakPull = max(peakPull, pull)
+                        }
+                        pullDistance = pull
+                        refreshPhase = pull > 0 ? .pulling : .idle
+                    }
+                    // 抬手判定：本程峰值到过阈值就刷（不依赖回弹后的当下值）。
+                    // 回弹先走 .animating 再回 .idle，认第一个到达的即可。
+                    .onScrollPhaseChange { _, phase in
+                        guard refreshPhase == .pulling,
+                              peakPull >= refreshThreshold else { return }
+                        if phase == .idle || phase == .animating || phase == .decelerating {
+                            beginRefresh()
+                        }
+                    }
                     #if DEBUG
                     // 样张落到页底（`-dramaPreviewBottom`）：模拟器滑不了，
                     // 要看「滚过海报后的顶栏」和档案区只能靠它。
                     .defaultScrollAnchor(DramaDebugFlags.bottomAnchor ? .bottom : .top)
                     #endif
+                    // 下拉刷新指示器：压在顶栏之上（顶栏在此期间已淡出）
+                    .overlay(alignment: .top) { pullRefreshLayer }
                     // 顶栏（返回 / 收藏）钉在屏幕顶部：**不随页面滚动**，用户拍板 2026-11-14
-                    .overlay(alignment: .topLeading) { pinnedHeader(scale: scale) }
+                    .overlay(alignment: .topLeading) {
+                        pinnedHeader(scale: scale)
+                            // 下拉时退场：不退的话 96 高的 scrim 会把顶部纸带整个盖掉，
+                            // 墨环根本没有落脚的地方（画布样张里刷新区就在页面最顶）。
+                            .opacity(headerOpacity)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12),
+                                       value: headerOpacity)
+                    }
                     // 左缘右滑时整屏跟手，露出左侧底层，模拟系统返回观感
                     .offset(x: edgeDragWidth)
                     // toast 改屏幕悬浮：画布变长后不能再钉在 y690
@@ -152,7 +236,47 @@ struct DramaDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         // 整页 ScrollView 的 pan 与左缘返回并存：仍只在左缘 + 横向主导时生效
         .simultaneousGesture(edgeBackGesture)
+        #if DEBUG
+        .onAppear {
+            applyRefreshPreview()
+            if DramaDebugFlags.refreshAuto {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { beginRefresh() }
+            }
+        }
+        #endif
     }
+
+    #if DEBUG
+    /// 下拉刷新三态定帧（仅样张）：让页面停在某一态供截图。
+    private func applyRefreshPreview() {
+        guard let state = DramaDebugFlags.refreshPreview else { return }
+        previewPinned = true
+        switch state {
+        case "pull":
+            // 未达阈值：环已探出，态标「下拉刷新」。样张里 ScrollView 并没有真的被
+            // 拉出这么多，所以同步给 holdDown —— 否则纸带不存在，墨环会直接落在剧照上。
+            refreshPhase = .pulling
+            pullDistance = refreshThreshold * 0.95
+            holdDown = pullDistance
+        case "ready":
+            refreshPhase = .pulling
+            pullDistance = refreshThreshold
+            holdDown = refreshThreshold
+        case "refreshing":
+            refreshPhase = .refreshing
+            pullDistance = refreshThreshold
+            holdDown = refreshThreshold
+            ringSpin = 40
+            dotBreath = true
+        case "done":
+            refreshPhase = .done
+            pullDistance = refreshThreshold
+            holdDown = refreshThreshold
+        default:
+            previewPinned = false
+        }
+    }
+    #endif
 
     /// 只在屏幕左缘 30pt 内起手、横向主导地右拖才生效；抬手过阈值触发 dismiss，否则弹回。
     private var edgeBackGesture: some Gesture {
@@ -374,6 +498,173 @@ struct DramaDetailView: View {
             .accessibilityLabel("点击重试加载封面")
         }
         .frame(width: 390, height: DetailLayout.posterHeight)
+    }
+
+    // MARK: ①.5 下拉刷新（画布 `30:69 下拉刷新 Loading 三态样张`）
+
+    /// 顶部安全区（状态栏 + 灵动岛）。实测 402 宽机型：岛体压到 y46、安全区 59。
+    /// 画布样张里刷新区就钉在卡片最顶（环心 32），照搬到真机上墨环正中正好被
+    /// 灵动岛的黑胶囊吃掉——所以整套落位改成以「纸带下沿」为基准，天然躲开这块黑区。
+    private var topSafeInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 0
+    }
+
+    /// 触发阈值：纸带得长到能把墨环整只推到安全区之下才算数。
+    /// 环心 = 下沿 - 42、半径 11，所以下沿要 ≥ 安全区 + 53；取满一格刷新区
+    /// （安全区 + 64）留一点余量，402 宽机型 ≈ 114pt，一把拉得到。
+    private var refreshThreshold: CGFloat {
+        topSafeInset + RefreshMetrics.zone
+    }
+
+    /// 顶栏退场进度。顶栏是 96 高的固定层，不退场就把纸带整个盖住（环心 65 正在它里面），
+    /// 墨环无处落脚——画布样张里刷新区在页面最顶，所以下拉时顶栏必须让开。
+    /// 前 40pt 退完：拉到位那一刻顶栏已经不在，纸面上只剩墨环与态标。
+    private var headerOpacity: Double {
+        switch refreshPhase {
+        case .idle:
+            return 1
+        case .pulling:
+            return Double(max(0, 1 - pullDistance / RefreshMetrics.headerFadeSpan))
+        case .refreshing, .done:
+            return 0
+        }
+    }
+
+    /// 纸带下沿（= 内容顶）。跟手时就是下拉距离；刷新期间内容被按住，
+    /// 由 holdDown 撑住这条纸带，指示器才不会跟着回弹落到剧照上去。
+    private var refreshBandBottom: CGFloat {
+        max(pullDistance, holdDown)
+    }
+
+    /// 态标文字：①「松手即刷新」②「正在更新剧集…」③「已更新」——
+    /// 未达阈值时另给一句「下拉刷新」，否则拉一点点屏幕上什么都没有，用户不知道在干吗。
+    private var refreshLabel: String {
+        switch refreshPhase {
+        case .idle:
+            return ""
+        case .pulling:
+            return pullDistance >= refreshThreshold ? "松手即刷新" : "下拉刷新"
+        case .refreshing:
+            return "正在更新剧集…"
+        case .done:
+            return "已更新"
+        }
+    }
+
+    /// 墨环角度：刷新中连续转；跟手阶段由下拉距离驱动（拉满 200°），
+    /// 松手回落时角度跟着退回去，不做额外动画。
+    private var ringAngle: Double {
+        switch refreshPhase {
+        case .refreshing, .done:
+            return ringSpin
+        case .idle, .pulling:
+            let progress = min(pullDistance, refreshThreshold) / max(refreshThreshold, 1)
+            return Double(progress) * 200
+        }
+    }
+
+    /// 刷新区 = 墨环 22×22 + 朱砂点 6×6 居中于环心；完成态环消失、朱砂点收拢成 8×8，
+    /// 态标在下方一行（画布 30:72/74/93 + 30:75/86/94）。整组挂在纸带下沿上方，
+    /// 环心 = 下沿 - 42：拉到位时环心 ≈ 65，正好落在安全区（59）之下、海报之上。
+    @ViewBuilder
+    private var pullRefreshLayer: some View {
+        if refreshPhase != .idle {
+            let done = refreshPhase == .done
+            VStack(spacing: RefreshMetrics.labelGap) {
+                ZStack {
+                    Circle()
+                        .trim(from: 0, to: 0.75)
+                        .stroke(DWColor.paperInk,
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .frame(width: RefreshMetrics.ringSize, height: RefreshMetrics.ringSize)
+                        .rotationEffect(.degrees(ringAngle))
+                        .opacity(done ? 0 : 1)
+                        .scaleEffect(done ? 0.45 : 1)
+                    Circle()
+                        .fill(DWColor.paperCinnabar)
+                        .frame(width: done ? RefreshMetrics.dotDone : RefreshMetrics.dotIdle,
+                               height: done ? RefreshMetrics.dotDone : RefreshMetrics.dotIdle)
+                        .scaleEffect(refreshPhase == .refreshing ? (dotBreath ? 1.16 : 0.86) : 1)
+                }
+                .frame(width: RefreshMetrics.ringSize, height: RefreshMetrics.ringSize)
+
+                Text(refreshLabel)
+                    .font(DWFont.cn(10))
+                    .foregroundStyle(done ? DWColor.paperInk : DWColor.paperInkSub)
+            }
+            .frame(maxWidth: .infinity)
+            // 整组高约 44（环 22 + 间距 8 + 字 14），底边再留 9pt 才贴纸带下沿：
+            // 环与字都留在宣纸带上，一个像素都不落到剧照上。
+            .offset(y: refreshBandBottom - 53)
+            .opacity(refreshRevealOpacity)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// 整组的显现曲线。纸带短的时候，环按「下沿 - 42」的锚法正好落在灵动岛那块黑胶囊里，
+    /// 只会露出一小截黑弧，看着像脏点——所以纸带没长够就整组不显示，长够了再淡入。
+    /// 起点 安全区+49 正是"环顶刚好离开岛下沿"的位置，到阈值时全亮。
+    private var refreshRevealOpacity: Double {
+        switch refreshPhase {
+        case .refreshing, .done:
+            return 1
+        case .idle:
+            return 0
+        case .pulling:
+            let start = topSafeInset + 49
+            return Double(min(1, max(0, (refreshBandBottom - start) / 15)))
+        }
+    }
+
+    /// 松手触发：把内容按住（holdDown）让纸带留在顶上，环转起来、点开始呼吸，
+    /// 走 VM 的静默刷新（不切整页 loading，否则海报与页内容会被骨架屏顶掉）。
+    /// 收尾有两个来源：VM 回调，以及 10s 兜底——刷新期间滚动是锁着的，
+    /// 万一请求卡住（弱网、域名解析挂起），不能让用户连着十几秒划不动页面。
+    private func beginRefresh() {
+        guard refreshPhase != .refreshing, refreshPhase != .done else { return }
+        peakPull = 0
+        let token = UUID()
+        refreshToken = token
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
+            refreshPhase = .refreshing
+            pullDistance = refreshThreshold
+            holdDown = refreshThreshold
+        }
+        if reduceMotion {
+            ringSpin = 0
+        } else {
+            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                ringSpin = 360
+            }
+            withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                dotBreath = true
+            }
+        }
+        vm.refresh(quiet: true) { finishRefresh(token) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finishRefresh(token) }
+    }
+
+    /// 收尾一次就够：回调与兜底谁先到谁收，另一条靠 token 认领失败自然作废。
+    private func finishRefresh(_ token: UUID) {
+        guard refreshToken == token, refreshPhase == .refreshing else { return }
+        refreshToken = nil
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+            refreshPhase = .done
+            dotBreath = false
+        }
+        // 「已更新」停一拍再收：太快看不见，太慢像卡住
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.28)) {
+                refreshPhase = .idle
+                pullDistance = 0
+                holdDown = 0
+                ringSpin = 0
+            }
+        }
     }
 
     // MARK: ② 顶栏（钉在屏幕顶部，不随滚动）
@@ -676,10 +967,8 @@ struct DramaDetailView: View {
                 .foregroundStyle(DWColor.paperInk)
                 .designFrame(20, 490, 64, 24, alignment: .leading)
 
-            Text(vm.episodeCountText)
-                .font(DWFont.cn(12))
-                .foregroundStyle(DWColor.paperInkSub)
-                .designFrame(96, 494, 76, 18, alignment: .leading)
+            // 「共 N 集」已按用户要求移除（2026-11-14）：集数在下方格子里一眼可数，
+            // 这行小字只是噪音。原落位 96…172 留空，「下载全部」仍在 176 不挪位。
 
             // 设计稿「下载全部」：一次把所有可下且未入队的集交给现有调度。
             // 纸本轨的动作文字一律朱砂（设置页「重命名」/下载页「全选」同一档）。
@@ -692,18 +981,6 @@ struct DramaDetailView: View {
             }
             .buttonStyle(.plain)
             .designFrame(176, 481, 64, 44)
-
-            // 原「查看全部」sheet 里的刷新能力：sheet 移除后由选集行这个 ↻ 承接
-            Button { vm.refresh() } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(DWColor.paperCinnabar)
-                    .frame(width: 28, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .designFrame(244, 481, 28, 44)
-            .accessibilityLabel("刷新剧集列表")
 
             // 「查看全部 ›」= 内联展开（设计稿 all-open），不再是 sheet。
             // ≤12 集没有额外集可展开：保留版面、置灰禁用，文案如实说明。
@@ -770,7 +1047,7 @@ struct DramaDetailView: View {
     }
 
     /// 内联展开区的批量工具条：原 sheet 的「全选 / 清空 / 下载所选」搬到这里，
-    /// 刷新已移到选集行 ↻，所以 sheet 可以整块删掉，功能不丢。
+    /// 刷新已改为页面下拉刷新，所以 sheet 可以整块删掉，功能不丢。
     private var inlineBatchToolbar: some View {
         HStack(spacing: 8) {
             // 纸本轨的次级按钮 = 纸块胶囊 + 墨字（下载页编辑工具条 34:84 同一做法），
@@ -1182,6 +1459,20 @@ enum DramaDebugFlags {
     /// 启动即落到内容页底，用于查看档案区与「滚过海报后的顶栏」
     static var bottomAnchor: Bool {
         ProcessInfo.processInfo.arguments.contains("-dramaPreviewBottom")
+    }
+
+    /// 下拉刷新三态定帧：`-refreshPreview pull|ready|refreshing|done`。
+    /// 下拉刷新靠手指，模拟器既滑不了也不好定帧，只能让页面自己停在某一态上截。
+    static var refreshPreview: String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-refreshPreview"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
+    /// 自动跑一遍下拉刷新（`-refreshAuto`）：验证「刷新 → 已更新 → 收起」整条链路
+    /// 会不会自己走回来。手势本身进不了模拟器，但状态机与 VM 调用可以这样验证。
+    static var refreshAuto: Bool {
+        ProcessInfo.processInfo.arguments.contains("-refreshAuto")
     }
 }
 
