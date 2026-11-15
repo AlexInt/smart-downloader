@@ -310,6 +310,11 @@ struct DownloadsView: View {
 
     // MARK: - 右页：已下载（画布 19:272 / 34:1）
 
+    /// 已下载列表的相邻 cell 间距（用户 2026-11-15 拍板 5pt；画布 19:304 原本是 12）。
+    /// 行内边距上下各给一半：`.paperListRow(vertical:)` 的 top/bottom 相邻相加即为间距——
+    /// 实测 `.listRowInsets` 为 0 时 List 不再追加任何行距（封面块是贴着的），所以这里给多少就是多少。
+    private static let completedCellSpacing: CGFloat = 5
+
     @ViewBuilder
     private var completedPage: some View {
         if vm.seriesGroups.isEmpty && vm.standaloneItems.isEmpty {
@@ -331,7 +336,7 @@ struct DownloadsView: View {
                         seriesRow(group)
                     }
                     .buttonStyle(.plain)
-                    .paperListRow()
+                    .paperListRow(vertical: Self.completedCellSpacing / 2)
                 }
                 .onDelete { offsets in
                     guard !vm.selectionMode else { return }
@@ -343,7 +348,7 @@ struct DownloadsView: View {
                 if !vm.standaloneItems.isEmpty {
                     ForEach(vm.standaloneItems) { task in
                         standaloneRow(task)
-                            .paperListRow()
+                            .paperListRow(vertical: Self.completedCellSpacing / 2)
                     }
                     .onDelete { manager.delete(at: vm.globalOffsets($0, in: vm.standaloneItems)) }
                 }
@@ -626,10 +631,11 @@ private extension View {
             .padding(.vertical, 0)
     }
 
-    /// 分组内相邻行：画布 19:304 的分组是 itemSpacing 12，行本身没有内边距。
-    /// 用 vertical 6 时实测相邻封面之间是 24（List 自己又给了 12），故改 0。
-    func paperListRow() -> some View {
-        paperRow(vertical: 0)
+    /// 分组内相邻行。实测 `.listRowInsets(top: 0, bottom: 0)` 时相邻行**紧贴**
+    ///（封面块之间只隔 0.5pt 描边，没有 List 自己的 12），所以要多大间距直接给一半：
+    /// 相邻两行的 bottom + top 相加 = 目标间距（已下载列表 5pt，见 `completedCellSpacing`）。
+    func paperListRow(vertical: CGFloat = 0) -> some View {
+        paperRow(vertical: vertical)
     }
 
     /// 列表容器统一外观：抹掉系统 plain 的分组留白与白底，露出宣纸
