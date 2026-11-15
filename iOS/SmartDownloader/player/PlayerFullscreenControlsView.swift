@@ -124,7 +124,10 @@ final class PlayerFullscreenControlsView: UIView {
         /// 底部进度条 y（画布 318）
         static let trackY: CGFloat = 318
         static let trackLeading: CGFloat = 206
-        static let trackTrailing: CGFloat = 774 + 45   // 总时长右缘 = 819
+        /// 轨道右缘 = 206 + 556（画布 22:46 轨道 556 宽）。
+        /// **不能写成总时长右缘（774+45=819）**：那会让轨道从「00:24」底下穿过去，
+        /// 时间数字压在一条白线上（2026-11-15 用户实机实报）。总时长起点在 774，留 12pt 间隙。
+        static let trackTrailing: CGFloat = 762
         /// 互动行 y（画布 344 h=22 → 中心 355）
         static let actionMidY: CGFloat = 355
         /// 右栏工具 y（画布 347）
