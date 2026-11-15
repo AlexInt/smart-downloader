@@ -178,6 +178,7 @@ View → ViewModel → Service → 系统能力 / Model
    - 顶部两段（身份行 + 分类 tab + 筛选胶囊）仍走 `safeAreaInset(edge: .top)` 钉在**页面级**（不是塞进每页），否则四页各钉一份、滑动时位置还会抖。
    - 底部 `.safeAreaPadding(.bottom, MainTab.barReservedHeight + 15)` 补在**外层 VStack** 上（分页页面不接收祖先安全区，见「纸本单轨视觉」第 3 条）。
    - 回到根页（`path` 变空）时 `reload()` 一次：二级页里可能改过收藏/点赞，分类不再各自 reload，不重读会看到旧数据。
+   - **reload 的装配必须在后台串行队列跑（`ProfileViewModel.loadQueue`），主线程只收结果赋 `rawItems`/`finishedIndex`**：四分类装配要对每部剧 `DramaCache.load`（历史+收藏+追更可达 127 部），曾在主线程同步装配且 `isFinished` 对每部再 load 一遍（合计 ~250 次全量 load），滑动返回的 pop 动画冻在半路 1.6s+，日志实证 `Gesture: System gesture gate timed out.` + `mainStall 1640`（2026-11-15）。别改回主线程同步装配；别把「已看完」判定改成独立二次查库（装配时顺手算，追更分类用 SQL 子查询取每剧最大 sort 集的 downloaded）；迟到结果按代际令牌丢弃。
    - 验收：模拟器点不了也滑不了，用 `-profilePreview 历史|收藏|追更|点赞` 直接落到某一页截图（Debug 专用），四页的空态/有数据态都要过一遍。
 
 21. **接口失败必须把错误信息爆出来，不许只留系统那句「未能读取数据，因为它的格式不正确」**（2026-11-15 用户要求）：
