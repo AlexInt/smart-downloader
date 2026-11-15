@@ -50,8 +50,9 @@ final class PlayerFullscreenControlsView: UIView {
     private let brightnessButton = UIButton(type: .custom)
     private let brightnessGlyph = PlayerFullscreenControlsView.makeBrightnessGlyph()
     private let playPauseButton = UIButton(type: .custom)
-    private let playGlyph = PlayerFullscreenControlsView.makePlayGlyph()
-    private let pauseGlyph = PlayerFullscreenControlsView.makePauseGlyph()
+    /// 播放/暂停图标做成**一个视图按状态重绘**，不用「两个视图来回 isHidden」——
+    /// 之前那种写法在真机切换时会闪一帧（2026-11-15 用户实报「点击暂停和播放时 icon 一直在刷」）
+    private let playPauseGlyph = PlayPauseGlyphView(box: 48)
     private let lockButton = UIButton(type: .custom)
     private let lockGlyph = PlayerFullscreenControlsView.makeLockGlyph()
     private let volumeButton = UIButton(type: .custom)
@@ -61,8 +62,8 @@ final class PlayerFullscreenControlsView: UIView {
     // 播放/暂停（原画布 22:41「下一集」的位置）：用户 2026-11-15 点名——进度条左边这个位置
     // 应该是播放/暂停，而且必须跟着播放态翻面。「下一集」移到顶栏「更多」菜单里（功能不丢）。
     private let barPlayButton = UIButton(type: .custom)
-    private let barPlayGlyph = PlayerFullscreenControlsView.makeBarPlayGlyph()
-    private let barPauseGlyph = PlayerFullscreenControlsView.makeBarPauseGlyph()
+    /// 底栏播放/暂停：同样用一个视图按状态重绘（20×20 框）
+    private let barPlayPauseGlyph = PlayPauseGlyphView(box: 20)
     private let currentTimeLabel = UILabel()
     private let progressTrack = UIView()
     private let progressFill = UIView()
@@ -196,8 +197,7 @@ final class PlayerFullscreenControlsView: UIView {
         addSubview(brightnessButton)
 
         playPauseButton.addTarget(self, action: #selector(playPauseTapped), for: .touchUpInside)
-        playPauseButton.addSubview(playGlyph)
-        playPauseButton.addSubview(pauseGlyph)
+        playPauseButton.addSubview(playPauseGlyph)
         addSubview(playPauseButton)
 
         lockButton.addTarget(self, action: #selector(lockTapped), for: .touchUpInside)
@@ -218,8 +218,7 @@ final class PlayerFullscreenControlsView: UIView {
 
         // 底栏
         barPlayButton.addTarget(self, action: #selector(barPlayTapped), for: .touchUpInside)
-        barPlayButton.addSubview(barPlayGlyph)
-        barPlayButton.addSubview(barPauseGlyph)
+        barPlayButton.addSubview(barPlayPauseGlyph)
         addSubview(barPlayButton)
 
         currentTimeLabel.font = Self.monoFont(11)
@@ -301,18 +300,18 @@ final class PlayerFullscreenControlsView: UIView {
                 self?.setNeedsLayout()
             }
             .store(in: &cancellables)
-        // 播放态：暂停时显示播放三角，播放中显示双竖条（画布 22:28 画的是双竖条 = 播放中）
-        // 中部大按钮与底栏进度条左侧的按钮共用一个状态，两边必须同步翻面
+        // 播放态：暂停时画播放三角，播放中画双竖条（画布 22:28 画的是双竖条 = 播放中）
+        // 中部大按钮与底栏进度条左侧的按钮共用一个状态，两边必须同步翻面。
+        // 一个视图按状态重绘：不切 isHidden、不换视图，切换时不会闪一帧
         playback.$isPlaying
             .removeDuplicates()
             .sink { [weak self] playing in
                 guard let self else { return }
-                self.playGlyph.isHidden = playing
-                self.pauseGlyph.isHidden = !playing
-                self.playPauseButton.accessibilityLabel = playing ? "暂停" : "播放"
-                self.barPlayGlyph.isHidden = playing
-                self.barPauseGlyph.isHidden = !playing
-                self.barPlayButton.accessibilityLabel = playing ? "暂停" : "播放"
+                self.playPauseGlyph.isPlaying = playing
+                self.barPlayPauseGlyph.isPlaying = playing
+                let label = playing ? "暂停" : "播放"
+                self.playPauseButton.accessibilityLabel = label
+                self.barPlayButton.accessibilityLabel = label
                 print("PLAYER_DBG [Fullscreen] isPlaying=\(playing) → bar glyph \(playing ? "pause" : "play")")
             }
             .store(in: &cancellables)
@@ -478,10 +477,8 @@ final class PlayerFullscreenControlsView: UIView {
         brightnessGlyph.frame = CGRect(x: (44 - 26) / 2, y: (44 - 26) / 2, width: 26, height: 26)
         // 暂停/播放：画布 48×48 @(398,174)，命中区 48（本身够大，不再扩）
         playPauseButton.frame = CGRect(x: X(398), y: Y(174), width: 48 * s, height: 48 * s)
-        let glyph48 = CGRect(origin: .zero, size: playPauseButton.bounds.size)
-        pauseGlyph.frame = glyph48
-        // 播放三角：同尺寸容器内居中（画布只给了暂停态）
-        playGlyph.frame = glyph48
+        playPauseGlyph.frame = CGRect(origin: .zero, size: playPauseButton.bounds.size)
+        playPauseGlyph.glyphScale = s
         // 锁 / 音量：44×44，右缘钉 X(edgeRight)（画布 734+44=778 时右留白只有 66，和其他行不齐）
         let sideBox = 44 * s
         lockButton.frame = CGRect(x: X(M.edgeRight) - sideBox, y: Y(118), width: sideBox, height: sideBox)
@@ -501,10 +498,8 @@ final class PlayerFullscreenControlsView: UIView {
         // 播放/暂停：20×20，左缘钉 X(edge)（整行左端 = 左边距线），命中区 44
         barPlayButton.frame = centered(at: CGPoint(x: X(M.edge) + 10, y: Y(320)), size: 44)
         let barGlyphRect = CGRect(x: (44 - 20) / 2, y: (44 - 20) / 2, width: 20, height: 20)
-        barPlayGlyph.frame = barGlyphRect
-        barPauseGlyph.frame = barGlyphRect
-        barPlayGlyph.glyphScale = s
-        barPauseGlyph.glyphScale = s
+        barPlayPauseGlyph.frame = barGlyphRect
+        barPlayPauseGlyph.glyphScale = s
         // 当前时间：右对齐，贴轨道左端 -timeGap（盒宽 70 以容 1:23:45）
         let timeW = 70 * geo.sx
         currentTimeLabel.textAlignment = .right
@@ -777,63 +772,12 @@ final class PlayerFullscreenControlsView: UIView {
         }
     }
 
-    static func makePauseGlyph() -> FullscreenGlyphView {
-        // 画布 22:28：两条 7×32 r3.5 白色竖条，x=14 / x=27，y=8
-        FullscreenGlyphView { ctx, size, color in
-            let s = size.width / 48
-            for x in [14.0, 27.0] {
-                let bar = CGRect(x: x * s, y: 8 * s, width: 7 * s, height: 32 * s)
-                let path = CGPath(roundedRect: bar, cornerWidth: 3.5 * s,
-                                  cornerHeight: 3.5 * s, transform: nil)
-                fill(ctx, path, color)
-            }
-        }
-    }
-
-    static func makePlayGlyph() -> FullscreenGlyphView {
-        // 画布未给播放态；按同尺寸容器画一个饱满三角（与竖屏 19:58 同一造型语言）
-        FullscreenGlyphView { ctx, size, color in
-            let s = size.width / 48
-            let tri = CGMutablePath()
-            tri.move(to: CGPoint(x: 16 * s, y: 10 * s))
-            tri.addLine(to: CGPoint(x: 36 * s, y: 24 * s))
-            tri.addLine(to: CGPoint(x: 16 * s, y: 38 * s))
-            tri.closeSubpath()
-            fill(ctx, tri, color)
-        }
-    }
-
     static func makeLockGlyph() -> LockGlyphView {
         LockGlyphView()
     }
 
     static func makeVolumeGlyph() -> VolumeGlyphView {
         VolumeGlyphView()
-    }
-
-    static func makeBarPlayGlyph() -> FullscreenGlyphView {
-        // 底栏播放/暂停（原 22:41 位，20×20 框）：播放三角 7×11 居中偏移 1 视觉配重
-        FullscreenGlyphView { ctx, size, color in
-            let s = size.width / 20
-            let tri = CGMutablePath()
-            tri.move(to: CGPoint(x: 6 * s, y: 4.5 * s))
-            tri.addLine(to: CGPoint(x: 15 * s, y: 10 * s))
-            tri.addLine(to: CGPoint(x: 6 * s, y: 15.5 * s))
-            tri.closeSubpath()
-            fill(ctx, tri, color)
-        }
-    }
-
-    static func makeBarPauseGlyph() -> FullscreenGlyphView {
-        // 双竖条 2.6×11 r1.3，x=6.2 / 11.2，与播放三角同视觉重量
-        FullscreenGlyphView { ctx, size, color in
-            let s = size.width / 20
-            for x in [6.2, 11.2] {
-                let bar = CGRect(x: x * s, y: 4.5 * s, width: 2.6 * s, height: 11 * s)
-                fill(ctx, CGPath(roundedRect: bar, cornerWidth: 1.3 * s,
-                                 cornerHeight: 1.3 * s, transform: nil), color)
-            }
-        }
     }
 
     static func makeHeartGlyph() -> FullscreenGlyphView {
@@ -892,7 +836,12 @@ class FullscreenGlyphView: UIView {
     private let draw: Draw
     private let drawsBackground: Bool
     var glyphScale: CGFloat = 1 {
-        didSet { setNeedsDisplay() }
+        didSet {
+            // layoutSubviews 每次都被 1Hz 进度 tick 触发（progress tick → setNeedsLayout），
+            // 没有这个守卫就等于每秒强制重绘全部图标一次（2026-11-15 用户实报「icon 一直在刷」）
+            guard glyphScale != oldValue else { return }
+            setNeedsDisplay()
+        }
     }
 
     override var tintColor: UIColor! {
@@ -922,6 +871,69 @@ class FullscreenGlyphView: UIView {
             UIBezierPath(roundedRect: bounds, cornerRadius: radius).fill()
         }
         draw(ctx, bounds.size, tintColor)
+    }
+}
+
+// MARK: - 播放/暂停图标（单视图按状态重绘）
+
+/// 中部 48 框与底栏 20 框共用一套几何（按框宽等比），**状态变化只重绘、不插拔视图**。
+///
+/// 以前做成「播放三角 + 暂停双竖条两个视图来回 isHidden」，真机上切换时会闪一帧
+/// （2026-11-15 用户实报「点击暂停和播放时 icon 一直在刷」）：两个视图的图层各自做
+/// 隐显过渡，中间必然存在一帧「两个都在」或「两个都不在」。单视图重绘没有这个窗口。
+final class PlayPauseGlyphView: FullscreenGlyphView {
+    /// 基准框宽（48 = 中部大按钮，20 = 底栏小按钮），几何按实际 bounds 等比缩放
+    private let box: CGFloat
+
+    /// 播放中 = true（画双竖条）；暂停中 = false（画播放三角）
+    var isPlaying = false {
+        didSet {
+            guard isPlaying != oldValue else { return }
+            setNeedsDisplay()
+        }
+    }
+
+    init(box: CGFloat) {
+        self.box = box
+        super.init(drawsBackground: false) { _, _, _ in }
+    }
+
+    required init?(coder: NSCoder) { fatalError("不支持") }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        let s = bounds.width / box
+        ctx.setFillColor(tintColor.cgColor)
+        if isPlaying {
+            // 暂停双竖条：48 框 = 两条 7×32 r3.5 @x14/27 y8；20 框 = 2.6×11 r1.3 @x6.2/11.2 y4.5
+            // （两处都是「框宽的 0.4167 / 0.6667 起手」，按比例写出同一套系数）
+            let barW = box * 7 / 48
+            let barH = box * 32 / 48
+            let barY = box * 8 / 48
+            let xs = box == 20 ? [6.2, 11.2] : [14.0, 27.0]
+            for x in xs {
+                let bar = CGRect(x: x * s, y: barY * s, width: barW * s, height: barH * s)
+                let path = CGPath(roundedRect: bar, cornerWidth: barW / 2 * s,
+                                  cornerHeight: barW / 2 * s, transform: nil)
+                ctx.addPath(path)
+                ctx.fillPath()
+            }
+        } else {
+            // 播放三角：48 框 = (16,10)-(36,24)-(16,38)；20 框 = (6,4.5)-(15,10)-(6,15.5)
+            let tri = CGMutablePath()
+            if box == 20 {
+                tri.move(to: CGPoint(x: 6 * s, y: 4.5 * s))
+                tri.addLine(to: CGPoint(x: 15 * s, y: 10 * s))
+                tri.addLine(to: CGPoint(x: 6 * s, y: 15.5 * s))
+            } else {
+                tri.move(to: CGPoint(x: 16 * s, y: 10 * s))
+                tri.addLine(to: CGPoint(x: 36 * s, y: 24 * s))
+                tri.addLine(to: CGPoint(x: 16 * s, y: 38 * s))
+            }
+            tri.closeSubpath()
+            ctx.addPath(tri)
+            ctx.fillPath()
+        }
     }
 }
 

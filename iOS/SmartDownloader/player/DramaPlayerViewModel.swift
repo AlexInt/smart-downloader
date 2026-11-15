@@ -301,8 +301,10 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     func togglePlayback() {
-        let wasPlaying = player.timeControlStatus == .playing
-        print("PLAYER_DBG [Playback] togglePlayback wasPlaying=\(wasPlaying) → \(wasPlaying ? "pause" : "play")")
+        // 等待缓冲态也算「在播」：此时点按应当是「暂停」，否则会再下发一次 play()，
+        // 图标毫无反应（用户会觉得点不动）——与 refreshIsPlaying 同一口径。
+        let wasPlaying = player.timeControlStatus != .paused
+        print("PLAYER_DBG [Playback] togglePlayback wasPlaying=\(wasPlaying) control=\(player.timeControlStatus.rawValue) → \(wasPlaying ? "pause" : "play")")
         // 点按（暂停/播放）也展示进度 HUD，3s 无其他操作后淡出（用户指定，清屏下尤其需要）。
         // 放 early return 之前，暂停/播放两条路径都触发；其他操作（seek/再点按/切集）会重置或清掉它
         showScrubHud(reason: "tap")
@@ -815,9 +817,15 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     /// 播放/暂停态同步（@Published 只在真正翻转时赋值，避免每 0.25s 触发无意义刷新）
+    ///
+    /// 「在播」判定必须把 `waitingToPlayAtSpecifiedRate`（缓冲等待）算在内：只看
+    /// `== .playing` 的话，蜂窝/弱网每遇一次缓冲就翻成 false、恢复后翻回 true，
+    /// 中部大按钮与横屏暂停双竖条的图标就会**自己来回刷**（2026-11-15 用户实报
+    /// 「点击暂停和播放时 icon 一直在刷」）。等待态在语义上就是「用户要它播」。
     private func refreshIsPlaying() {
-        let playing = player.timeControlStatus == .playing
+        let playing = player.timeControlStatus != .paused
         guard playing != isPlaying else { return }
+        print("PLAYER_DBG [Playback] isPlaying \(isPlaying) → \(playing) control=\(player.timeControlStatus.rawValue)")
         isPlaying = playing
     }
 

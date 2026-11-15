@@ -902,6 +902,11 @@ extension PlayerFullscreenController {
             playback.isFullscreenLocked = true
             print("PLAYER_DBG [Preview] locked forced isFullscreenLocked=\(playback.isFullscreenLocked)")
         }
+        if PlayerPreviewFlags.paused, playback.isPlaying {
+            // 定帧「暂停态」：点一次暂停，图标应翻成播放三角（中部与底栏同拍）
+            playback.togglePlayback()
+            print("PLAYER_DBG [Preview] paused forced isPlaying=\(playback.isPlaying)")
+        }
         if PlayerPreviewFlags.pinControls {
             controls?.showTransient()
             previewPinTimer?.invalidate()

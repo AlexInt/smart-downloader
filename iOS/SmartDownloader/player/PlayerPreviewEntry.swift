@@ -40,6 +40,9 @@ enum PlayerPreviewFlags {
     /// `-playerLocked`：全屏后直接置锁定态（只剩解锁钮），用于截锁定态视觉
     static var locked: Bool { args.contains("-playerLocked") }
 
+    /// `-playerPaused`：全屏后立刻暂停，用于截「播放三角」那一态（默认片源在播 = 双竖条）
+    static var paused: Bool { args.contains("-playerPaused") }
+
     /// 样张剧名（默认用装进模拟器的「横屏样张」，三集 1280×720 真片源）
     static var seriesName: String { value(after: "-playerSeries") ?? "横屏样张" }
 
