@@ -14,20 +14,65 @@ import Combine
 // - 全屏容器挂在 keyWindow 上（覆盖一切、不随内容滚动），随播放页销毁立即还原。
 // 控制层（A-4）挂进全屏容器；进/出触发由姿态服务（A-5）调 VM 意图，本类不自判姿态。
 
-/// 全屏容器：bounds 即横屏坐标空间（旋转后铺满竖屏屏幕），videoLayer 在 layoutSubviews 跟随
+/// 全屏容器：bounds 即横屏坐标空间（旋转后铺满竖屏屏幕），videoLayer 在 layoutSubviews 跟随。
+/// 打开选集抽屉时视频要缩到画布 22:76 的 560×302 @(56,44)（r2 圆角），故视频矩形可由外部覆盖。
 final class FullscreenPlayerView: UIView {
     var videoLayer: AVPlayerLayer?
     var onLayout: (() -> Void)?
+    /// 视频层矩形（容器本地坐标）。nil = 铺满 bounds（全屏常态 / 倍速抽屉态）
+    var videoLayoutRect: CGRect? {
+        didSet { setNeedsLayout() }
+    }
+    /// 视频层圆角（画布 22:76 r2；常态 0）
+    var videoCornerRadius: CGFloat = 0 {
+        didSet {
+            guard videoCornerRadius != oldValue else { return }
+            videoLayer?.masksToBounds = videoCornerRadius > 0
+            videoLayer?.cornerRadius = videoCornerRadius
+        }
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let target = videoLayoutRect ?? bounds
         // 裸 CALayer 写 frame 禁隐式动作（同 PlayerSurfaceUIView.withoutLayerActions 说明）
-        if let videoLayer, videoLayer.frame != bounds {
+        if let videoLayer, videoLayer.frame != target {
             PlayerSurfaceUIView.withoutLayerActions {
-                videoLayer.frame = bounds
+                videoLayer.frame = target
+                videoLayer.cornerRadius = videoCornerRadius
+                videoLayer.masksToBounds = videoCornerRadius > 0
             }
         }
         onLayout?()
+    }
+
+    /// 视频矩形切换（画布 22:73 选集抽屉态：缩为 560×302 @(56,44) r2）。
+    /// 裸 CALayer 的 frame 写入被禁了隐式动作，故动画要显式补 position/bounds/cornerRadius 三条。
+    func setVideoRect(_ rect: CGRect?, cornerRadius: CGFloat, animated: Bool) {
+        let old = videoLayer?.frame
+        videoLayoutRect = rect
+        videoCornerRadius = cornerRadius
+        let new = rect ?? bounds
+        guard let layer = videoLayer else { return }
+        PlayerSurfaceUIView.withoutLayerActions {
+            layer.frame = new
+            layer.cornerRadius = cornerRadius
+            layer.masksToBounds = cornerRadius > 0
+        }
+        guard animated, let old, old != new else { return }
+        let duration: TimeInterval = 0.26
+        let curve = CAMediaTimingFunction(name: .easeInEaseOut)
+        let pos = CABasicAnimation(keyPath: "position")
+        pos.fromValue = CGPoint(x: old.midX, y: old.midY)
+        let bnd = CABasicAnimation(keyPath: "bounds")
+        bnd.fromValue = CGRect(origin: .zero, size: old.size)
+        let rad = CABasicAnimation(keyPath: "cornerRadius")
+        rad.fromValue = 0
+        for anim in [pos, bnd, rad] as [CABasicAnimation] {
+            anim.duration = duration
+            anim.timingFunction = curve
+            layer.add(anim, forKey: "drawer.\(anim.keyPath ?? "x")")
+        }
     }
 }
 
@@ -51,6 +96,18 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private var scrubBaseFraction: Double?
     /// seekPan .changed 的拒绝原因每次手势只打一次（降噪）
     private var seekChangedRejectLogged = false
+    /// 当前打开的右侧抽屉（画布 22:72 倍速 / 22:73 选集，同时只允许一个）
+    private(set) var openDrawer: FullscreenDrawerKind?
+    private var drawerPanel: FullscreenDrawerPanel?
+    /// 选集抽屉态的黑色底（画布 22:73 底 #000000 + 视频缩为 560×302）
+    private var drawerBackdrop: UIView?
+    /// 抽屉态的压暗层（画布 22:75 覆盖 a0.28，只在倍速抽屉态；选集态用纯黑底）
+    private var drawerDim: UIView?
+    #if DEBUG
+    /// 样张钩子令牌（仅 Debug，见 PlayerPreviewEntry.swift 的说明）
+    private var previewObservers: [NSObjectProtocol] = []
+    private var previewPinTimer: Timer?
+    #endif
 
     init(playback: DramaPlayerViewModel, surface: PlayerSurfaceUIView) {
         self.playback = playback
@@ -70,6 +127,25 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] angle in self?.handleRotationChange(angle) }
             .store(in: &cancellables)
+        // 切集（含自动连播、选集抽屉跳转）后刷新顶栏剧名集数与互动数值：
+        // item 就绪即元信息跟着换，不用另立切集通知（翻页 → pageSettled → load → isReady）
+        playback.$isReady
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] ready in
+                guard ready else { return }
+                self?.refreshEpisodeMeta()
+            }
+            .store(in: &cancellables)
+        // 锁定态翻转：立刻重算控件可见性（锁上时全部收起，只剩解锁钮）
+        playback.$isFullscreenLocked
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] locked in
+                print("PLAYER_DBG [Fullscreen] locked=\(locked)")
+                self?.controls?.refreshLockState()
+            }
+            .store(in: &cancellables)
     }
 
     /// 播放页销毁：立即还原 videoLayer 并移除 window 上的全屏容器（无动画）
@@ -79,9 +155,14 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             print("PLAYER_DBG [Fullscreen] teardown noop reason=neverEntered")
             return
         }
+        // 抽屉随容器一起销毁：先摘掉面板与缩小的视频矩形，避免 restoreVideoLayer 拿到被改的层
+        dismissDrawer(animated: false)
         restoreVideoLayer()
         container?.removeFromSuperview()
         container = nil
+        #if DEBUG
+        previewTeardown()
+        #endif
         print("PLAYER_DBG [Fullscreen] teardown restored")
     }
 
@@ -101,6 +182,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         guard playback.isFullscreen else {
             print("PLAYER_DBG [Fullscreen] angle CHANGE IGNORED reason=notFullscreen angle=\(angle == .pi / 2 ? "+π/2" : "-π/2")")
             return
+        }
+        // 抽屉挂着转体：面板与视频缩矩形都按新方向重排，否则会甩到屏幕外
+        if openDrawer != nil {
+            print("PLAYER_DBG [Fullscreen] angle CHANGE → close drawer first")
+            dismissDrawer(animated: false)
         }
         performReorientation(to: angle)
     }
@@ -238,9 +324,29 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             print("PLAYER_DBG [Fullscreen] back icon → exitFullscreen")
             self?.playback.exitFullscreen()
         }
+        // ── 新回调接线（画布 22:1 的更多 / 倍速 / 选集 / 下一集 / 清晰度）──
+        controls.onMore = { [weak self, weak controls] source in
+            self?.presentMoreMenu(from: source, anchorView: controls)
+        }
+        controls.onRateTapped = { [weak self] in
+            self?.presentDrawer(.rate)
+        }
+        controls.onEpisodeTapped = { [weak self] in
+            self?.presentDrawer(.episodes)
+        }
+        controls.onNextEpisode = { [weak self] in
+            self?.advanceToNextEpisode()
+        }
+        controls.onQualityTapped = { [weak self] in
+            // 本地 HLS 只有单一路径清晰度：不做假选项，给一句说明
+            print("PLAYER_DBG [Fullscreen] quality tap → toast reason=singleVariant")
+            self?.showControlsToast("本地片源只有原始清晰度")
+        }
         container.addSubview(controls)
         self.controls = controls
         installGestures(on: container)
+        // 顶栏剧名/集数与互动数值：进入时注入一次，切集时由 refreshEpisodeMeta 刷新
+        refreshEpisodeMeta()
 
         print("PLAYER_DBG [Fullscreen] enter angle=\(rotationAngle == .pi / 2 ? "+π/2" : "-π/2") band=\(band) full=\(fullRect.size) s0=\(String(format: "%.3f", s0)) screen=\(screenSize)")
         // 模型先行落终态：center 起点=显示带中心；scale 动画从带比例 s0 → 1（均匀，无变形）
@@ -255,6 +361,9 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             self.controls?.alpha = 1
             self.controls?.showTransient()   // 进入全屏后呼出控制层，3s 自动收起
             self.flushPending()
+            #if DEBUG
+            self.previewApplyAfterEnter()
+            #endif
         })
         if playback.videoPixelSize.width > 0 {
             // 联合关键帧：竖向足迹单调插值，消除旋转中段包围盒鼓包（「变大再变小」）
@@ -276,9 +385,14 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private func performExit() {
         guard let container, let window = surface.window else {
             print("PLAYER_DBG [Fullscreen] exit FORCE CLEAN reason=noWindow hadContainer=\(container != nil)")
+            dismissDrawer(animated: false)
             container?.removeFromSuperview()
             self.container = nil
             return
+        }
+        // 抽屉挂着直接退全屏：先撤抽屉（含视频缩矩形复原），否则退出动画起点是缩小的画面
+        if openDrawer != nil {
+            dismissDrawer(animated: false)
         }
         isAnimating = true
         let screenSize = window.bounds.size
@@ -378,6 +492,239 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
                             bottom: windowInsets.right, right: windowInsets.top)
     }
 
+    // MARK: 顶栏/互动元信息（进入全屏与切集时刷新）
+
+    /// 画布 22:16「剧名  第8集」+ 22:52/22:63 互动数值。
+    /// 切集不在本类发起（走分页管线），故这里既在进入时注入，也在自动连播后按
+    /// playback.$isReady 再刷一次——item 换好、元信息跟随，不用另开切集通知
+    private func refreshEpisodeMeta() {
+        guard let controls else { return }
+        let index = playback.currentEpisodeIndex ?? 1
+        controls.updateTitle(series: playback.seriesName, index: index)
+        controls.updateCounts(like: playback.currentLikeCount, saved: playback.currentSavedCount)
+        print("PLAYER_DBG [Fullscreen] meta series=\(playback.seriesName) index=\(index) total=\(playback.episodeTotal)")
+    }
+
+    // MARK: 右侧抽屉（画布 22:72 倍速 / 22:73 选集）
+
+    /// 打开抽屉：同时只允许一个，重复点同一按钮则收起（切换语义）
+    private func presentDrawer(_ kind: FullscreenDrawerKind) {
+        guard let container else {
+            print("PLAYER_DBG [Fullscreen] drawer SKIP reason=noContainer kind=\(kind)")
+            return
+        }
+        if openDrawer == kind {
+            print("PLAYER_DBG [Fullscreen] drawer toggle OFF kind=\(kind) reason=sameButton")
+            dismissDrawer(animated: true)
+            return
+        }
+        // 换抽屉：先撤旧的（不带动画，避免两层同时飞）
+        if openDrawer != nil { dismissDrawer(animated: false) }
+        print("PLAYER_DBG [Fullscreen] drawer open kind=\(kind) video=\(kind == .episodes ? "shrunk560x302" : "full")")
+        openDrawer = kind
+
+        let geo = currentGeometry()
+        // 控件收起（抽屉有自己的关闭动作；解锁钮也不叠在抽屉上）
+        controls?.hideTransient()
+
+        switch kind {
+        case .rate:
+            // 画布 22:72：视频满屏 + 22:75 压暗层 #0B0C0E a0.28
+            let dim = UIView(frame: container.bounds)
+            dim.backgroundColor = UIColor(hex: "#0B0C0E").withAlphaComponent(0.28)
+            dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            dim.alpha = 0
+            // 压暗层在视频之上、面板之下：点它只关抽屉，不穿透去暂停
+            let tap = UITapGestureRecognizer(target: self, action: #selector(drawerDimTapped))
+            dim.addGestureRecognizer(tap)
+            container.addSubview(dim)
+            drawerDim = dim
+            UIView.animate(withDuration: 0.2) { dim.alpha = 1 }
+
+            let panel = RateDrawerPanel()
+            panel.currentRate = playback.playbackRate
+            panel.onSelect = { [weak self] rate in
+                guard let self else { return }
+                self.playback.setPlaybackRate(rate)
+                self.controls?.keepVisible()
+                // 选中即关（与竖屏浮层同语义）
+                self.dismissDrawer(animated: true)
+            }
+            installDrawerPanel(panel, in: container, frame: geo.drawerFrame)
+
+        case .episodes:
+            // 画布 22:73：整体底 #000000，视频缩为 560×302 @(56,44) r2
+            let backdrop = UIView(frame: container.bounds)
+            backdrop.backgroundColor = .black
+            backdrop.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            backdrop.alpha = 0
+            let tap = UITapGestureRecognizer(target: self, action: #selector(drawerDimTapped))
+            backdrop.addGestureRecognizer(tap)
+            // 必须插到最底层：videoLayer 是直接 addSublayer 挂在 container.layer 上的，
+            // 普通 addSubview 会排在它之上 —— 黑底把缩小后的视频整块糊掉
+            //（模拟器样张实证：选集抽屉态左侧一片纯黑，看不到任何画面）
+            container.insertSubview(backdrop, at: 0)
+            drawerBackdrop = backdrop
+            UIView.animate(withDuration: 0.2) { backdrop.alpha = 1 }
+            container.setVideoRect(geo.shrunkVideoFrame, cornerRadius: 2, animated: true)
+
+            let panel = EpisodeDrawerPanel()
+            panel.total = max(playback.episodeTotal, 1)
+            panel.current = playback.currentEpisodeIndex ?? 1
+            panel.onSelect = { [weak self] index in
+                guard let self else { return }
+                print("PLAYER_DBG [Fullscreen] episode drawer select \(index) → autoAdvanceSort")
+                // 复用自动连播通道（翻页 → 停稳 → pageSettled 全套加载语义），不另开旁路
+                self.playback.autoAdvanceSort = index
+                self.dismissDrawer(animated: true)
+            }
+            panel.onClose = { [weak self] in
+                self?.dismissDrawer(animated: true)
+            }
+            installDrawerPanel(panel, in: container, frame: geo.drawerFrame)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak panel] in
+                (panel as? EpisodeDrawerPanel)?.revealCurrent()
+            }
+        }
+    }
+
+    /// 面板挂载 + 右侧滑入动画。面板带 transform 不能 setFrame（会经逆变换重设 bounds），
+    /// 故先用 frame 落位，动画只改 center
+    private func installDrawerPanel(_ panel: FullscreenDrawerPanel,
+                                    in container: FullscreenPlayerView,
+                                    frame: CGRect) {
+        panel.frame = frame
+        let target = panel.center
+        container.addSubview(panel)
+        drawerPanel = panel
+        // 从右侧屏外滑入：起手中心右移一个面板宽
+        let offscreen = CGPoint(x: target.x + frame.width, y: target.y)
+        if let layer = panel.layer as CALayer? {
+            panel.center = offscreen
+            let pos = CABasicAnimation(keyPath: "position.x")
+            pos.fromValue = offscreen.x
+            pos.toValue = target.x
+            pos.duration = 0.26
+            pos.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(pos, forKey: "drawer.slideIn")
+        }
+        panel.center = target
+    }
+
+    /// 收起抽屉：面板飞出 + 视频矩形复原 + 压暗/黑底淡出
+    private func dismissDrawer(animated: Bool) {
+        let wasKind = openDrawer
+        openDrawer = nil
+        let panel = drawerPanel
+        drawerPanel = nil
+        let dim = drawerDim
+        drawerDim = nil
+        let backdrop = drawerBackdrop
+        drawerBackdrop = nil
+        guard wasKind != nil else { return }
+        print("PLAYER_DBG [Fullscreen] drawer close kind=\(String(describing: wasKind)) animated=\(animated)")
+
+        let finish = { [weak self] in
+            panel?.removeFromSuperview()
+            dim?.removeFromSuperview()
+            backdrop?.removeFromSuperview()
+            self?.container?.setVideoRect(nil, cornerRadius: 0, animated: false)
+            self?.controls?.keepVisible()
+        }
+        guard animated, let panel else {
+            finish()
+            return
+        }
+        UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseInOut], animations: {
+            panel.center = CGPoint(x: panel.center.x + panel.bounds.width, y: panel.center.y)
+            panel.alpha = 0
+            dim?.alpha = 0
+            backdrop?.alpha = 0
+        }, completion: { _ in finish() })
+        // 视频矩形同时回弹（显式 CA 动画，裸 layer 禁了隐式动画）
+        container?.setVideoRect(nil, cornerRadius: 0, animated: true)
+    }
+
+    private func currentGeometry() -> FullscreenLayoutGeometry {
+        FullscreenLayoutGeometry(containerSize: container?.bounds.size ?? .zero,
+                                 localInsets: Self.localInsets(rotationAngle: rotationAngle,
+                                                               windowInsets: container?.window?.safeAreaInsets ?? .zero),
+                                 screenSize: container?.window?.bounds.size ?? .zero)
+    }
+
+    @objc private func drawerDimTapped() {
+        print("PLAYER_DBG [Fullscreen] drawer dim tap → close")
+        dismissDrawer(animated: true)
+    }
+
+    // MARK: 更多菜单 / 下一集 / 提示
+
+    private func presentMoreMenu(from source: UIView, anchorView: UIView?) {
+        guard let host = controls ?? anchorView else { return }
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: playback.isCleanScreen ? "退出清屏" : "清屏模式",
+                                      style: .default) { [weak self] _ in
+            self?.playback.isCleanScreen.toggle()
+            print("PLAYER_DBG [Fullscreen] menu cleanScreen=\(self?.playback.isCleanScreen ?? false)")
+        })
+        sheet.addAction(UIAlertAction(title: playback.isMuted ? "取消静音" : "静音",
+                                      style: .default) { [weak self] _ in
+            self?.playback.isMuted.toggle()
+            print("PLAYER_DBG [Fullscreen] menu muted=\(self?.playback.isMuted ?? false)")
+        })
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        // iPad / 横屏安全：popover 需要 sourceView，否则 iPad 上崩溃
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = source
+            pop.sourceRect = source.bounds
+            pop.permittedArrowDirections = []
+        }
+        host.window?.rootViewController?.presentedTop().present(sheet, animated: true)
+        controls?.keepVisible()
+    }
+
+    private func advanceToNextEpisode() {
+        let current = playback.currentEpisodeIndex ?? 0
+        let total = max(playback.episodeTotal, 1)
+        guard current > 0, current < total else {
+            print("PLAYER_DBG [Fullscreen] next SKIP reason=noNext current=\(current) total=\(total)")
+            showControlsToast("已经是最后一集")
+            return
+        }
+        print("PLAYER_DBG [Fullscreen] next episode \(current) → \(current + 1) via autoAdvanceSort")
+        playback.autoAdvanceSort = current + 1
+        controls?.keepVisible()
+    }
+
+    private func showControlsToast(_ text: String) {
+        guard let container else { return }
+        let label = UILabel()
+        label.text = text
+        label.font = PlayerFullscreenControlsView.sansFont(13, weight: .regular)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        label.backgroundColor = UIColor(hex: "#1C1E1F").withAlphaComponent(0.92)
+        label.layer.cornerRadius = 8
+        label.layer.masksToBounds = true
+        label.alpha = 0
+        label.sizeToFit()
+        let maxW = container.bounds.width * 0.5
+        var size = label.bounds.size
+        size.width = min(size.width + 32, maxW)
+        size.height = max(size.height + 16, 36)
+        let geo = currentGeometry()
+        label.frame = CGRect(x: (container.bounds.width - size.width) / 2,
+                             y: geo.Y(150),
+                             width: size.width, height: size.height)
+        container.addSubview(label)
+        UIView.animate(withDuration: 0.16, animations: { label.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.24, delay: 1.4, animations: { label.alpha = 0 }) { _ in
+                label.removeFromSuperview()
+            }
+        }
+    }
+
     // MARK: 全屏手势（点按暂停 / 长按 2x / 横向相对 seek）
     //
     // 竖屏卡片六条仲裁约束的全屏版（UIKit 原生实现）：
@@ -404,6 +751,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 抽屉打开期间：容器手势一律不接（点面板/网格不该顺带暂停视频或起 seek）
+        guard openDrawer == nil else {
+            print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=drawerOpen")
+            return false
+        }
         // seek 只认横向/斜向主导（保持与卡片同规则；全屏无分页滚动可干扰）
         guard gestureRecognizer === seekPan, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let t = pan.translation(in: pan.view)
@@ -413,6 +765,10 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     }
 
     @objc private func handleTap(_ tap: UITapGestureRecognizer) {
+        if openDrawer != nil {
+            print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=drawerOpen")
+            return
+        }
         if Date() < tapSuppressionUntil {
             print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=justEndedLongPress")
             return
@@ -423,6 +779,12 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         }
         if playback.isSeekGestureActive {
             print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=seekGestureActive")
+            return
+        }
+        // 锁定态（画布 22:31）：点按只做一件事——呼出解锁钮。不暂停、不切换控件层
+        if playback.isFullscreenLocked {
+            print("PLAYER_DBG [CHECK] fullscreen TAP locked → reveal unlock only")
+            controls?.showTransient()
             return
         }
         print("PLAYER_DBG [CHECK] fullscreen TAP → togglePlayback")
@@ -491,5 +853,58 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         } else {
             print("PLAYER_DBG [Fullscreen] pending \(pending ? "enter" : "exit") DROP reason=stale")
         }
+    }
+}
+
+#if DEBUG
+// MARK: - 样张钩子（仅 Debug）
+
+// 模拟器点不了也转不了屏，横屏三张稿（22:1 / 22:72 / 22:73）只能靠启动参数定帧。
+// 正式路径一行都不改：全部由 PlayerPreviewFlags 门控，Release 整段不编译。
+extension PlayerFullscreenController {
+    /// 进入全屏动画结束后调（performEnter 的 completion 里）
+    func previewApplyAfterEnter() {
+        guard PlayerPreviewFlags.enabled else { return }
+        if PlayerPreviewFlags.pinControls {
+            controls?.showTransient()
+            previewPinTimer?.invalidate()
+            // 3s 自动收起会截到空屏：每 2s 重置一次计时
+            previewPinTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                self?.controls?.showTransient()
+            }
+        }
+        guard let name = PlayerPreviewFlags.drawer else { return }
+        let kind: FullscreenDrawerKind = (name == "episodes" || name == "episode") ? .episodes : .rate
+        print("PLAYER_DBG [Preview] auto open drawer kind=\(kind)")
+        // 等一帧再开：面板滑入动画需要容器已完成布局
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.presentDrawer(kind)
+        }
+    }
+
+    /// 控制器释放时停掉钉控件计时器（teardown 已清 cancellables，这里补 Timer）
+    func previewTeardown() {
+        previewPinTimer?.invalidate()
+        previewPinTimer = nil
+    }
+}
+#endif
+
+// MARK: - 呈现用的顶层控制器
+
+extension UIViewController {
+    /// ActionSheet / Alert 必须挂在最顶层已呈现控制器上，否则
+    /// 「Attempt to present ... which is already presenting」静默失败
+    func presentedTop() -> UIViewController {
+        if let presented = presentedViewController {
+            return presented.presentedTop()
+        }
+        if let nav = self as? UINavigationController, let top = nav.visibleViewController {
+            return top.presentedTop()
+        }
+        if let tab = self as? UITabBarController, let top = tab.selectedViewController {
+            return top.presentedTop()
+        }
+        return self
     }
 }

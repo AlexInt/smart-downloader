@@ -40,6 +40,10 @@ struct SmartDownloaderApp: App {
     /// 纸本轨想"看一眼"只能靠这么个入口直接落到目标页。Release 不编译。
     @State private var showDramaPreview = false
     private static var dramaPreviewShown = false
+    /// 播放器样张（启动参数 `-playerPreview`）：横屏全屏态必须 ready + 横屏片源才能进，
+    /// 模拟器既点不了也转不了屏 —— 只能从启动参数直接落到目标态截图核对。
+    @State private var showPlayerPreview = false
+    private static var playerPreviewShown = false
     #endif
 
     private static func uptimeMs() -> Int { PERF.ms() }
@@ -119,6 +123,9 @@ struct SmartDownloaderApp: App {
                 .fullScreenCover(isPresented: $showDramaPreview) {
                     DramaPreviewHost(manager: manager)
                 }
+                .fullScreenCover(isPresented: $showPlayerPreview) {
+                    PlayerPreviewHost()
+                }
                 #endif
                 // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App
                 if showSplash {
@@ -160,6 +167,12 @@ struct SmartDownloaderApp: App {
                     Self.dramaPreviewShown = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         showDramaPreview = true
+                    }
+                }
+                if PlayerPreviewFlags.enabled, !Self.playerPreviewShown {
+                    Self.playerPreviewShown = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        showPlayerPreview = true
                     }
                 }
                 #endif

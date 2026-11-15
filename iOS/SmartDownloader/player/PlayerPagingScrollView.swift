@@ -81,6 +81,13 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             .sink { [weak surface] landscape in
                 surface?.videoGravity = landscape ? .resizeAspect : .resizeAspectFill
             }
+        // 画面适配按钮（画布 19:37）：用户手动切了 自动/完整/铺满 时立即重落 gravity，
+        // 与片源方向同一即时通道（不等 SwiftUI update，避免按钮点了画面不动）
+        context.coordinator.fitModeCancellable = playback.$videoFitMode
+            .sink { [weak surface, weak playback] _ in
+                guard let playback else { return }
+                surface?.videoGravity = playback.effectiveVideoGravity
+            }
         // isReady 订阅：翻转 false（新一集开始）藏住条带；翻转 true（item ready）延迟 150ms
         // 淡入——与卡片渐变淡出错开，交叉过渡无黑屏空档（渐变退完前条带已在淡入）
         context.coordinator.readyCancellable = playback.$isReady
@@ -136,8 +143,9 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     /// 渲染 gravity：横屏片源完整显示（fit）、竖屏片源拉满（fill）。App 已锁竖屏，
     /// 不再随持屏方向切换（旧 fit↔fill 二值跳变即「中间条突变全屏」的根因）。
     /// presentationSize 未知（0×0）时 videoIsLandscape=false，按竖屏 fill 处理。
+    /// 画面适配按钮（画布 19:37）的覆盖口径统一由 VM.effectiveVideoGravity 给。
     static func videoGravity(for playback: DramaPlayerViewModel) -> AVLayerVideoGravity {
-        playback.videoIsLandscape ? .resizeAspect : .resizeAspectFill
+        playback.effectiveVideoGravity
     }
 
     // MARK: - Coordinator
@@ -166,6 +174,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         var gravityCancellable: AnyCancellable?
         /// isReady → 视频条带延迟首显（与卡片渐变淡出错开，防黑屏空档/突现）
         var readyCancellable: AnyCancellable?
+        /// 画面适配（自动/完整/铺满）→ 立即重落 videoGravity
+        var fitModeCancellable: AnyCancellable?
         /// 自动连播：playback.autoAdvanceSort → 动画滚动到下一页（信号消费后置回 nil）
         var autoAdvanceCancellable: AnyCancellable?
         private var lastPendingReason = ""

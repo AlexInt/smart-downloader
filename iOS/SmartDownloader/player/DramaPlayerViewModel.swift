@@ -31,6 +31,10 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var showRemainingTime = false
     @Published private(set) var remainingTimeText = "-00:00"
     @Published private(set) var progress: Double = 0
+    /// 是否正在播（驱动竖屏中央播放/暂停大按钮，画布 19:57）。
+    /// 周期回调 0.25s 刷新一次足够（按钮只做显示，动作走 togglePlayback）；
+    /// togglePlayback 与 load 里另即时刷新一次，避免点按后按钮要等一个周期才翻面。
+    @Published private(set) var isPlaying = false
     @Published private(set) var loadError: String?
     /// spinner 延迟显示：加载超过 800ms 仍未就绪才置 true，预热命中的秒开路径全程无转圈
     /// （800ms 依真机实测定：HIT 就绪 642–871ms、入口 MISS 1008–1177ms，原 300ms 每滑必闪）
@@ -42,6 +46,35 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 片源像素尺寸（presentationSize）：全屏进/出动画以「视频显示带」（surface 内 fit 的
     /// 居中矩形）为起点/终点，据此换算；0×0 = 未知，退回 surface 全框（旧路径）。
     private(set) var videoPixelSize: CGSize = .zero
+    /// 画面适配模式（画布 19:37 按钮）：自动跟随片源方向 / 强制完整 / 强制铺满。
+    /// 持久化在本 VM 内存（不进 PlayerPreferences——这是「本次观看」的画面临时口径，
+    /// 跨集也不该被记住：新一集方向可能相反，记住旧口径反而每次都错）。
+    enum VideoFitMode: String {
+        case auto, fit, fill
+        var next: VideoFitMode {
+            switch self {
+            case .auto: return .fit
+            case .fit: return .fill
+            case .fill: return .auto
+            }
+        }
+        var label: String {
+            switch self {
+            case .auto: return "自动"
+            case .fit: return "完整"
+            case .fill: return "铺满"
+            }
+        }
+    }
+    @Published private(set) var videoFitMode: VideoFitMode = .auto
+    /// 渲染 gravity：受 videoFitMode 覆盖；auto 时沿用原规则（横屏片源 fit、竖屏片源 fill）
+    var effectiveVideoGravity: AVLayerVideoGravity {
+        switch videoFitMode {
+        case .fit: return .resizeAspect
+        case .fill: return .resizeAspectFill
+        case .auto: return videoIsLandscape ? .resizeAspect : .resizeAspectFill
+        }
+    }
     /// 全屏态（容器 transform 自转，非系统界面旋转）：仅横屏片源可进入，姿态服务（判稳）与
     /// 全屏控制层驱动，Combine 订阅方是 PlayerFullscreenController。
     @Published private(set) var isFullscreen = false
@@ -49,6 +82,9 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 保证内容与物理握持一致——写死单方向会让另一半转向的内容上下倒置（返回 icon
     /// 跑到对角、进度条翻到顶部）。控制器进/出动画与控制层安全区映射都用它。
     @Published private(set) var fullscreenRotationAngle: CGFloat = .pi / 2
+    /// 全屏锁定（画布 22:31 锁按钮）：锁住后控制层一律不显示，点按也不呼出——
+    /// 避免躺着看时误触暂停/退出。非持久化：退出全屏即复位（下次进全屏重新是解锁态）。
+    @Published var isFullscreenLocked = false
     /// 自动连播信号（2026-11-14）：单集播完 → PlayerFeedViewModel（持有 queue/slots）
     /// 算出下一集写入这里 → PlayerPagingScrollView 的 Coordinator 订阅并动画翻页 → 置回 nil。
     /// 本类只发播完信号（onPlaybackEnded），不持有队列/槽位知识——下一集计算归 FeedVM，
@@ -93,6 +129,31 @@ final class DramaPlayerViewModel: ObservableObject {
         didSet { writeAction(column: "saved", value: saved) }
     }
 
+    /// 常驻播放倍速（画布 22:77 六档）。与长按 2x 是两套语义：
+    /// 这是用户选定的基准速率（持久化），长按 2x 是瞬态叠加、松手还原到这里。
+    /// 取值口径：AVPlayer.rate 只在「正在播」时才等于倍速；暂停时 rate=0，
+    /// 故用本属性记账，applyRate() 负责按当前播放意图下发。
+    @Published private(set) var playbackRate: Double = 1.0 {
+        didSet {
+            preferences.playbackRate = playbackRate
+            applyRate()
+            print("PLAYER_DBG [Playback] rate=\(playbackRate)× → persist + applyPlayer")
+        }
+    }
+    /// 画布 22:77 的六档：3.0 / 2.0 / 1.5 / 1.25 / 1.0 / 0.75（降序，与抽屉顺序一致）
+    static let rateOptions: [Double] = [3.0, 2.0, 1.5, 1.25, 1.0, 0.75]
+    /// 倍速文案：一位小数，去掉多余的 0（1.0 → "1"、1.25 → "1.25"、3.0 → "3"）
+    var playbackRateText: String {
+        let text = String(format: "%.2f", playbackRate)
+            .replacingOccurrences(of: "0$", with: "")
+            .replacingOccurrences(of: "\\.$", with: "")
+        return text
+    }
+    /// 顶栏倍速按钮的紧凑文案：默认档显示「倍速」，选过档位后显示「1.5×」
+    var rateShortText: String {
+        "\(playbackRateText)×"
+    }
+
     private let preferences = PlayerPreferences()
     /// 当前集的播放进度跟踪（落盘 + 下次续播）：随 load 换人，stop 时摘掉
     private var progressTracker: PlaybackProgressTracker?
@@ -104,6 +165,22 @@ final class DramaPlayerViewModel: ObservableObject {
     private var currentIdentity: MediaIdentity?
     /// 当前加载的集（回前台重建 item 需要完整槽位：playlistURL / identity / sort）
     private var currentEpisode: PlayableEpisode?
+
+    // MARK: 供全屏控制层读的剧集元信息（本类不持有队列知识，由 PlayerFeedViewModel 注入）
+
+    /// 剧名（横屏顶栏 22:16 与竖屏 2:123 用）
+    var seriesName: String = ""
+    /// 全集数（选集抽屉网格用）
+    var episodeTotal: Int = 0
+    /// 当前集号（未加载时为 nil）
+    var currentEpisodeIndex: Int? { currentEpisode?.sort }
+    /// 当前集点赞/收藏展示值（画布 22:49 / 22:60；本地无服务端计数，按集号给稳定占位）
+    var currentLikeCount: Int {
+        DramaEpisode.likeCount(for: currentEpisode?.sort ?? 1)
+    }
+    var currentSavedCount: Int {
+        DramaEpisode.savedCount(for: currentEpisode?.sort ?? 1)
+    }
     /// 进后台那一刻是否在播：回前台只续「用户期望在播」的状态，不替已暂停的用户点播放
     private var wasPlayingBeforeBackground = false
     /// item 网络失败自动重试过的集号（每集最多一次；就绪即清空）——防「失败→重建→再失败」死循环
@@ -130,6 +207,9 @@ final class DramaPlayerViewModel: ObservableObject {
         isMuted = preferences.isMuted
         isCleanScreen = preferences.isCleanScreen
         showRemainingTime = preferences.showRemainingTime
+        // 恢复常驻倍速：直接写字段不走 didSet 之外的重活——init 阶段 player 还没 item，
+        // applyRate 会因为没在播而什么都不做（load 时会按 playbackRate 重新下发）
+        playbackRate = preferences.playbackRate
         ensureObserver()
         // 播完观察（自动连播信号源）：通知线程不定，回主线程判「事件对象 === 当前 item」
         // 再碰状态（GCD 约定）——同一性判定天然过滤旧 item 的迟到事件（防快滑/切集竞态）
@@ -214,7 +294,10 @@ final class DramaPlayerViewModel: ObservableObject {
             self.player.isMuted = self.isMuted
             self.userWantsPlayback = autoplay
             if autoplay {
+                // 先落倍速再 play：play() 会把 rate 拨回 1.0，顺序反了则新一集从 1x 起步
                 self.player.play()
+                self.player.rate = Float(self.playbackRate)
+                print("PLAYER_DBG [Playback] load applyRate=\(self.playbackRate)×")
             } else {
                 print("PLAYER_DBG [Playback] load holdPaused sort=\(episode.sort) reason=autoplay=false")
             }
@@ -234,6 +317,7 @@ final class DramaPlayerViewModel: ObservableObject {
         if wasPlaying {
             player.pause()
             userWantsPlayback = false
+            isPlaying = false
             // 暂停点就是用户看到的位置，不等 5 秒边界立即落盘
             progressTracker?.flush()
             return
@@ -252,7 +336,11 @@ final class DramaPlayerViewModel: ObservableObject {
             }
         }
         userWantsPlayback = true
+        // 同理先 play 再落倍速：play() 内置把 rate 拨回 1.0，暂停期间选过 1.5 档的话
+        // 这里不补一次就又回 1x 了
         player.play()
+        player.rate = Float(playbackRate)
+        isPlaying = true
     }
 
     /// 关键时机之一：App 进后台时由视图层转发调用，把内存里攒的位置先落库
@@ -291,7 +379,9 @@ final class DramaPlayerViewModel: ObservableObject {
         guard needsRebuild else {
             if wasPlayingBeforeBackground, player.timeControlStatus != .playing {
                 player.play()
-                print("PLAYER_DBG [Lifecycle] foreground resumeOnly rate=\(player.rate)")
+                // 回前台续播同样要还原常驻倍速（play() 会把 rate 拨回 1.0）
+                player.rate = Float(playbackRate)
+                print("PLAYER_DBG [Lifecycle] foreground resumeOnly rate=\(player.rate) targetRate=\(playbackRate)×")
             }
             return
         }
@@ -478,14 +568,56 @@ final class DramaPlayerViewModel: ObservableObject {
     func endFastForward() {
         guard isFastForwarding else { return }
         isFastForwarding = false
-        // 只要不是用户主动暂停（如片尾 actionAtItemEnd），一律把目标倍速拨回 1x。
+        // 只要不是用户主动暂停（如片尾 actionAtItemEnd），一律把目标倍速拨回常驻倍速。
         // 此前只在 .playing 时才置回：缓冲等待态(.waitingToPlayAtSpecifiedRate)被漏掉，
         // 手松开后缓冲恢复播放仍是 2x —— 即用户反馈的「松手没有立即变回 1 倍速」。
+        // 还原目标是 playbackRate（用户选的档位）而非写死 1.0：选了 1.5 倍速后长按 2x，
+        // 松手应回 1.5 而不是跌回 1.0。
         if player.timeControlStatus != .paused {
-            player.rate = 1.0
+            player.rate = Float(playbackRate)
         }
-        print("PLAYER_DBG [CHECK] fastForward → 1x control=\(player.timeControlStatus.rawValue)")
+        print("PLAYER_DBG [CHECK] fastForward → \(playbackRate)× control=\(player.timeControlStatus.rawValue)")
     }
+
+    /// 切换常驻倍速（倍速抽屉点选）。正在播则立即生效；暂停中只记账，
+    /// 恢复播放时由 applyRate 下发（AVPlayer 在 rate=0 时设 rate 会直接开播，不能盲设）。
+    func setPlaybackRate(_ rate: Double) {
+        guard Self.rateOptions.contains(rate) else {
+            print("PLAYER_DBG [Playback] setRate SKIP reason=notInOptions rate=\(rate)")
+            return
+        }
+        guard rate != playbackRate else {
+            print("PLAYER_DBG [Playback] setRate SKIP reason=same rate=\(rate)")
+            return
+        }
+        playbackRate = rate
+        AppHaptics.light()   // 档位切换确认，与静音/清屏同一手势语言
+    }
+
+    /// 画面适配按钮（画布 19:37）：自动 → 完整 → 铺满 三档循环。
+    /// 与 PlayerPagingScrollView 的 gravity sink 联动——那边订阅 videoFitMode 即时落 gravity。
+    func cycleVideoGravity() {
+        let next = videoFitMode.next
+        print("PLAYER_DBG [Playback] fitMode \(videoFitMode.label) → \(next.label) landscape=\(videoIsLandscape)")
+        videoFitMode = next
+        AppHaptics.light()
+    }
+
+    /// 按当前播放意图下发倍速：只在「本该在播」时设 rate（暂停中设 rate 会强制开播）。
+    /// 长按 2x 期间的临时 2x 优先——此时不动，等 endFastForward 统一还原。
+    private func applyRate() {
+        guard !isFastForwarding else {
+            print("PLAYER_DBG [Playback] applyRate SKIP reason=fastForwarding")
+            return
+        }
+        guard userWantsPlayback, player.timeControlStatus != .paused else {
+            print("PLAYER_DBG [Playback] applyRate DEFER reason=notPlaying rate=\(playbackRate)")
+            return
+        }
+        player.rate = Float(playbackRate)
+        print("PLAYER_DBG [Playback] applyRate → \(playbackRate)×")
+    }
+
 
     // MARK: 私有
 
@@ -662,6 +794,8 @@ final class DramaPlayerViewModel: ObservableObject {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite, seconds >= 0 else { return }
         currentTimeText = Self.format(seconds)
+        // 播放/暂停态跟着周期回调走：中央大按钮（画布 19:57）与横屏暂停双竖条靠它驱动
+        refreshIsPlaying()
         let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
         guard total.isFinite, total > 0 else { return }
         durationText = Self.format(total)
@@ -684,12 +818,19 @@ final class DramaPlayerViewModel: ObservableObject {
         durationText = "00:00"
         remainingTimeText = "-00:00"
         progress = 0
+        isPlaying = false
+    }
+
+    /// 播放/暂停态同步（@Published 只在真正翻转时赋值，避免每 0.25s 触发无意义刷新）
+    private func refreshIsPlaying() {
+        let playing = player.timeControlStatus == .playing
+        guard playing != isPlaying else { return }
+        isPlaying = playing
     }
 
     /// 片源方向刷新：presentationSize 有效（宽高 > 0）才更新，未知不动。
     /// 读取点 = ready 与 0.25s 周期回调；横屏片源在竖屏持机要 fit 完整显示（用户要求：不统一竖屏拉满）。
-    private func refreshVideoOrientation(reason: String) {
-        let size = player.currentItem?.presentationSize ?? .zero
+    private func refreshVideoOrientation(reason: String) {        let size = player.currentItem?.presentationSize ?? .zero
         guard size.width > 0, size.height > 0 else { return }
         videoPixelSize = size
         let landscape = size.width > size.height

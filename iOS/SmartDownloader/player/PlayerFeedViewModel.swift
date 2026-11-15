@@ -53,6 +53,10 @@ final class PlayerFeedViewModel: ObservableObject {
         queue = q
         slots = q.slots
         currentSort = q.current?.sort
+        // 全屏控制层要的元信息（顶栏剧名集数 / 选集抽屉全集数）：本类持有队列知识，
+        // 播放 VM 不持有——一次性注入，避免播放侧自己反查
+        playback.seriesName = q.seriesName
+        playback.episodeTotal = q.slots.count
         // 进入即预热首集 + 相邻集：与 150ms 停稳防抖并行，首次起播也走 HIT 路径
         if let current = q.current {
             let neighbors = q.neighbors(of: current.sort)

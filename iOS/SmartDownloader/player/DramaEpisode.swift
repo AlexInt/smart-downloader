@@ -22,6 +22,23 @@ struct DramaEpisode {
         "\(episodeIndex)/\(episodeTotal)"
     }
 
+    /// 右侧互动列的数值（画布 2:110「23.7万」/ 2:118「1万」）。
+    /// 本地数据源没有这两个计数，故按集号给出稳定的展示值——不是随机，
+    /// 也不是假数据源：只作为「该位有数」的占位，交互结果（点亮/取消）才是真实状态。
+    /// 接入服务端计数后由这里替换即可，视图层不用改。
+    var likeCount: Int { Self.placeholderCount(seed: episodeIndex, base: 12_400) }
+    var savedCount: Int { Self.placeholderCount(seed: episodeIndex, base: 23_700) }
+
+    /// 按集号取稳定占位数值（横屏控制层 UIKit 版也要用同一口径，故公开静态入口）
+    static func likeCount(for index: Int) -> Int { placeholderCount(seed: index, base: 12_400) }
+    static func savedCount(for index: Int) -> Int { placeholderCount(seed: index, base: 23_700) }
+
+    private static func placeholderCount(seed: Int, base: Int) -> Int {
+        // 按集号做一个小幅线性偏移（±0~9%），各集数值不同但同一集每次渲染一致
+        let drift = (seed &* 37) % 10
+        return base + base * drift / 100
+    }
+
     // 静态稿面值：仅供 #Preview，真实播放一律以 ViewModel 为准
     var previewCurrentTime: String? = nil
     var previewDuration: String? = nil

@@ -113,6 +113,40 @@ extension DWColor {
     static let paperInkPlate  = Color(hex: "#1A1D1E")
 }
 
+// MARK: - Design Tokens · 播放器叠层（画布 2:11 竖屏 / 22:1 横屏 / 22:77 抽屉）
+//
+// 播放页是墨本轨：叠层文字统一用「纸白」#E8E6DF 而非纯白，与纸本轨同一色温；
+// 进度已播段与当前点用朱砂 #A05243（与纸本轨同一个语义色，两轨共享）。
+extension DWColor {
+    /// 叠层主文字 / 图标（返回、集数、倍速、更多、材质描边）
+    static let overlayInk       = Color(hex: "#E8E6DF")
+    /// 叠层弱文字（右侧互动数值 23.7万 / 热评）
+    static let overlayInkSub    = Color(hex: "#C4C7C3")
+    /// 朱砂当前点与已播段（画布 2:129 / 2:128）
+    static let overlayCinnabar  = Color(hex: "#A05243")
+    /// 选集胶囊底（画布 2:130 #22262A）
+    static let overlayChip      = Color(hex: "#22262A")
+    /// 全集进度的未播轨道（画布 2:127，纸白满不透明——轨道本身就是一根细白线）
+    static let overlayTrack     = Color(hex: "#E8E6DF")
+    /// 横屏半透明圆角方钮底（画布 22:31 / 22:36：#8C9190 @ 0.42）
+    static let overlayButton    = Color(hex: "#8C9190")
+    /// 倍速抽屉底（画布 22:77 #1C1E1F）
+    static let ratePanel        = Color(hex: "#1C1E1F")
+    /// 倍速抽屉选项文字（画布 22:79 #E8E6DF）
+    static let rateText         = Color(hex: "#E8E6DF")
+    /// 倍速抽屉选中项文字（画布 22:84 #F2F0EA）
+    static let rateTextSelected = Color(hex: "#F2F0EA")
+    /// 倍速抽屉选中行底（画布 22:83 #35393B）
+    static let rateRowSelected  = Color(hex: "#35393B")
+    /// 选集抽屉底（画布 22:78 #101214）
+    static let episodePanel     = Color(hex: "#101214")
+    /// 选集格子底（画布 22:92 #25282B）
+    static let episodeCell      = Color(hex: "#25282B")
+    /// 选集当前集格子底（画布 22:98 #2A2422）与描边（#A05142）
+    static let episodeCellCurrent = Color(hex: "#2A2422")
+    static let episodeCellStroke  = Color(hex: "#A05142")
+}
+
 // MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）
 //
 // 栏底跟随所在页的轨：浏览/下载页是墨本深底，栏也压墨，图标与文字转纸白；
