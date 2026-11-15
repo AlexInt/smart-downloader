@@ -187,6 +187,18 @@ View → ViewModel → Service → 系统能力 / Model
    - 日志：`PLAYER_DBG [API] POST <path> status/type/bytes/error`、`[CHECK] API decode FAIL domain/code/debug`、`[CHECK] API decode body=<片段>`、`[CHECK] Entry errorDetail`（多行）。这些是排障的主证据，**不要删**。
    - 单集取直链失败同样打 `drama.diagnostic`（`SeriesDownloadCoordinator`），任务行仍显示 `localizedDescription`。
 
+22. **封面这张图「是谁的」只能靠页面证据判，不许再按「首张大图」猜**（2026-11-15 用户实报「剧集 cover 变成推荐第一个 cover」「为你推荐里有些 cover 与卡片对不上」）：
+   - **主封面 = `dramaMetaJS` 里「不在别的剧卡片里 + 可见面积最大」的那张**。判定链条：① `linkVideoId(im)` 拿图所在 `a[href*="/drama/detail/"]` 的剧 id，**指向别的剧的一律排除**（推荐/相关模块的卡片图全长这样，而主海报要么没有这层链接、要么链回本剧）；② 剩下的按 `getBoundingClientRect` 面积取最大（主海报 390×376 ≫ 推荐卡 170×226）；③ `alt` 含页面标题（= 本剧剧名）时分数 ×3。`ownId` 取不到（页面地址不带数字 id）时**不做链接排除**，退回按面积排——否则包着「链回本剧」那层 a 的主海报会被一并排除。全都排除光才 fallback 到老规则「首张 naturalWidth≥300」，日志标 `cover=fallback`。
+   - **推荐封面绑 id 先看卡片文字、再看 href id**（`DramaMetaHarvester.bindRecCovers` 纯函数）：`dramaMetaJS` 除 `recCovers[vid]` 外多回一个 `recCards=[{id,text}]`（卡片可见文字：`a.innerText`；链接只包海报时往上找一层「只含 1 张图、文字 ≤40 字」的容器取，模块级多图容器直接放弃留空）；Swift 侧按 `titleKey`（去空白标点、小写）让接口剧名去匹配卡片文字（**长标题优先**，避免短标题恰好是长剧名的一部分），匹配不上才退回 href id。一张候选卡只绑一次，没绑上的打 `rec cover UNMATCHED`。
+   - **不许再用「按 href id 直接落盘」当唯一路径**：站点 id 口径一变就整片串图，而卡片上的文字就是海报上印的剧名，按它对齐才是用户视角的正确。
+   - **`DramaCoverCache.layoutVersion` 是提取规则的一部分**：挑图规则一改**必须递增**（现 `v2`，目录 `Caches/DramaCovers/v2`，根目录散落的旧文件首次访问时删掉）。因为 `storeImageData` 有 fresh-skip，不换目录的话错图会一直用满 15 天。
+   - **收割写封面 = 每个 id 本次收割写一次，且是覆盖写**（`storeImageData(overwrite: true)` + 收割器 `storedCoverIDs` 节流）：poll 有 5 轮不能轮轮重写，但 ↻ 刷新必须能纠正旧错图。覆盖后文件 URL 没变，`AsyncImage` 不会自己重读——`applyCover` 比对 `DramaCoverCache.modifiedAt` 发现有改写就 `coverReloadToken += 1` 重建，否则用户看不到纠正结果。
+   - 排障证据：`harvest round … cover=pick 1200x1600 shown:… score:… top:… blob:… big:… excl:…` / `harvest recCovers stored=N/M byTitle=X byID=Y dropped=Z cards=N` / `cover cache STORED id=… via=harvest` / `cover cache cleanup legacy v1 files=N`。**这些别删**。
+
+23. **选集格「选中 + 下载」叠加时，边缘环整套换纸白**（2026-11-15 用户拍板「下载边缘进度颜色应该是白色的」）：
+   - 环**不再因为选中而不画**（旧写法 `if !isSelected { progressRing(phase) }` 直接丢掉进度），改由 `progressRing(_:onCinnabar:)` 按底色换色：选中格（朱砂底）轨道 `paper@0.45`、进度 `paper`、完成环 `paper@0.9`、失败环 `paperInk`（朱砂底上朱砂不可见，换最重的墨保住「失败 = 最重一条线」的语义）；非选中格维持原三档（`paperTrack@0.55` / `paperTrackFill` / `paperInkSub`）。
+   - 验收不能靠手指（模拟器点不了）：`-dramaPreview -dramaRingPreview active` 看「选中 + 42/100 白弧」、`-dramaRingPreview done` 看「选中 + 已下载白闭环」。
+
 ### 并发与线程（GCD 约定，2026-11-12 全量迁移）
 
 **全代码库已移除 Swift concurrency（async/await / Task / Actor 隔离 / Continuation / AsyncStream），统一 GCD。** 工程锁定 Swift 5 语言模式 + minimal 并发检查（`SWIFT_VERSION = 5.0`），勿再升 Swift 6 / 开严格检查——迁移就是为了消除编译期隔离/Sendable 摩擦。例外仅限「Apple 无同步/非废弃 API 的边界」，保留两处 async 岛（用户拍板）：`WebKitFetcher` 的 `startDownload(using:)`（无 completion 变体）、`PlaybackPlayerService` 的 `asset.load(.isPlayable)`（`loadValuesAsynchronously` 已 deprecated）。岛内只做该 async 调用，完成后回主线程碰状态，勿扩散。
@@ -266,6 +278,7 @@ cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader 
 | `-dramaPreview` | 直接弹剧集页纸本样张（注入固定 30 集 + 推荐 + 档案，全程不联网） |
 | `-dramaPreviewBottom` | 配合上一条：内容直接落到页底，用于看档案区与「滚过海报后的顶栏」 |
 | `-refreshPreview pull\|ready\|refreshing\|done` | 下拉刷新定帧：让页面停在某一态供截图（下拉靠手指，模拟器滑不了） |
+| `-dramaRingPreview active\|done` | 配合 `-dramaPreview`：选集格「选中 + 下载中(42/100)」/「选中 + 已下载」叠加定帧，验收朱砂底上的纸白进度环 |
 | `-refreshAuto` | 启动 2s 后自动跑一遍刷新，验证「刷新 → 已更新 → 收起」会不会自己走回来 |
 | `-archiveExpandedPreview` | 剧集页档案区展开定帧（默认折叠；模拟器点不了，用它看展开态高度预算） |
 | `-playerLocked` | 配合 `-playerPreview -playerFullscreen -playerPinControls`：进全屏后直接置锁定态，只剩解锁钮（看锁定视觉与控件收起） |

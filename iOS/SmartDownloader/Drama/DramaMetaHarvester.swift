@@ -14,26 +14,6 @@ let dramaMetaJS = """
   var imgs = [];
   var nodes = document.querySelectorAll('img');
   for (var i = 0; i < nodes.length && i < 40; i++) { var s = nodes[i].currentSrc || nodes[i].src; if (s) imgs.push(s); }
-  var coverData = '';
-  try {
-    var big = null;
-    for (var i = 0; i < nodes.length; i++) {
-      var im = nodes[i];
-      var s = im.currentSrc || im.src || '';
-      if (im.complete && im.naturalWidth >= 300 && s.indexOf('blob:') === 0) { big = im; break; }
-    }
-    if (!big) {
-      for (var i = 0; i < nodes.length; i++) {
-        if (nodes[i].complete && nodes[i].naturalWidth >= 300) { big = nodes[i]; break; }
-      }
-    }
-    if (big) {
-      var cv = document.createElement('canvas');
-      cv.width = big.naturalWidth; cv.height = big.naturalHeight;
-      cv.getContext('2d').drawImage(big, 0, 0);
-      coverData = cv.toDataURL('image/jpeg', 0.85);
-    }
-  } catch (e) { coverData = ''; }
   function idFromHref(h) {
     if (!h) return '';
     var parts = h.split('?')[0].split('#')[0].split('/').filter(function (x) { return x !== ''; });
@@ -42,10 +22,70 @@ let dramaMetaJS = """
     }
     return '';
   }
+  function pageY() { return window.pageYOffset || document.documentElement.scrollTop || 0; }
+  function docTop(node) { var r = node.getBoundingClientRect(); return r.top + pageY(); }
+  function shownArea(node) { var r = node.getBoundingClientRect(); return Math.max(0, r.width) * Math.max(0, r.height); }
+  // 这张图所在的链接指向的是哪部剧（'' = 不在剧情链接里）。
+  // 推荐/相关模块的卡片图都满足 a[href*=/drama/detail/]，主海报没有这层链接
+  // （或链回本剧）——这是把「主封面」和「推荐卡封面」分开的唯一可靠判据。
+  function linkVideoId(im) {
+    var a = im.closest ? im.closest('a[href]') : null;
+    if (!a) return '';
+    var h = a.getAttribute('href') || '';
+    if (h.indexOf('/drama/detail/') < 0) return '';
+    return idFromHref(h);
+  }
+  var ownId = idFromHref(location.pathname);
+  // 主封面：取「不在别的剧卡片里」的图里可见面积最大的一张。
+  // 老规则是「首张 naturalWidth≥300」——推荐模块在 DOM 里排在主海报之前时
+  // 直接把推荐卡封面当成剧集封面（用户 2026-11-15 实报「剧集 cover 变成推荐第一个 cover」）。
+  var coverData = '';
+  var coverDiag = 'none';
+  try {
+    var best = null, bestScore = -1, bigCount = 0, excluded = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      var im = nodes[i];
+      if (!im.complete || im.naturalWidth < 300) continue;
+      bigCount++;
+      var vid = linkVideoId(im);
+      // ownId 取不到（页面地址不带数字 id，比如本地文件）时不做链接排除，只按面积排——
+      // 否则主海报外面若包着一层「链回本剧」的 a，会连它一起被判成推荐卡，退到 fallback
+      if (ownId && vid && vid !== ownId) { excluded++; continue; }
+      var src = im.currentSrc || im.src || '';
+      var score = shownArea(im) + (src.indexOf('blob:') === 0 ? 1 : 0);
+      // 图的 alt 就是本剧剧名时强烈优先（一手证据 > 面积猜测；alt 为空则不加成）
+      var alt = (im.getAttribute('alt') || '').trim();
+      if (alt.length >= 2 && (document.title || '').indexOf(alt) >= 0) score *= 3;
+      if (score > bestScore) { bestScore = score; best = im; }
+    }
+    if (!best) {
+      // 兜底：页面上所有大图都在「别的剧」的卡片里（主海报可能是 CSS 背景而不是 img），
+      // 退回老规则「首张大图」——宁可有图但可能错，diag 标 fallback 供真机日志复核
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].complete && nodes[i].naturalWidth >= 300) { best = nodes[i]; break; }
+      }
+      coverDiag = 'fallback big:' + bigCount + ' excl:' + excluded;
+    }
+    if (best) {
+      var cv = document.createElement('canvas');
+      cv.width = best.naturalWidth; cv.height = best.naturalHeight;
+      cv.getContext('2d').drawImage(best, 0, 0);
+      coverData = cv.toDataURL('image/jpeg', 0.85);
+      if (coverDiag === 'none') {
+        coverDiag = 'pick ' + best.naturalWidth + 'x' + best.naturalHeight
+          + ' shown:' + Math.round(shownArea(best)) + ' score:' + Math.round(bestScore)
+          + ' top:' + Math.round(docTop(best))
+          + ' blob:' + ((best.currentSrc || best.src || '').indexOf('blob:') === 0 ? 1 : 0)
+          + ' big:' + bigCount + ' excl:' + excluded;
+      }
+    } else {
+      coverDiag = 'none big:' + bigCount + ' excl:' + excluded;
+    }
+  } catch (e) { coverData = ''; coverDiag = 'err:' + (e && e.name ? e.name : 'e'); }
   var recCovers = {};
+  var recCards = [];
   var recDiag = { anchors: 0, imgs: 0, ready: 0, nw: [] };
   try {
-    var ownId = idFromHref(location.pathname);
     var anchors = document.querySelectorAll('a[href*="/drama/detail/"]');
     recDiag.anchors = anchors.length;
     var recCount = 0;
@@ -65,7 +105,29 @@ let dramaMetaJS = """
         cv.width = w; cv.height = h;
         cv.getContext('2d').drawImage(im, 0, 0, w, h);
         var durl = cv.toDataURL('image/jpeg', 0.8);
-        if (durl.indexOf('data:image') === 0) { recCovers[vid] = durl; recCount++; }
+        if (durl.indexOf('data:image') === 0) {
+          recCovers[vid] = durl;
+          // 卡片上写着的文字（= 这张海报上印的剧名）：Swift 侧按它把图绑到接口的剧名上，
+          // 不再只信 href 里的 id——id 口径一变就整片串图（用户 2026-11-15 实报）。
+          // 链接只包住海报时 innerText 是空的，往上找一层「只含一张图」的容器取文字；
+          // 若上层已经是整个推荐模块（多张图 / 文字过长），宁可留空退回 byID，也不绑错。
+          var txt = (anchors[i].innerText || '').replace(/\\s+/g, ' ').trim();
+          if (txt.length < 2) {
+            var node = anchors[i];
+            for (var k = 0; k < 3 && node.parentElement; k++) {
+              node = node.parentElement;
+              var pt = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+              if (pt.length >= 2 && pt.length <= 40 && node.querySelectorAll('img').length <= 1) {
+                txt = pt;
+                break;
+              }
+            }
+          }
+          txt = (txt + ' ' + (anchors[i].getAttribute('title') || '')
+            + ' ' + (im.getAttribute('alt') || '')).replace(/\\s+/g, ' ').slice(0, 100);
+          recCards.push({ id: vid, text: txt });
+          recCount++;
+        }
       } catch (e2) {}
     }
   } catch (e) {}
@@ -77,7 +139,9 @@ let dramaMetaJS = """
     keywords: q('meta[name="keywords"]'),
     desc: q('meta[name="description"]') || q('meta[property="og:description"]'),
     coverData: coverData,
+    coverDiag: coverDiag,
     recCovers: recCovers,
+    recCards: recCards,
     recDiag: recDiag,
     imgs: imgs,
     text: (document.body.innerText || '').replace(/\\s+/g,' ').slice(0, 500)
@@ -153,6 +217,9 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
     private var apiCaptures: [String] = []
     /// 定向提取命中的 detail 响应（真机样本实证：明文 JSON 带 tags 数组）
     private var apiDetail: DramaDetailData?
+    /// 本次收割已经写过的封面 id（主封面 + 推荐卡）：poll 有 5 轮，每轮都落盘纯属浪费；
+    /// 但对每个 id 的首写是**覆盖写**——老规则存过的错图必须能被一次收割纠正
+    private var storedCoverIDs: Set<String> = []
 
     private func begin(target: DramaTarget) {
         pendingTarget = target
@@ -364,23 +431,37 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                 }
                 DramaCache.savePageMeta(site: target.site, dramaID: target.dramaID, update: update)
                 // 封面 blob 已由站点 JS 解密（pic.* CDN 下发的是密文，URLSession 直拉必 badData）：
-                // 把已解密的 <img> 画到 canvas 导出 JPEG，按剧集 id 落进 15 天封面缓存
+                // 把已解密的 <img> 画到 canvas 导出 JPEG，按剧集 id 落进 15 天封面缓存。
+                // 每次收割只写一次（poll 有 5 轮，每轮都写纯属浪费），但允许覆盖旧文件。
                 if let cd = d["coverData"] as? String, cd.hasPrefix("data:image"),
                    let comma = cd.firstIndex(of: ","),
-                   let imgData = Data(base64Encoded: String(cd[cd.index(after: comma)...])) {
-                    DramaCoverCache.storeImageData(site: target.site, dramaID: target.dramaID, data: imgData)
+                   let imgData = Data(base64Encoded: String(cd[cd.index(after: comma)...])),
+                   !self.storedCoverIDs.contains(target.dramaID) {
+                    self.storedCoverIDs.insert(target.dramaID)
+                    DramaCoverCache.storeImageData(site: target.site, dramaID: target.dramaID,
+                                                   data: imgData, overwrite: true)
                 }
                 // 推荐卡封面：同一张密文图床，站点已解密成 blob —— 逐卡 canvas 导出后
-                // 按「推荐剧自己的 id」落缓存（后续进该剧页时 applyCover 直接命中）
+                // 落进封面缓存。**绑定方式见 bindRecCovers**：先按卡片可见文字对齐接口剧名，
+                // 再退回 href id（后续进该剧页时 applyCover 直接命中）
                 if let recs = d["recCovers"] as? [String: String], !recs.isEmpty {
-                    var stored = 0
+                    let cardTexts = Self.cardTexts(from: d["recCards"])
+                    var candidates: [RecCoverCandidate] = []
                     for (vid, dataURL) in recs {
                         guard dataURL.hasPrefix("data:image"), let comma = dataURL.firstIndex(of: ","),
                               let imgData = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])) else { continue }
-                        DramaCoverCache.storeImageData(site: target.site, dramaID: vid, data: imgData)
-                        stored += 1
+                        candidates.append(RecCoverCandidate(videoID: vid, text: cardTexts[vid] ?? "", data: imgData))
                     }
-                    print("PLAYER_DBG [Entry] harvest recCovers stored=\(stored)/\(recs.count)")
+                    let bound = Self.bindRecCovers(candidates: candidates,
+                                                  related: self.apiDetail?.relatedList ?? [])
+                    for (vid, imgData) in bound.bindings where !self.storedCoverIDs.contains(vid) {
+                        self.storedCoverIDs.insert(vid)
+                        DramaCoverCache.storeImageData(site: target.site, dramaID: vid,
+                                                       data: imgData, overwrite: true)
+                    }
+                    print("PLAYER_DBG [Entry] harvest recCovers stored=\(bound.bindings.count)/\(recs.count)"
+                        + " byTitle=\(bound.byTitle) byID=\(bound.byID)"
+                        + " dropped=\(bound.dropped) cards=\(candidates.count)")
                 }
                 let og = (d["ogImage"] as? String ?? "").isEmpty ? "no" : "yes"
                 let desc = (d["desc"] as? String ?? "").isEmpty ? "no" : "yes"
@@ -391,7 +472,7 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
                     let nwList = (rd["nw"] as? [NSNumber] ?? []).map(String.init).joined(separator: ",")
                     recDiagText = "a:\(rd["anchors"] ?? 0) i:\(rd["imgs"] ?? 0) r:\(rd["ready"] ?? 0) nw:[\(nwList)]"
                 }
-                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen) rec=\(recCount) diag=\(recDiagText)")
+                print("PLAYER_DBG [Entry] harvest round site=\(target.site) dramaID=\(target.dramaID) bytes=\(result.count) og=\(og) desc=\(desc) coverData=\(coverDataLen) rec=\(recCount) diag=\(recDiagText) cover=\(d["coverDiag"] as? String ?? "nil")")
                 // 每轮覆盖落盘（最终轮为准）：接口字段调查的数据源——tags/作者名是否在
                 // 页面 DOM 里靠这个文件确认（NSLog 动态串被 <private> 脱敏，日志不可靠）
                 DramaMetaDump.write(result, name: "harvest_\(target.site)_\(target.dramaID).json")
@@ -416,5 +497,84 @@ final class DramaMetaHarvester: NSObject, WKNavigationDelegate, WKScriptMessageH
         } else {
             finish()
         }
+    }
+
+    // MARK: - 推荐封面绑定（纯函数，无 IO；抽出来是为了能一眼看懂 + 单测式推演）
+
+    /// 收割到的一张推荐卡候选：图 + 那张卡上写着的文字。
+    /// 只信 href 里的 id 会串图——站点换 id 口径、卡片结构一改，图就落到别的剧名下
+    /// （用户 2026-11-15 实报「cover 与卡片不对」）。卡片上的文字就是海报上印的名字，
+    /// 用它对齐接口剧名，才能保证「哪张图配哪个标题」是对的。
+    struct RecCoverCandidate {
+        let videoID: String
+        let text: String
+        let data: Data
+    }
+
+    /// `recCards`（`[{id, text}]`）→ `[id: 卡片文字]`
+    static func cardTexts(from raw: Any?) -> [String: String] {
+        guard let list = raw as? [[String: Any]] else { return [:] }
+        var result: [String: String] = [:]
+        for item in list {
+            guard let id = item["id"] as? String else { continue }
+            result[id] = item["text"] as? String ?? ""
+        }
+        return result
+    }
+
+    /// 剧名比对口径：去掉空白与标点、小写化（「荒岛求生：离队赢家」=「荒岛求生 离队赢家」）
+    static func titleKey(_ raw: String?) -> String {
+        guard let raw else { return "" }
+        let dropped: Set<Unicode.Scalar> = [
+            " ", "\n", "\t", "\r", "·", ":", "：", ";", "；", ",", "，", "。", "、",
+            "!", "！", "?", "？", "(", "（", ")", "）", "[", "【", "]", "】",
+            "《", "》", "<", ">", "\"", "'", "“", "”", "‘", "’", "/", "-", "—", "_", "+", "…",
+        ]
+        return String(String.UnicodeScalarView(raw.unicodeScalars.filter { !dropped.contains($0) })).lowercased()
+    }
+
+    /// 把收割到的推荐卡图绑到接口推荐的剧 id 上（纯函数）：
+    /// 1) 先按**卡片可见文字**匹配接口剧名（长标题优先，避免短标题恰好是长剧名的一部分）；
+    /// 2) 名称匹配不上再退回 href id（老路径，保底，日志里 byID 计数）；
+    /// 3) 一张候选卡只允许绑一次——两张卡指向同一张图时后来者跳过（宁缺毋滥，不把错图扩散）；
+    /// 4) 没有接口推荐列表时无处对齐，按候选自己的 href id 落盘。
+    static func bindRecCovers(candidates: [RecCoverCandidate],
+                              related: [RelatedDrama])
+    -> (bindings: [(String, Data)], byTitle: Int, byID: Int, dropped: Int) {
+        let keyed = related.compactMap { item -> (id: String, title: String)? in
+            guard let vid = item.videoId else { return nil }
+            return (String(vid), item.title ?? "")
+        }
+        guard !keyed.isEmpty else {
+            let fallback = candidates.map { ($0.videoID, $0.data) }
+            return (fallback, 0, fallback.count, 0)
+        }
+        let keys = candidates.map { titleKey($0.text) }
+        var bindings: [(String, Data)] = []
+        var used = Set<Int>()
+        var byTitle = 0
+        var byID = 0
+        for item in keyed.sorted(by: { $0.title.count > $1.title.count }) {
+            let wanted = titleKey(item.title)
+            var hit: Int?
+            if wanted.count >= 2 {
+                for index in candidates.indices where !used.contains(index) && keys[index].contains(wanted) {
+                    hit = index
+                    break
+                }
+            }
+            if hit == nil,
+               let index = candidates.indices.first(where: { !used.contains($0) && candidates[$0].videoID == item.id }) {
+                hit = index
+            }
+            guard let index = hit else {
+                print("PLAYER_DBG [Entry] rec cover UNMATCHED id=\(item.id) title=\(item.title)")
+                continue
+            }
+            used.insert(index)
+            bindings.append((item.id, candidates[index].data))
+            if keys[index].contains(wanted), wanted.count >= 2 { byTitle += 1 } else { byID += 1 }
+        }
+        return (bindings, byTitle, byID, candidates.count - bindings.count)
     }
 }

@@ -1292,7 +1292,9 @@ struct DramaDetailView: View {
                                        playable: ep.playable))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
-                if !isSelected { progressRing(phase) }
+                // 选中态也要画环：用户 2026-11-15 拍板「选中 + 下载两种状态叠加时，
+                // 下载边缘进度颜色应该是白色的」——朱砂底上的墨环看不见，等于进度丢了
+                progressRing(phase, onCinnabar: isSelected)
             }
             .contentShape(Rectangle())
         }
@@ -1333,29 +1335,36 @@ struct DramaDetailView: View {
     /// （与下载页 `PaperProgressBar` 的 轨道 #C4C7C3 + 完成段 #35393B 同一套）；
     /// **红色只留给失败**——深色轨那套「金色代表一切进度」搬到纸面上会散成一片。
     /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪）。
+    /// `onCinnabar` = 这一格是选中态（朱砂底）：墨色环在朱砂上等于消失，整套换纸白
+    /// （用户 2026-11-15 拍板：选中 + 下载叠加时，下载边缘进度必须是白的）。
     @ViewBuilder
-    private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
+    private func progressRing(_ phase: EpisodeDownloadPhase, onCinnabar: Bool = false) -> some View {
+        let track = onCinnabar ? DWColor.paper.opacity(0.45) : DWColor.paperTrack.opacity(0.55)
+        let bar = onCinnabar ? DWColor.paper : DWColor.paperTrackFill
+        let done = onCinnabar ? DWColor.paper.opacity(0.9) : DWColor.paperInkSub
+        // 失败态在朱砂底上不能再用朱砂，换墨：仍然是最重的一条线，语义不丢
+        let failed = onCinnabar ? DWColor.paperInk : DWColor.paperCinnabar
         switch phase {
         case .idle:
             EmptyView()
         case .queued:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.paperTrack.opacity(0.55), lineWidth: 2)
+                .stroke(track, lineWidth: 2)
                 .padding(1)
         case .active(let progress):
             RoundedRectangle(cornerRadius: 10)
                 .trim(from: 0, to: progress)
-                .stroke(DWColor.paperTrackFill, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(bar, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .padding(1)
         case .done:
             // 完成态用半档墨：2pt 实墨闭环在纸面上会和「选中」抢同一份重量，
             // 而已下载本来就有淡朱砂底 + 墨三角角标，闭环只需"看起来是合上的"。
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.paperInkSub, lineWidth: 1.5)
+                .stroke(done, lineWidth: 1.5)
                 .padding(1)
         case .failed:
             RoundedRectangle(cornerRadius: 10)
-                .stroke(DWColor.paperCinnabar, lineWidth: 2)
+                .stroke(failed, lineWidth: 2)
                 .padding(1)
         }
     }

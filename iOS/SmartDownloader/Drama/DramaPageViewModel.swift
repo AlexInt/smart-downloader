@@ -14,6 +14,8 @@ final class DramaPageViewModel: ObservableObject {
     private var session: DramaSession?
     /// 封面远程 URL（缓存命中的展示 URL 是本地文件，重试拉取需要记住远程源头）
     private var remoteCoverURL: URL?
+    /// 当前展示的本地封面文件修改时间：收割覆盖写过文件后据此判断「要不要重建 AsyncImage」
+    private var coverLocalStamp: Date?
 
     @Published private(set) var loading = true
     @Published private(set) var loadError: String?
@@ -36,9 +38,17 @@ final class DramaPageViewModel: ObservableObject {
         guard let remoteString, let remote = URL(string: remoteString) else { return }
         remoteCoverURL = remote
         if let local = DramaCoverCache.validLocalURL(site: target.site, dramaID: target.dramaID) {
+            let stamp = DramaCoverCache.modifiedAt(local)
+            let rewritten = coverLocalStamp != nil && stamp != coverLocalStamp
+            coverLocalStamp = stamp
             if coverURL != local {
                 print("PLAYER_DBG [Entry] cover use cache id=\(target.dramaID)")
                 coverURL = local
+            } else if rewritten {
+                // 收割把封面文件覆盖成新图（错图纠正）后，URL 没变、AsyncImage 不会自己重读，
+                // 换 id 重建一次才会真正换图（2026-11-15：错图纠正必须当场可见）
+                print("PLAYER_DBG [Entry] cover cache REWRITTEN id=\(target.dramaID) → reload")
+                coverReloadToken += 1
             }
             return
         }
@@ -136,6 +146,25 @@ final class DramaPageViewModel: ObservableObject {
         tags = "都市 逆袭 已完结"
         downloadedSorts = [2, 8]
         selectedSort = 1
+        // 「选中 + 下载」叠加态定帧（`-dramaRingPreview active|done`）：模拟器点不了格子、
+        // 也造不出真实的下载进度，而这条叠加态的环色（朱砂底上必须是纸白）只能看屏幕验收。
+        // active = 塞一个假任务让 downloadPhase(1) 返回 .active(0.42)；done = 把第 1 集算作已下载
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-dramaRingPreview") {
+            let mode = index + 1 < args.count ? args[index + 1] : "active"
+            if mode == "done" {
+                downloadedSorts.insert(1)
+            } else {
+                let task = DownloadTask(url: "https://preview.local/1.m3u8",
+                                        title: String(format: "第%02d集", 1),
+                                        seriesName: info?.name)
+                task.state = .downloading
+                task.current = 42
+                task.total = 100
+                manager.register(task)
+            }
+            print("PLAYER_DBG [Entry] preview ring injected mode=\(mode) sort=1")
+        }
         recommendations = [
             RecommendedDrama(videoID: 9001, title: "渡江 · 山河起甲", cover: nil,
                              tags: ["古装", "权谋"], playCount: 1_260_000,

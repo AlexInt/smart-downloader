@@ -20,12 +20,43 @@ import UIKit
 final class DramaCoverCache {
     /// 缓存有效期：15 天（用户拍板 2026-11-13）
     static let maxAge: TimeInterval = 15 * 24 * 3600
+    /// 缓存目录布局版本：**提取规则一改就必须递增**（v2 = 2026-11-15 主封面/推荐封面改按
+    /// 「卡片归属 + 卡片文字」挑图）。旧目录里可能全是错配的图，而 `storeImageData` 有
+    /// fresh-skip（存在就不重写），不换目录的话错图会一直用满 15 天。
+    private static let layoutVersion = "v2"
+    /// 旧布局清理只做一次（文件在各版本目录之外 = v1 遗留）
+    private static var didCleanLegacyFiles = false
 
     private static var dir: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let dir = caches.appendingPathComponent("DramaCovers", isDirectory: true)
+        let root = caches.appendingPathComponent("DramaCovers", isDirectory: true)
+        removeLegacyFiles(in: root)
+        let dir = root.appendingPathComponent(layoutVersion, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// 删掉根目录下散落的旧版本文件（v1 直接把 `<sha>.img` 放在 DramaCovers/ 里）。
+    /// Caches 本来就可回收，这里只是别让错图白占几百 KB × N 部。
+    private static func removeLegacyFiles(in root: URL) {
+        guard !didCleanLegacyFiles else { return }
+        didCleanLegacyFiles = true
+        let items = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        var removed = 0
+        for item in items {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard !isDir else { continue }
+            do {
+                try FileManager.default.removeItem(at: item)
+                removed += 1
+            } catch {
+                // 删不掉就算了：Caches 可回收，不阻断任何流程
+            }
+        }
+        if removed > 0 {
+            print("PLAYER_DBG [Entry] cover cache cleanup legacy v1 files=\(removed)")
+        }
     }
 
     /// 稳定文件名：site#dramaID 的 SHA256（不能用 hashValue——跨启动不稳定）
@@ -36,6 +67,11 @@ final class DramaCoverCache {
 
     private static func fileURL(site: String, dramaID: String) -> URL {
         dir.appendingPathComponent(fileName(site: site, dramaID: dramaID))
+    }
+
+    /// 本地缓存文件的修改时间（封面被重新收割覆盖后要据此重建 AsyncImage）
+    static func modifiedAt(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     /// 本地有效缓存（≤15 天）的文件 URL；过期文件顺手删除（下次 fetch 重新落盘）
@@ -78,9 +114,11 @@ final class DramaCoverCache {
 
     /// 收割 JS 已在站点 WebView 里解密好的封面（blob → canvas → dataURL）按剧集 id 落盘。
     /// 主线程调用（同步写，~几百 KB 原子替换）；与 fetch() 互不覆盖，过期逻辑共用。
-    static func storeImageData(site: String, dramaID: String, data: Data) {
-        // 已有未过期缓存不重写：推荐卡封面每轮 poll 都会重复导出，落一次即可
-        if validLocalURL(site: site, dramaID: dramaID) != nil {
+    /// `overwrite`：允许覆盖已有文件。收割器按「一次收割写一次」自己节流，但**必须能覆盖**——
+    /// 老的挑图规则存过错图，↻ 刷新若还被 fresh-skip 挡住，用户就只能等 15 天过期
+    /// （用户 2026-11-15 实报错图的整条链路）。
+    static func storeImageData(site: String, dramaID: String, data: Data, overwrite: Bool = false) {
+        if !overwrite, validLocalURL(site: site, dramaID: dramaID) != nil {
             print("PLAYER_DBG [Entry] cover cache STORE SKIP reason=fresh id=\(dramaID)")
             return
         }
