@@ -490,11 +490,14 @@ struct DramaDetailView: View {
         }
         .designFrame(0, 0, 390, DetailLayout.posterHeight)
         .clipped()
-        // 下拉刷新 = 封面不动、往下撑大（用户 2026-11-15）：
+        // 下拉刷新 = 封面原地放大（用户 2026-11-15）：
         // 页面被手指（或 refresh 期间的 holdDown）推下 d，封面反向平移 -d 回到原位；
         // 同时按 1 + d/376 等比放大，放大后的底边正好落在「随内容下移 d」的位置，
         // 标题/标签（跟着内容下移）仍然压在封面底部 scrim 上，不会和封面脱开。
-        .scaleEffect(posterZoom, anchor: .topLeading)
+        // 锚点必须是 `.top`（横向居中、顶边钉住）：`.topLeading` 只往右下长，
+        // 视觉上像整张图往右错位（用户 2026-11-15 实机反馈「不是中心放大」）。
+        // 纵向不能取 `.center`——那会把底边抬到标题上方，露出纸底。
+        .scaleEffect(posterZoom, anchor: .top)
         .offset(y: -refreshBandBottom)
     }
 
