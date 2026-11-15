@@ -34,30 +34,50 @@ final class ProfileViewModel: ObservableObject {
         case unfinished = "未看完"
     }
 
-    @Published private(set) var items: [Item] = []
-    @Published var category: Category = .history {
-        didSet { reload() }
-    }
+    /// 每个分类各自的原始列表（历史/收藏/追更/点赞一次全读，供分页左右滑直接出内容）。
+    /// 分类页是 4 个同层页面，切页不能先白一下再查库——数据必须提前在手上。
+    @Published private(set) var rawItems: [Category: [Item]] = [:]
+    @Published var category: Category = .history
     @Published var watchFilter: WatchFilter = .all {
-        didSet { applyWatchFilter() }
+        didSet {
+            print("PROFILE_DBG filter \(oldValue.rawValue) → \(watchFilter.rawValue)")
+        }
     }
 
-    /// 原始加载结果（全量），watchFilter 在其上二次过滤
-    private var allItems: [Item] = []
-    /// 剧名 → 是否已看完 的索引（已看完 = 下载集中最后一集 == 缓存总集数）
-    private var finishedIndex: [String: Bool] = [:]
+    /// 每个分类的「是否已看完」索引（筛选在各页独立生效）
+    private var finishedIndex: [Category: [String: Bool]] = [:]
 
-    /// 离开页面再回来要重读（收藏/点赞可能在详情页改过）
+    /// 离开页面再回来要重读（收藏/点赞可能在详情页改过）。
+    /// 一次读全四个分类：分页容器同时持有 4 个页面，按需再查库会让滑动闪一下空态。
     func reload() {
-        let raw: [Item] = switch category {
-        case .history: historyItems()
-        case .favorites: favoriteItems()
-        case .chasing: chasingItems()
-        case .liked: likedItems()
+        let loaded: [(Category, [Item])] = [
+            (.history, historyItems()),
+            (.favorites, favoriteItems()),
+            (.chasing, chasingItems()),
+            (.liked, likedItems()),
+        ]
+        var raw: [Category: [Item]] = [:]
+        var index: [Category: [String: Bool]] = [:]
+        for (category, list) in loaded {
+            raw[category] = list
+            index[category] = Dictionary(list.map { ($0.id, isFinished($0.target)) },
+                                         uniquingKeysWith: { first, _ in first })
         }
-        allItems = raw
-        finishedIndex = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, isFinished($0.target)) })
-        applyWatchFilter()
+        rawItems = raw
+        finishedIndex = index
+        print("PROFILE_DBG reload " + Category.allCases
+            .map { "\($0.rawValue)=\(raw[$0]?.count ?? 0)" }
+            .joined(separator: " ")
+            + " filter=\(watchFilter.rawValue)")
+    }
+
+    /// 某个分类（按当前观看状态筛选后）的列表：分页的每一页各取自己那份
+    func items(for category: Category) -> [Item] {
+        let raw = rawItems[category] ?? []
+        guard watchFilter != .all else { return raw }
+        let wantFinished = watchFilter == .finished
+        let index = finishedIndex[category] ?? [:]
+        return raw.filter { (index[$0.id] ?? false) == wantFinished }
     }
 
     // MARK: - 各分类的数据口径
@@ -147,15 +167,6 @@ final class ProfileViewModel: ObservableObject {
         return last.downloaded
     }
 
-    private func applyWatchFilter() {
-        guard watchFilter != .all else {
-            items = allItems
-            return
-        }
-        let wantFinished = watchFilter == .finished
-        items = allItems.filter { (finishedIndex[$0.id] ?? false) == wantFinished }
-    }
-
     // MARK: - 封面
 
     /// 封面展示路径：本地缓存（≤15 天）优先，远程 URL 兜底（与 DramaPageViewModel 同口径）
@@ -170,7 +181,7 @@ final class ProfileViewModel: ObservableObject {
 
     // MARK: - 空态文案
 
-    var emptyMessage: String {
+    func emptyMessage(for category: Category) -> String {
         switch category {
         case .history: return "还没有观看记录"
         case .favorites: return "还没有收藏的剧"
@@ -179,8 +190,19 @@ final class ProfileViewModel: ObservableObject {
         }
     }
 
-    /// 封面墙卡片统计行的状态文案（与分类 tab 同源，只做如实展示，不猜）
-    var statusText: String {
+    /// 空态第二行：说明「怎么才会有内容」，四个分类各说各的
+    /// （原来一行「去浏览页看几集」放在收藏/追更/点赞上是不对的）
+    func emptyHint(for category: Category) -> String {
+        switch category {
+        case .history: return "去浏览页看几集，这里就会有记录"
+        case .favorites: return "在剧集页点收藏，这里就会出现"
+        case .chasing: return "抓过详情且仍在连载的剧会出现在这里"
+        case .liked: return "在播放页点个赞，这里就会出现"
+        }
+    }
+
+    /// 封面墙卡片统计行的状态文案（按分类给，只做如实展示，不猜）
+    func statusText(for category: Category) -> String {
         switch category {
         case .history: return "观看中"
         case .favorites: return "已收藏"

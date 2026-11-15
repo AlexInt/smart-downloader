@@ -16,34 +16,33 @@ struct ProfileView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                VStack(spacing: 10) {
-                    coverWall           // 19:200 封面墙 / 空态
+            // 四个分类做成系统分页容器（与下载页「下载中 / 已下载」同一个套路）：
+            // 点分类 tab 切页、也可以在封面墙上左右滑着切（用户 2026-11-15 要求
+            // 「历史-收藏-追更-点赞应该与下载-已下载一样可以左右滑动」）。
+            // 每页自带 ScrollView，纵向滚动与横向翻页互不抢手势。
+            VStack(spacing: 0) {
+                TabView(selection: $viewModel.category) {
+                    ForEach(ProfileViewModel.Category.allCases, id: \.self) { category in
+                        categoryPage(category)
+                            .tag(category)
+                    }
                 }
-                .padding(.top, 10)
-                .padding(.horizontal, DWLayout.edge)
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(DWColor.paper.ignoresSafeArea())
             // 底部避让（用户实报 2026-11-14：tab bar 遮挡封面墙最后一行）：
             // 自定义 tab bar 是 App 层 `safeAreaInset(edge: .bottom)` 注入的，**不进
             // NavigationStack 内的页面**（模拟器 402×874 实测：修复前 contentInsets.bottom
             // 只有 34 的家区，ScrollView 内容区一直画到 840，而 bar 占 794…840 → 重叠 46pt）。
-            // 按 bar 实高显式补一次，与下载页 `safeAreaPadding` 同一口径；另 +15 是用户要求
-            // 的呼吸间距（列表末行与 bar 之间再留 15pt）。
+            // 分页 TabView 的页面同样不接收祖先追加的安全区，所以照样在外层补一次，
+            // 与下载页 `safeAreaPadding` 同一口径；另 +15 是用户要求的呼吸间距。
             .safeAreaPadding(.bottom, MainTab.barReservedHeight + Self.bottomGap)
-            // 底部避让诊断（开发即埋日志，排障期保留）：contentInsets 是 ScrollView 实际
-            // 生效的内容内缩（安全区 + safeAreaPadding）。期望 bottom = 34 + 47 + 15 = 96；
-            // 若哪天变成 47/34，说明传递行为变了（或 bar 内边距改了没同步 barReservedHeight）
-            .onScrollGeometryChange(for: EdgeInsets.self) { geo in
-                geo.contentInsets
-            } action: { _, insets in
-                print("PROFILE_DBG insets top=\(insets.top) bottom=\(insets.bottom) barReserved=\(MainTab.barReservedHeight) gap=\(Self.bottomGap)")
-            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)   // 画布无导航条：身份行即顶栏
-            // 顶栏区（身份行 + 分类 tab + 筛选胶囊）钉在 ScrollView 之上，不随封面墙上滑消失
-            //（用户要求 2026-11-14）。用 safeAreaInset 而不是塞进 ScrollView 内容里：
-            // 前者是布局级固定，后者得靠 sticky header 技巧且滚动时会露出内容。
+            // 顶栏区（身份行 + 分类 tab + 筛选胶囊）钉在页面之上，不随封面墙上滑消失
+            //（用户要求 2026-11-14）。用 safeAreaInset 而不是塞进每页内容里：
+            // 前者是布局级固定，后者进 4 个页面会各钉一份。
             .safeAreaInset(edge: .top, spacing: 0) { pinnedHeader }
             // 二级页由路径值驱动：设置页（画布 24:43）/ 剧集详情页
             .navigationDestination(for: ProfileRoute.self) { route in
@@ -54,17 +53,49 @@ struct ProfileView: View {
                     DramaNativePage(target: target, manager: manager)
                 }
             }
-            .onAppear { viewModel.reload() }
+            .onAppear {
+                viewModel.reload()
+                #if DEBUG
+                // 分类定帧（`-profilePreview 收藏`）：模拟器既点不了 tab 也滑不了分页
+                if let preview = Self.previewCategory { viewModel.category = preview }
+                #endif
+            }
+            .onChange(of: viewModel.category) { _, new in
+                print("PROFILE_DBG category → \(new.rawValue) items=\(viewModel.items(for: new).count)")
+            }
         }
         .preferredColorScheme(.light)   // 纸本轨锁浅色：域级分工，不影响其它页
         // 二级页进出 → App 隐藏/恢复自定义 tab bar（push 动画期间同步，避免 bar 压在新页上）
         .onChange(of: path.isEmpty) { _, empty in
             print("PROFILE_DBG path \(empty ? "回到根页" : "进入二级页 depth=\(path.count)") → tabBar \(empty ? "shown" : "hidden")")
             detailActive = !empty
+            // 回到根页重读：详情页里可能改过收藏/点赞。分类不再各自 reload（四个页面
+            // 同时在场），不重读的话滑到那一页看到的还是离开前的旧数据。
+            if empty { viewModel.reload() }
         }
         .onAppear {
             // tab 被销毁重建（切走再切回）时把隐藏状态复位，防 bar 永久消失
             detailActive = !path.isEmpty
+        }
+    }
+
+    // MARK: - 分类页（封面墙；一页一个分类）
+
+    private func categoryPage(_ category: ProfileViewModel.Category) -> some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                coverWall(category)
+            }
+            .padding(.top, 10)
+            .padding(.horizontal, DWLayout.edge)
+        }
+        // 底部避让诊断（开发即埋日志，排障期保留）：contentInsets 是 ScrollView 实际
+        // 生效的内容内缩（安全区 + safeAreaPadding）。期望 bottom = 34 + 62 + 15 = 111；
+        // 若哪天变成 47/34，说明传递行为变了（或 bar 内边距改了没同步 barReservedHeight）
+        .onScrollGeometryChange(for: EdgeInsets.self) { geo in
+            geo.contentInsets
+        } action: { _, insets in
+            print("PROFILE_DBG insets cat=\(category.rawValue) top=\(insets.top) bottom=\(insets.bottom) barReserved=\(MainTab.barReservedHeight) gap=\(Self.bottomGap)")
         }
     }
 
@@ -210,17 +241,28 @@ struct ProfileView: View {
     /// 列表末行与 tab bar 之间的呼吸间距（用户要求 2026-11-14：再加大 15pt）
     static let bottomGap: CGFloat = 15
 
+    #if DEBUG
+    /// 分类定帧（`-profilePreview 收藏`）：模拟器既点不了 tab 也滑不了分页，
+    /// 另外三个分类页只能靠启动参数直接落位截图核对。Release 不编译。
+    private static var previewCategory: ProfileViewModel.Category? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-profilePreview"), i + 1 < args.count else { return nil }
+        return ProfileViewModel.Category(rawValue: args[i + 1])
+    }
+    #endif
+
     @ViewBuilder
-    private var coverWall: some View {
-        if viewModel.items.isEmpty {
-            emptyState
+    private func coverWall(_ category: ProfileViewModel.Category) -> some View {
+        let items = viewModel.items(for: category)
+        if items.isEmpty {
+            emptyState(category)
         } else {
             // 三列海报卡组件与剧集页推荐 / 下载页「已下载」共用（Components/PosterGrid.swift）：
             // 封面 3:4 + 固定 67 文字块，列宽按容器现算（不再写死 3 列 106×114）；
             // 一行 3 张（2026-11-15 用户拍板），字号走 `compact` 档
-            PosterGrid(items: viewModel.items, columns: 3) { item in
+            PosterGrid(items: items, columns: 3) { item in
                 NavigationLink(value: ProfileRoute.drama(item.target)) {
-                    PosterCardView(model: cardModel(item), compact: true)
+                    PosterCardView(model: cardModel(item, category: category), compact: true)
                 }
                 .buttonStyle(.plain)
             }
@@ -228,12 +270,13 @@ struct ProfileView: View {
     }
 
     /// 封面墙一张卡：剧名 + 该分类进度 + 分类状态（推荐卡同一套三行文字块）
-    private func cardModel(_ item: ProfileViewModel.Item) -> PosterCardModel {
+    private func cardModel(_ item: ProfileViewModel.Item,
+                           category: ProfileViewModel.Category) -> PosterCardModel {
         PosterCardModel(
             id: item.id,
             title: item.name,
             subtitle: item.progress,
-            stat: viewModel.statusText,
+            stat: viewModel.statusText(for: category),
             cover: coverSource(item.coverURL)
         )
     }
@@ -244,12 +287,12 @@ struct ProfileView: View {
         return url.isFileURL ? .local(url) : .remote(url)
     }
 
-    private var emptyState: some View {
+    private func emptyState(_ category: ProfileViewModel.Category) -> some View {
         VStack(spacing: 8) {
-            Text(viewModel.emptyMessage)
+            Text(viewModel.emptyMessage(for: category))
                 .font(DWFont.serif(13))
                 .foregroundStyle(DWColor.paperInkSub)
-            Text("去浏览页看几集，这里就会有记录")
+            Text(viewModel.emptyHint(for: category))
                 .font(DWFont.cn(11))
                 .foregroundStyle(DWColor.paperInkSub.opacity(0.7))
         }
