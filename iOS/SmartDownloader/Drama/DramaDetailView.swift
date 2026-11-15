@@ -145,6 +145,13 @@ struct DramaDetailView: View {
     @State private var previewPinned = false
     #endif
 
+    /// 状态栏用哪种外观：只有「内容已渲染 + 海报还盖着顶栏」才需要白字。
+    /// 加载态 / 错误态整页是宣纸底，没有海报可压，白字会直接消失。
+    private var statusBarScheme: ColorScheme {
+        guard !vm.loading, vm.loadError == nil else { return .light }
+        return posterUnderHeader ? .dark : .light
+    }
+
     /// 简介展开位移：设计稿 --desc-shift，唯一驱动「简介容器高度」与「内容组 translateY」
     private var descShift: CGFloat { vm.isDescriptionExpanded ? 54 : 0 }
     /// 设计稿 .32s cubic-bezier(.2,.8,.2,1)；reduced-motion 时全动效归零
@@ -277,8 +284,9 @@ struct DramaDetailView: View {
         .simultaneousGesture(edgeBackGesture)
         // 状态栏文字（用户 2026-11-15：剧集页要白色）：
         // 压在海报上时 .dark 让系统画白字；滚过海报、顶栏换纸底后必须翻回 .light，
-        // 否则白字落在宣纸上直接消失。色值全是字面量，跟随外观的只有系统状态栏。
-        .preferredColorScheme(posterUnderHeader ? .dark : .light)
+        // 否则白字落在宣纸上直接消失。加载/错误态整页也是纸底（没有海报），同样用 .light。
+        // 色值全是字面量，跟随外观的只有系统状态栏。
+        .preferredColorScheme(statusBarScheme)
         #if DEBUG
         .onAppear {
             applyRefreshPreview()
