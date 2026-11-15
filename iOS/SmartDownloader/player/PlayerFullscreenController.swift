@@ -760,7 +760,21 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     /// 只排除 UIControl 及其子视图（glyph/label），压暗层与空白区照常落给容器手势。
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
-        guard let controls, let hit = touch.view else { return true }
+        guard let hit = touch.view else { return true }
+        // 抽屉打开期间：压暗层 / 黑底自己带 tap（关抽屉），容器手势必须放掉这一下 ——
+        // 两边都收到同一个触摸会变成「关掉抽屉又顺手暂停」（2026-11-15 用户要求
+        // 点播放区也能收起面板，这条是它的防重入前提）
+        if let dim = drawerDim, hit === dim {
+            print("PLAYER_DBG [CHECK] fullscreen gesture SKIP reason=drawerDimOwnTap")
+            return false
+        }
+        if let backdrop = drawerBackdrop, hit === backdrop {
+            print("PLAYER_DBG [CHECK] fullscreen gesture SKIP reason=drawerBackdropOwnTap")
+            return false
+        }
+        // 抽屉面板本体（含面板空白处）交给容器 tap → 关抽屉；面板里的 UIControl
+        // （集数格 / 档位行 / 关闭按钮）下面照旧拒绝，保证点格子只选集不关面板
+        guard let controls else { return true }
         var node: UIView? = hit
         while let cur = node, cur !== controls {
             if cur is UIControl {
@@ -773,10 +787,15 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        // 抽屉打开期间：容器手势一律不接（点面板/网格不该顺带暂停视频或起 seek）
-        guard openDrawer == nil else {
-            print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=drawerOpen")
-            return false
+        // 抽屉打开期间：只放行点按（点播放区 / 面板空白处 = 收起抽屉，用户 2026-11-15 要求）；
+        // 拖拽与长按一律不接——点面板/网格不该顺带暂停视频或起 seek/2x
+        if openDrawer != nil {
+            guard gestureRecognizer is UITapGestureRecognizer else {
+                print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=drawerOpen")
+                return false
+            }
+            print("PLAYER_DBG [CHECK] fullscreen gesture ALLOW reason=drawerOpenTapOnly")
+            return true
         }
         // 锁定态：除「点按呼出解锁钮」外一切手势不接——不 seek、不起 2x（行业做法：
         // 锁定后手里握着的机器不该因为误触改进度，2026-11-15 用户拍板）
@@ -793,8 +812,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     }
 
     @objc private func handleTap(_ tap: UITapGestureRecognizer) {
-        if openDrawer != nil {
-            print("PLAYER_DBG [CHECK] fullscreen TAP SKIP reason=drawerOpen")
+        // 抽屉打开时点播放区（或面板空白处）= 收起抽屉，不动播放状态
+        // （2026-11-15 用户要求：全屏选集面板弹出后点播放区也要能关掉）
+        if let open = openDrawer {
+            print("PLAYER_DBG [CHECK] fullscreen TAP drawer=\(open) → close drawer only")
+            dismissDrawer(animated: true)
             return
         }
         if Date() < tapSuppressionUntil {

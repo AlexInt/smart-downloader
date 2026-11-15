@@ -4,54 +4,70 @@ import SwiftUI
 //
 // 横屏与竖屏共用同一份选项列表与视觉语言，只是落位不同：
 // - 横屏：右侧 300×390 滑入抽屉（r36，右内边距 54 收窄，避开圆角与安全区）
-// - 竖屏：居中墨本浮层（画布未给竖屏版本，沿用同一套材质与档位——用户拍板 2026-11-15）
+// - 竖屏：半屏底部弹层 `PlaybackRateSheet`（2026-11-15 用户要求「拉起半屏」，
+//   与选集面板同一个 BottomSheet 容器，档位同源）
 //
 // 色值与几何全部来自画布节点实读，勿凭目测调整：
 // 底 #1C1E1F / 选项文字 #E8E6DF 15px / 选中行 46pt 高 r10 #35393B、文字 #F2F0EA Medium。
 
-/// 倍速面板的行高与内边距（画布 22:77：pt22 pb22 pl18 pr54、六档 SPACE_EVENLY）
+/// 档位行的圆角（画布 22:83 r10）——全屏抽屉与竖屏弹层共用
 enum PlaybackRateMetrics {
-    /// 选中行高（画布 22:83 height 46）
-    static let selectedRowHeight: CGFloat = 46
-    /// 未选中行是 hug_contents 文本，行距由 SPACE_EVENLY 撑开——用固定行高近似同观感
-    static let rowHeight: CGFloat = 34
-    static let rowSpacing: CGFloat = 0
     static let cornerRadius: CGFloat = 10
-    static let panelCornerRadius: CGFloat = 36
-    static let panelWidth: CGFloat = 300
-    /// 文本左右内边距：画布 pl18，选中行整行铺满内宽，文字居中
-    static let horizontalPadding: CGFloat = 18
-    static let verticalPadding: CGFloat = 22
-    /// 6 档 × (46 选中 / 34 其余) + 上下 22 + 行间余量 ≈ 390 的画布高度
-    static var preferredHeight: CGFloat {
-        verticalPadding * 2
-            + selectedRowHeight
-            + rowHeight * CGFloat(DramaPlayerViewModel.rateOptions.count - 1)
-    }
 }
 
-/// 单档文案：画布是「3.0倍速」「1.25倍速」「1.0倍速（默认）」
+/// 单档文案：画布是「2.0倍速」「1.25倍速」「1.0倍速（默认）」
+/// 数字部分走 `DramaPlayerViewModel.rateText`（与顶栏紧凑文案同源，别再各写一套）
 func playbackRateLabel(_ rate: Double) -> String {
-    let trimmed = String(format: "%.2f", rate)
-        .replacingOccurrences(of: "0$", with: "")
-        .replacingOccurrences(of: "\\.$", with: "")
-    return rate == 1.0 ? "\(trimmed)倍速（默认）" : "\(trimmed)倍速"
+    let text = DramaPlayerViewModel.rateText(rate)
+    return rate == 1.0 ? "\(text)倍速（默认）" : "\(text)倍速"
 }
 
-struct PlaybackRatePanel: View {
+// MARK: - 竖屏倍速弹层（半屏）
+
+/// 竖屏倍速面板（2026-11-15 用户要求「点倍速拉起半屏，选项与全屏一致」）：
+/// 与选集面板共用 `BottomSheet` 容器（自底部升起、只切高度），档位取自
+/// `DramaPlayerViewModel.rateOptions`（全屏抽屉同一份），视觉沿用画布 22:77 的墨本材质：
+/// #1C1E1F 底 / 选中行 46 高 r10 #35393B / 选项文字 15px。
+/// 原来是一块 300 宽的居中浮层，在整屏播放页上显得像弹窗而不是播放器面板。
+struct PlaybackRateSheet: View {
     let currentRate: Double
     var onSelect: (Double) -> Void
+    var onClose: () -> Void
+
+    /// 每行高度：竖屏弹层整屏宽，比画布抽屉里的 22pt 行好点得多
+    private static let rowHeight: CGFloat = 48
 
     var body: some View {
-        VStack(spacing: PlaybackRateMetrics.rowSpacing) {
-            ForEach(DramaPlayerViewModel.rateOptions, id: \.self) { rate in
-                row(rate)
+        VStack(alignment: .leading, spacing: 14) {
+            // 标题行：与选集面板同一形制（左关闭 / 居中标题）
+            ZStack {
+                HStack {
+                    Button(action: onClose) {
+                        OverlayCloseGlyph()
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭")
+                    Spacer(minLength: 0)
+                }
+                Text("倍速")
+                    .font(DWFont.serif(17, .medium))
+                    .foregroundStyle(.white)
+            }
+            .frame(height: 32)
+
+            VStack(spacing: 0) {
+                ForEach(DramaPlayerViewModel.rateOptions, id: \.self) { rate in
+                    row(rate)
+                }
             }
         }
-        .padding(.horizontal, PlaybackRateMetrics.horizontalPadding)
-        .padding(.vertical, PlaybackRateMetrics.verticalPadding)
-        .frame(width: PlaybackRateMetrics.panelWidth)
-        .background(DWColor.ratePanel, in: RoundedRectangle(cornerRadius: PlaybackRateMetrics.panelCornerRadius))
+        .padding(.horizontal, EpisodeGridMetrics.horizontalPadding)
+        .padding(.top, 18)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(DWColor.ratePanel)
     }
 
     private func row(_ rate: Double) -> some View {
@@ -63,8 +79,7 @@ struct PlaybackRatePanel: View {
                 .font(selected ? DWFont.cn(15, .medium) : DWFont.cn(15, .regular))
                 .foregroundStyle(selected ? DWColor.rateTextSelected : DWColor.rateText)
                 .frame(maxWidth: .infinity)
-                .frame(height: selected ? PlaybackRateMetrics.selectedRowHeight
-                                        : PlaybackRateMetrics.rowHeight)
+                .frame(height: Self.rowHeight)
                 .background(selected ? DWColor.rateRowSelected : .clear,
                             in: RoundedRectangle(cornerRadius: PlaybackRateMetrics.cornerRadius))
                 .contentShape(Rectangle())
@@ -73,12 +88,4 @@ struct PlaybackRatePanel: View {
         .accessibilityLabel(playbackRateLabel(rate))
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
-}
-
-#Preview("倍速面板") {
-    ZStack {
-        Color.black
-        PlaybackRatePanel(currentRate: 1.0) { _ in }
-    }
-    .ignoresSafeArea()
 }

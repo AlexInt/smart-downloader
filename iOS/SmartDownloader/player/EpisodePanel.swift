@@ -9,16 +9,22 @@ import SwiftUI
 //
 // 后续做完整版时只需替换本文件的容器部分，网格可原样复用。
 
-/// 选集网格度量（画布 22:78 / 22:92 / 22:98）
+/// 选集网格度量（画布 22:78 / 22:92 / 22:98，2026-11-15 按用户要求改为「一行排满」）
 enum EpisodeGridMetrics {
-    /// 每格边长（画布 46×46）
-    static let cell: CGFloat = 46
     /// 格间（画布 gap 9）
     static let gap: CGFloat = 9
     /// 格圆角（画布 9）
     static let cellRadius: CGFloat = 9
-    /// 列数（画布 4 列）
-    static let columns = 4
+    /// 列数：画布横屏抽屉是 4 列 46 宽（面板只有 300 宽），竖屏弹层是整屏宽——
+    /// 沿用 4 列会把整片网格缩在左边、右侧空 150pt（用户实报「全部靠左排布不对」），
+    /// 故按竖屏宽度提到 6 列，密度与剧集页选集网格（6 列 × 56）一致
+    static let columns = 6
+    /// 面板左右内边距（与 EpisodePanel 的 padding 同源）
+    static let horizontalPadding: CGFloat = 18
+    /// 每格边长：按可用宽度等分，使一行正好排满（不写死 46）
+    static func cell(availableWidth: CGFloat) -> CGFloat {
+        max(46, (availableWidth - gap * CGFloat(columns - 1)) / CGFloat(columns))
+    }
     /// 当前集播放小点（画布 4×4 r2，gap 3）
     static let dot: CGFloat = 4
 }
@@ -26,17 +32,17 @@ enum EpisodeGridMetrics {
 struct EpisodeGrid: View {
     let total: Int
     let current: Int
+    /// 网格可用宽度（由容器现量后传入：整屏宽 − 左右内边距）
+    var availableWidth: CGFloat
     var onSelect: (Int) -> Void
 
-    private var rows: [[Int]] {
-        stride(from: 1, through: max(total, 1), by: EpisodeGridMetrics.columns).map {
-            Array($0..<min($0 + EpisodeGridMetrics.columns, total + 1))
-        }
+    private var side: CGFloat {
+        EpisodeGridMetrics.cell(availableWidth: availableWidth)
     }
 
     var body: some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.fixed(EpisodeGridMetrics.cell),
+            columns: Array(repeating: GridItem(.fixed(side),
                                                spacing: EpisodeGridMetrics.gap),
                            count: EpisodeGridMetrics.columns),
             alignment: .leading,
@@ -64,7 +70,7 @@ struct EpisodeGrid: View {
                         .frame(width: EpisodeGridMetrics.dot, height: EpisodeGridMetrics.dot)
                 }
             }
-            .frame(width: EpisodeGridMetrics.cell, height: EpisodeGridMetrics.cell)
+            .frame(width: side, height: side)
             .background(isCurrent ? DWColor.episodeCellCurrent : DWColor.episodeCell,
                         in: RoundedRectangle(cornerRadius: EpisodeGridMetrics.cellRadius))
             .overlay {
@@ -89,35 +95,41 @@ struct EpisodePanel: View {
     var onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // 标题行（画布 22:87：关闭 20×20 + 「选集」17px 衬线居中）
-            ZStack {
-                HStack {
-                    Button(action: onClose) {
-                        OverlayCloseGlyph()
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
+        // 可用宽度用 GeometryReader 现量（不要 UIScreen.main：iOS 26 起 deprecated，
+        // 且弹层宽度本来就等于「外层给的宽度 − 左右内边距」）
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: 14) {
+                // 标题行（画布 22:87：关闭 20×20 + 「选集」17px 衬线居中）
+                ZStack {
+                    HStack {
+                        Button(action: onClose) {
+                            OverlayCloseGlyph()
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭")
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("关闭")
-                    Spacer(minLength: 0)
+                    Text("选集")
+                        .font(DWFont.serif(17, .medium))
+                        .foregroundStyle(.white)
                 }
-                Text("选集")
-                    .font(DWFont.serif(17, .medium))
-                    .foregroundStyle(.white)
-            }
-            .frame(height: 32)
+                .frame(height: 32)
 
-            ScrollView {
-                EpisodeGrid(total: total, current: current, onSelect: onSelect)
-                    .padding(.bottom, 8)
+                ScrollView {
+                    EpisodeGrid(total: total, current: current,
+                                availableWidth: geo.size.width - EpisodeGridMetrics.horizontalPadding * 2,
+                                onSelect: onSelect)
+                        .padding(.bottom, 8)
+                }
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
+            .padding(.horizontal, EpisodeGridMetrics.horizontalPadding)
+            .padding(.top, 18)
+            .padding(.bottom, 18)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 18)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(DWColor.episodePanel)
     }
 }
@@ -178,7 +190,7 @@ struct OverlayCloseGlyph: View {
 #Preview("选集网格") {
     ZStack {
         Color.black
-        EpisodeGrid(total: 60, current: 8) { _ in }
+        EpisodeGrid(total: 60, current: 8, availableWidth: 366) { _ in }
             .padding(18)
     }
     .ignoresSafeArea()

@@ -6,7 +6,7 @@ import UIKit
 //（本地 x = 844 长轴、本地 y = 390 短轴），随容器一起自转，故自己不做旋转变换。
 //
 // 画布几何（全部实读，勿凭目测调整）：
-//   22:77 倍速  300×390 r36 底 #1C1E1F。六档 15px #E8E6DF；行顶 y=22/82/142/202/262/346，
+//   22:77 倍速  300×390 r36 底 #1C1E1F。档位 15px #E8E6DF（画布六档，2026-11-15 起五档），
 //               行高 22（选中 46），行矩形 x=18 w=228，文字中心 x=132；
 //               选中行 r10 #35393B + 文字 #F2F0EA Medium。
 //   22:78 选集  300×390 r36 底 #101214，pad18。标题行 @(18,18) 216×32（关闭 20×20 内 12×12 叉，
@@ -115,9 +115,11 @@ final class RateDrawerPanel: FullscreenDrawerPanel {
     private let selectedRow = UIView()
     private var rows: [UIButton] = []
 
-    /// 画布纵向切片（相对面板顶）
-    private static let rowTops: [CGFloat] = [22, 82, 142, 202, 262, 346]
+    /// 画布纵向切片（相对面板顶）。2026-11-15 移除 3.0× 后档位由 6 变 5，硬编码的
+    /// 六个行顶会把整块下半截空出来 —— 改为按档位数在 22…368 内均分（见 layoutContent）
     private enum L {
+        static let panelHeight: CGFloat = 390
+        static let verticalPadding: CGFloat = 22
         static let normalHeight: CGFloat = 22
         static let selectedHeight: CGFloat = 46
         static let rowLeading: CGFloat = 18
@@ -149,12 +151,15 @@ final class RateDrawerPanel: FullscreenDrawerPanel {
 
     override func layoutContent(size: CGSize) {
         let sx = scaleX, sy = scaleY, s = designScale
+        let count = max(rows.count, 1)
+        // 档位在面板内均分（画布 22:77 是六档等距切片，档位数变了就按同样节奏重排）
+        let slot = (L.panelHeight - L.verticalPadding * 2) / CGFloat(count)
         var selectedTop: CGFloat = 0
         for (index, button) in rows.enumerated() {
             let rate = DramaPlayerViewModel.rateOptions[index]
             let selected = abs(rate - currentRate) < 0.001
-            let top = Self.rowTops[min(index, Self.rowTops.count - 1)]
             let h = selected ? L.selectedHeight : L.normalHeight
+            let top = L.verticalPadding + slot * CGFloat(index) + (slot - h) / 2
             button.frame = CGRect(x: L.rowLeading * sx, y: top * sy,
                                   width: L.rowWidth * sx, height: h * sy)
             button.titleLabel?.font = selected

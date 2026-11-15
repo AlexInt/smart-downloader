@@ -31,7 +31,7 @@ struct DramaPlayerView: View {
     var isEpisodeAvailable = true
     var nextEpisodeAvailable = true
     var toastText: String? = nil
-    /// 打开倍速面板（画布只给了横屏抽屉，竖屏用居中浮层——由外层承载）
+    /// 打开倍速面板（竖屏是半屏底部弹层，由 `PlayerFeedView` 承载）
     var onRequestRatePanel: () -> Void = {}
     /// 打开选集面板（画布 19:62 是完整的上墨下纸面板，本轮先给简单版）
     var onRequestEpisodePanel: () -> Void = {}
@@ -283,11 +283,10 @@ struct DramaPlayerView: View {
                 .allowsHitTesting(false)
 
             // 倍速（画布 2:94 54×26 @(272,68)：16 表盘 + 5 间距 + 12px「倍速」）
-            // 完整态才有；清屏态画布 2:74 已把它移除
-            if !playback.isCleanScreen {
-                rateButton
-                    .designFrame(272, 68, 54, 26)
-            }
+            // 2026-11-15 用户要求「更多左边增加倍速」：清屏态下 返回/标题/更多 都还在，
+            // 唯独这里被藏起来 → 清屏态就没有倍速入口了，故取消清屏态隐藏，常驻
+            rateButton
+                .designFrame(272, 68, 54, 26)
 
             // 更多（画布 2:99 20×20 @(344,72)，三点 2.8 圆点，竖向 gap 6）
             moreButton
@@ -430,21 +429,21 @@ struct DramaPlayerView: View {
                 .position(x: 390 * progressValue, y: 752)
                 .allowsHitTesting(false)
 
-            // 时间行：画布 2:11 只有轨道与圆点，没有时间文字；清屏瞬态反馈时按旧版给一行，
-            // 位置贴轨道下方，不压住选集胶囊（胶囊在 770，时间行在 754..768）
-            if isActive && playback.isScrubbing {
-                Text(timeText)
-                    .font(DWFont.en(11, .medium))
-                    .foregroundStyle(DWColor.overlayInkSub)
-                    .designFrame(20, 756, 60, 14, alignment: .leading)
-                    .allowsHitTesting(false)
+            // 时间行（2026-11-15 用户要求「播放时长与剧集长度移到进度条上部」）：
+            // 画布 2:11 只有轨道与圆点，没有时间文字，这里按用户要求补在轨道上方——
+            // 当前时间靠左缘 20、总时长靠右缘 370，与轨道两端对齐（原来贴在轨道下方，
+            // 会被选集胶囊挤在 756…768 的窄缝里）
+            Text(timeText)
+                .font(DWFont.en(11, .medium))
+                .foregroundStyle(DWColor.overlayInkSub)
+                .designFrame(20, 731, 60, 14, alignment: .leading)
+                .allowsHitTesting(false)
 
-                Text(durationText)
-                    .font(DWFont.en(11, .medium))
-                    .foregroundStyle(DWColor.overlayInkSub)
-                    .designFrame(310, 756, 60, 14, alignment: .trailing)
-                    .allowsHitTesting(false)
-            }
+            Text(durationText)
+                .font(DWFont.en(11, .medium))
+                .foregroundStyle(DWColor.overlayInkSub)
+                .designFrame(310, 731, 60, 14, alignment: .trailing)
+                .allowsHitTesting(false)
         }
         .opacity(isProgressVisible ? 1 : 0)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)

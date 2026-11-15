@@ -11,7 +11,7 @@ struct PlayerFeedView: View {
     var onClose: () -> Void
     /// 当前页只由分页容器回写，避免与 VM 的 @Published 形成反馈环
     @State private var scrollID: Int?
-    /// 竖屏浮层：倍速面板（画布只给了横屏抽屉，竖屏用居中墨本浮层——用户拍板）
+    /// 竖屏浮层：倍速面板（2026-11-15 起与选集面板同一个半屏 BottomSheet）
     @State private var showRatePanel = false
     /// 竖屏浮层：选集面板（先做简单版，画布完整版 19:62 留待后续）
     @State private var showEpisodePanel = false
@@ -102,39 +102,53 @@ struct PlayerFeedView: View {
 
     // MARK: - 叠层面板
 
-    @ViewBuilder
     private var overlays: some View {
+        // 弹层高度按容器现量（不要 UIScreen.main：iOS 26 起 deprecated）。
+        // 这一层整体 ignoresSafeArea → geo.size 就是整屏，比例才与画布口径一致
+        GeometryReader { geo in
+            overlaysContent(sheetHeight: geo.size.height * Self.sheetHeightRatio)
+                .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private func overlaysContent(sheetHeight: CGFloat) -> some View {
         ZStack {
-            if showRatePanel {
-                // 遮罩：点它关闭面板（不透传手势给下层，避免顺带暂停/翻页）
+            // 遮罩（两个弹层共用）：点面板外的画面关掉面板，不把这一下透传给下层
+            // （否则关面板会顺带暂停/翻页）
+            if showRatePanel || showEpisodePanel {
                 Color.black.opacity(0.45)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
-                    .onTapGesture { showRatePanel = false }
-                    .transition(.opacity)
-
-                PlaybackRatePanel(currentRate: vm.playback.playbackRate) { rate in
-                    vm.playback.setPlaybackRate(rate)
-                    showRatePanel = false
-                    print("PLAYER_DBG [FeedView] rate panel select \(rate)× → close")
-                }
-                .transition(.scale(scale: 0.94).combined(with: .opacity))
-            }
-
-            if showEpisodePanel {
-                Color.black.opacity(0.45)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { showEpisodePanel = false }
+                    .onTapGesture {
+                        if showRatePanel { showRatePanel = false }
+                        if showEpisodePanel { showEpisodePanel = false }
+                    }
                     .transition(.opacity)
             }
+
+            // 倍速面板（2026-11-15 用户要求「拉起半屏」）：与选集面板同一个 BottomSheet，
+            // 档位与全屏抽屉同源。原先是 300 宽的居中浮层。
+            BottomSheet(isPresented: showRatePanel, height: sheetHeight) {
+                PlaybackRateSheet(
+                    currentRate: vm.playback.playbackRate,
+                    onSelect: { rate in
+                        vm.playback.setPlaybackRate(rate)
+                        showRatePanel = false
+                        print("PLAYER_DBG [FeedView] rate sheet select \(rate)× → close")
+                    },
+                    onClose: { showRatePanel = false }
+                )
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(showRatePanel)
 
             // 选集面板（2026-11-15 用户拍板）：高度 = 屏高 46.5%（原 62% 降 25%），
             // 出现 = 自底部弹出、消失 = 向底部缩短（由 BottomSheet 的贴底高度窗驱动）。
             // **面板本体常驻、只切高度**：用 `if` 插拔的话插入那一帧高度已是满值，
             // 展开动画会被整段吞掉（只剩遮罩淡入），这是原来「弹出感不明显」的原因。
-            BottomSheet(isPresented: showEpisodePanel,
-                        height: UIScreen.main.bounds.height * Self.episodePanelHeightRatio) {
+            BottomSheet(isPresented: showEpisodePanel, height: sheetHeight) {
                 EpisodePanel(
                     total: currentEpisodeTotal,
                     current: currentEpisodeIndex,
@@ -148,12 +162,13 @@ struct PlayerFeedView: View {
             .ignoresSafeArea(edges: .bottom)
             .allowsHitTesting(showEpisodePanel)
         }
-        .animation(.easeInOut(duration: 0.22), value: showRatePanel)
+        .animation(.easeInOut(duration: 0.26), value: showRatePanel)
         .animation(.easeInOut(duration: 0.26), value: showEpisodePanel)
     }
 
-    /// 选集面板占屏高的比例（原 0.62，2026-11-15 用户要求降低 25% → 0.465）
-    private static let episodePanelHeightRatio: CGFloat = 0.465
+    /// 底部弹层占屏高的比例（原选集面板 0.62，2026-11-15 用户要求降低 25% → 0.465；
+    /// 倍速改用同一容器后沿用同一比例，「拉起半屏」观感一致）
+    private static let sheetHeightRatio: CGFloat = 0.465
 
     /// 当前集的「第几集 / 共几集」：选集网格要用真实集号（槽位的 sort 就是集号）
     private var currentEpisodeIndex: Int {

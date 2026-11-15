@@ -29,7 +29,7 @@ struct PlayerPreferences {
         nonmutating set { defaults.set(newValue, forKey: Self.showRemainingTimeKey) }
     }
 
-    /// 常驻播放倍速（画布 22:77 倍速抽屉，六档）。0 = 未存过，读时回落到 1.0。
+    /// 常驻播放倍速（画布 22:77 倍速抽屉，现五档——3.0× 已移除）。0 = 未存过，读时回落到 1.0。
     /// 与长按 2x（瞬态、松手即回 1x）是两套语义：这是用户选的基准速率，
     /// 长按 2x 结束后要还原到它而不是写死 1.0（见 DramaPlayerViewModel.endFastForward）。
     var playbackRate: Double {

@@ -137,7 +137,7 @@ final class DramaPlayerViewModel: ObservableObject {
         didSet { writeAction(column: "saved", value: saved) }
     }
 
-    /// 常驻播放倍速（画布 22:77 六档）。与长按 2x 是两套语义：
+    /// 常驻播放倍速（画布 22:77 六档，2026-11-15 移除 3.0× 后五档）。与长按 2x 是两套语义：
     /// 这是用户选定的基准速率（持久化），长按 2x 是瞬态叠加、松手还原到这里。
     /// 取值口径：AVPlayer.rate 只在「正在播」时才等于倍速；暂停时 rate=0，
     /// 故用本属性记账，applyRate() 负责按当前播放意图下发。
@@ -148,15 +148,19 @@ final class DramaPlayerViewModel: ObservableObject {
             print("PLAYER_DBG [Playback] rate=\(playbackRate)× → persist + applyPlayer")
         }
     }
-    /// 画布 22:77 的六档：3.0 / 2.0 / 1.5 / 1.25 / 1.0 / 0.75（降序，与抽屉顺序一致）
-    static let rateOptions: [Double] = [3.0, 2.0, 1.5, 1.25, 1.0, 0.75]
-    /// 倍速文案：一位小数，去掉多余的 0（1.0 → "1"、1.25 → "1.25"、3.0 → "3"）
-    var playbackRateText: String {
-        let text = String(format: "%.2f", playbackRate)
-            .replacingOccurrences(of: "0$", with: "")
-            .replacingOccurrences(of: "\\.$", with: "")
+    /// 倍速档位（2026-11-15 用户拍板移除 3.0×，现五档）：2.0 / 1.5 / 1.25 / 1.0 / 0.75
+    /// 降序，与全屏抽屉和竖屏弹层同一份列表——两处不要各写一套
+    static let rateOptions: [Double] = [2.0, 1.5, 1.25, 1.0, 0.75]
+    /// 倍速数字文案（不带「倍速」二字）：2.0 / 1.5 / 1.25 / 1.0 / 0.75。
+    /// 做法是先按两位小数格式化再去掉末位的 0——旧实现用
+    /// `replacingOccurrences(of: "0$")`（那是正则写法，字符串替换匹配不到字面量 "0$"），
+    /// 结果面板里全是「2.00倍速」「1.00×」，与画布 22:77 的文案对不上。
+    static func rateText(_ rate: Double) -> String {
+        var text = String(format: "%.2f", rate)
+        if text.hasSuffix("0") { text.removeLast() }
         return text
     }
+    var playbackRateText: String { Self.rateText(playbackRate) }
     /// 顶栏倍速按钮的紧凑文案：默认档显示「倍速」，选过档位后显示「1.5×」
     var rateShortText: String {
         "\(playbackRateText)×"
@@ -210,7 +214,15 @@ final class DramaPlayerViewModel: ObservableObject {
         showRemainingTime = preferences.showRemainingTime
         // 恢复常驻倍速：直接写字段不走 didSet 之外的重活——init 阶段 player 还没 item，
         // applyRate 会因为没在播而什么都不做（load 时会按 playbackRate 重新下发）
-        playbackRate = preferences.playbackRate
+        // 3.0× 已于 2026-11-15 移出档位：老用户存过 3.0 时回落到 1.0，避免面板里没有任何
+        // 一行是高亮的（「当前倍速」与选项表对不上）
+        let storedRate = preferences.playbackRate
+        if Self.rateOptions.contains(storedRate) {
+            playbackRate = storedRate
+        } else {
+            playbackRate = 1.0
+            print("PLAYER_DBG [Playback] restore rate=\(storedRate)× notInOptions → fallback 1.0")
+        }
         ensureObserver()
         // 播完观察（自动连播信号源）：通知线程不定，回主线程判「事件对象 === 当前 item」
         // 再碰状态（GCD 约定）——同一性判定天然过滤旧 item 的迟到事件（防快滑/切集竞态）
