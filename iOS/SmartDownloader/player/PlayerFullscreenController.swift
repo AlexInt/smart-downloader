@@ -17,7 +17,7 @@ import Combine
 /// 全屏容器：bounds 即横屏坐标空间（旋转后铺满竖屏屏幕），videoLayer 在 layoutSubviews 跟随。
 /// 打开选集抽屉时视频要缩到画布 22:76 的 560×302 @(56,44)（r2 圆角），故视频矩形可由外部覆盖。
 final class FullscreenPlayerView: UIView {
-    var videoLayer: AVPlayerLayer?
+    var videoLayer: VideoPlayerLayer?
     var onLayout: (() -> Void)?
     /// 视频层矩形（容器本地坐标）。nil = 铺满 bounds（全屏常态 / 倍速抽屉态）
     var videoLayoutRect: CGRect? {
@@ -43,6 +43,8 @@ final class FullscreenPlayerView: UIView {
                 videoLayer.masksToBounds = videoCornerRadius > 0
             }
         }
+        // 冻帧覆盖层跟着视频层铺满（切集冻帧在换 item 期间盖住黑底）
+        videoLayer?.syncOverlayFrame()
         onLayout?()
     }
 
@@ -59,6 +61,7 @@ final class FullscreenPlayerView: UIView {
             layer.cornerRadius = cornerRadius
             layer.masksToBounds = cornerRadius > 0
         }
+        layer.syncOverlayFrame()
         guard animated, let old, old != new else { return }
         let duration: TimeInterval = 0.26
         let curve = CAMediaTimingFunction(name: .easeInEaseOut)

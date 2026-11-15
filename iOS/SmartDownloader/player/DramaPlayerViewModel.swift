@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 import Combine
 
 /// 单集播放状态机（ViewModel）。
@@ -9,6 +10,13 @@ final class DramaPlayerViewModel: ObservableObject {
     var player: AVPlayer { playerService.player }
 
     @Published private(set) var isReady = false
+    /// 切集冻帧（2026-11-15）：换 item **之前**从当前 item 取下的那一帧（UIImage）。
+    /// 全屏时视频层搬在全屏容器里、没有卡片加载渐变兜底，`replaceCurrentItem` 那一拍
+    /// 会直接露出容器黑底（用户实报「全屏用选集中集数切集时会闪一下」）；
+    /// 这帧交给 `PlayerSurfaceUIView` 的冻帧层盖住，新 item 就绪后淡出。
+    /// 竖屏不使用它（竖屏原有藏条带 + 渐变交叉淡入是调好的，别合并）。
+    @Published private(set) var freezeFrameImage: UIImage?
+    private let freezeFrame = PlaybackFreezeFrame()
     @Published private(set) var isFastForwarding = false
     /// seek 手势进行中（seekPan 已起手）：「拖动先起」的触摸由 seek 独占，
     /// 长按不得中途插入起 2x —— 与 isFastForwarding 构成双向互斥（谁先起谁独占本次触摸）。
@@ -241,6 +249,10 @@ final class DramaPlayerViewModel: ObservableObject {
         endSeekGesture()
         hideScrubHudNow()
         loadError = nil
+        // 切集前先冻住当前画面：此刻 player.currentItem 还是旧 item（已 ready、正在显示），
+        // 从它的 AVPlayerItemVideoOutput 同步拷一帧（已解码帧，~1-5ms，主线程无感）。
+        // 必须在 isReady=false 之前取——sink 一收到 false 就要拿这帧去盖屏。
+        freezeFrameImage = freezeFrame.snapshot(of: player)
         isReady = false
         resetTimes()
         lastLoggedSecond = -1
@@ -248,6 +260,8 @@ final class DramaPlayerViewModel: ObservableObject {
         guard episode.playlistURL != nil else {
             print("PLAYER_DBG [Playback] load ABORT reason=episodeNotDownloaded sort=\(episode.sort)")
             currentEpisode = nil
+            // 不会有 ready 了：冻帧必须立刻放掉，否则旧画面会盖在新页面上一段时间
+            clearFreezeFrame(reason: "abort")
             playerService.clear()
             completion?()
             return
@@ -284,6 +298,9 @@ final class DramaPlayerViewModel: ObservableObject {
                 return
             }
             self.player.replaceCurrentItem(with: item)
+            // 新 item 挂视频输出：下一次切集才有「当前显示帧」可取（要在起播前挂上，
+            // 否则起播后头几帧不入输出）。attach 只挂新 item，旧 item 随替换释放
+            self.freezeFrame.attach(to: item)
             self.player.isMuted = self.isMuted
             self.userWantsPlayback = autoplay
             if autoplay {
@@ -299,6 +316,21 @@ final class DramaPlayerViewModel: ObservableObject {
                              startedAt: Date(), completion: completion)
         }
     }
+
+    /// 丢弃当前冻帧（不会有 ready 的失败分支调：旧画面不能继续盖在新内容上）。
+    /// Published 变化由 PlayerPagingScrollView 订阅 → surface.releaseFreezeFrame
+    private func clearFreezeFrame(reason: String) {
+        guard freezeFrameImage != nil else { return }
+        freezeFrameImage = nil
+        print("PLAYER_DBG [FreezeFrame] clear reason=\(reason)")
+    }
+
+    #if DEBUG
+    /// 样张验收用（`-playerFreezePreview`）：与切集时同一条取帧路径，只是不换 item
+    func debugFreezeSnapshot() -> UIImage? {
+        freezeFrame.snapshot(of: player)
+    }
+    #endif
 
     func togglePlayback() {
         // 等待缓冲态也算「在播」：此时点按应当是「暂停」，否则会再下发一次 play()，
@@ -527,6 +559,9 @@ final class DramaPlayerViewModel: ObservableObject {
         hideScrubHudNow()
         cancelSpinnerDelay()
         playerService.clear()
+        // 冻帧输出随 item 释放，引用一并清（退页后不该再持有一张全屏尺寸的图）
+        freezeFrame.detach()
+        freezeFrameImage = nil
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -675,10 +710,14 @@ final class DramaPlayerViewModel: ObservableObject {
                     self.autoRetriedSorts.insert(episode.sort)
                     self.rebuildCurrentItem(episode: episode, autoplay: self.userWantsPlayback,
                                             reason: "itemFailed")
+                } else {
+                    // 重试也失败：冻帧不能继续盖着旧画面（不会有 ready 了）
+                    self.clearFreezeFrame(reason: "itemFailedFinal")
                 }
             case .timeout:
                 self.loadError = "视频加载超时"
                 self.cancelSpinnerDelay()
+                self.clearFreezeFrame(reason: "timeout")
                 print("PLAYER_DBG [Playback] load FAIL reason=watchdogTimeout sort=\(episode.sort)")
             }
         }

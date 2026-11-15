@@ -92,12 +92,22 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         // 淡入——与卡片渐变淡出错开，交叉过渡无黑屏空档（渐变退完前条带已在淡入）
         context.coordinator.readyCancellable = playback.$isReady
             .removeDuplicates()
-            .sink { [weak surface] ready in
+            .sink { [weak surface, weak playback] ready in
                 if ready {
                     surface?.scheduleVideoReveal()
                 } else {
-                    surface?.concealForReveal()
+                    // 全屏时把切集冻帧一并递过去（无图走原路径）：全屏没有卡片渐变兜底
+                    surface?.concealForReveal(freezeFrame: playback?.freezeFrameImage)
                 }
+            }
+        // 冻帧兜底释放：加载失败/无资源时 VM 把 freezeFrameImage 置 nil（不会有 ready），
+        // 冻帧不能继续盖着旧画面。非 nil 变化不在这里处理 —— 挂载由 isReady=false 那条链走
+        context.coordinator.freezeCancellable = playback.$freezeFrameImage
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak surface] image in
+                guard image == nil else { return }
+                surface?.releaseFreezeFrame(reason: "cleared")
             }
         // 自动连播：单集播完 → FeedVM 置 autoAdvanceSort → 这里动画滚到下一页并把信号
         // 置回 nil。翻页后的 currentSort 回写靠 scrollViewDidEndScrollingAnimation → report
@@ -114,6 +124,18 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         // 全屏控制器：订阅 isFullscreen，容器 transform 自转（锁竖屏下的全屏实现）
         context.coordinator.fullscreenController = PlayerFullscreenController(playback: playback, surface: surface)
         print("PLAYER_DBG [UIScroll] fullscreen controller installed surface=\(surface.bounds)")
+        #if DEBUG
+        // 冻帧样张（`-playerFreezePreview`）：全屏后手动挂一次冻帧，看它铺得对不对。
+        // 模拟器无法点选集切集，只能定点验证这一层；6s 看门狗会自己放掉
+        if PlayerPreviewFlags.enabled, PlayerPreviewFlags.freezePreview {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak surface, weak playback] in
+                guard let surface, let playback else { return }
+                let image = playback.debugFreezeSnapshot()
+                print("PLAYER_DBG [Preview] freezePreview hold size=\(image?.size ?? .zero) fullscreen=\(playback.isFullscreen)")
+                surface.holdFreezeFrame(image)
+            }
+        }
+        #endif
         return scroll
     }
 
@@ -136,6 +158,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         coordinator.gravityCancellable = nil
         coordinator.readyCancellable = nil
         coordinator.autoAdvanceCancellable = nil
+        coordinator.freezeCancellable = nil
         coordinator.surfaceView?.stopRevealProbe(reason: "dismantle")
         print("PERF_DBG exit t=\(PERF.ms()) phase=pagingDismantle done")
     }
@@ -178,6 +201,8 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         var fitModeCancellable: AnyCancellable?
         /// 自动连播：playback.autoAdvanceSort → 动画滚动到下一页（信号消费后置回 nil）
         var autoAdvanceCancellable: AnyCancellable?
+        /// 切集冻帧被丢弃（加载失败/无资源）→ 立刻放掉冻帧层
+        var freezeCancellable: AnyCancellable?
         private var lastPendingReason = ""
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）

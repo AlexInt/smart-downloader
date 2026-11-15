@@ -43,6 +43,10 @@ enum PlayerPreviewFlags {
     /// `-playerPaused`：全屏后立刻暂停，用于截「播放三角」那一态（默认片源在播 = 双竖条）
     static var paused: Bool { args.contains("-playerPaused") }
 
+    /// `-playerFreezePreview`：全屏后 10s 手动挂一次切集冻帧（6s 后看门狗自动放掉），
+    /// 用于验收「冻帧层在全屏容器里铺得对不对」。模拟器切不了集，只能这样定点验证
+    static var freezePreview: Bool { args.contains("-playerFreezePreview") }
+
     /// 样张剧名（默认用装进模拟器的「横屏样张」，三集 1280×720 真片源）
     static var seriesName: String { value(after: "-playerSeries") ?? "横屏样张" }
 

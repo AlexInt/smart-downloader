@@ -280,27 +280,22 @@ struct DramaPlayerView: View {
                     .designFrame(167, 392, 56, 56)
             }
 
-            // ── 右下角：画面适配 / 清屏 / 静音（用户拍板：清屏在右下角，静音在其左） ──
-            // 画面适配（画布 19:37 24×24 @(350,776)）
-            fitButton
+            // ── 右下角：静音 / 清屏（2026-11-15 用户拍板：去掉「画面适配」，清屏占它原来的位置）──
+            // 清屏（画布未给，按用户要求补在右下角）：24×24，钉在画布最右的 350 位
+            cleanScreenButton
                 .designFrame(350, 776, 24, 24)
 
-            // 清屏（画布未给，按用户要求补在右下角）：与画面适配同一视觉语言，24×24
-            cleanScreenButton
-                .designFrame(318, 776, 24, 24)
-
-            // 静音（画布未给，按用户要求补在清屏旁）：24×24
+            // 静音（画布未给，按用户要求放清屏左侧）：24×24
             muteButton
                 .designFrame(286, 776, 24, 24)
 
             // 选集胶囊（画布 2:130 326×38 r8 @(16,770)）
             // 清屏态画布 2:74 保留它（2:161）——清屏仍要知道「在看全多少集」
             //
-            // 宽度 326 → 258（2026-11-15）：画布右下角原本只画了一个「画面适配」，
-            // 用户拍板把「清屏 / 静音」也放进右下角后，三个 24 宽按钮占 286…374，
-            // 而 326 宽的胶囊右缘到 342 —— 把静音与清屏整块盖住，既看不见也点不到
-            //（模拟器样张实证：底部只剩胶囊 + 最右侧一个方框图标）。
-            // 胶囊文案实测约 190pt，258 仍留足内边距，且与静音钮之间空出 12pt。
+            // 宽度 326 → 258（2026-11-15）：右下角原本是「画面适配 / 清屏 / 静音」三个
+            // 24 宽按钮（占 286…374），326 宽的胶囊右缘到 342 会把静音与清屏整块盖住，
+            // 既看不见也点不到（模拟器样张实证：底部只剩胶囊 + 最右侧一个方框图标）。
+            // 用户后续砍掉画面适配、只剩静音 + 清屏（286…374 里的两枚），258 仍留足内边距。
             episodePill
                 .designFrame(16, 770, 258, 38)
 
@@ -524,23 +519,10 @@ struct DramaPlayerView: View {
         .accessibilityLabel(playback.isPlaying ? "暂停" : "播放")
     }
 
-    /// 画面适配（画布 19:37：24×24，18.8 r4.6 描边方 + 两个角标，描边 1.5 白）
-    private var fitButton: some View {
-        Button {
-            guard isActive else { return }
-            print("PLAYER_DBG [CHECK] fit button tap → cycle videoGravity")
-            playback.cycleVideoGravity()
-        } label: {
-            OverlayFitGlyph(size: 24, color: .white)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("画面适配")
-    }
-
-    /// 清屏（用户要求放右下角，与画面适配同一视觉语言：描边矩形 + 激活斜线）
-    /// 沿用旧版视觉语义：矩形 + 45° 斜线，激活时斜线变金
+    /// 清屏（用户要求放右下角）：描边矩形 + 激活斜线的旧视觉语义，激活时斜线变金。
+    /// 画面适配按钮已于 2026-11-15 按用户要求移除、清屏占它原来的画布位（350）——
+    /// `videoFitMode` 偏好与 `cycleVideoGravity()` 仍留在 VM（gravity 仍按片源方向自动定），
+    /// 只是不再有手动入口
     private var cleanScreenButton: some View {
         Button {
             guard isActive else { return }

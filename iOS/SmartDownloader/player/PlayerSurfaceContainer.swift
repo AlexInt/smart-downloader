@@ -11,10 +11,31 @@ import AVFoundation
 // 全屏时整个子层搬到全屏容器，退出时搬回，AVPlayer 不间断（PlayerFullscreenController）。
 // App 已锁竖屏：gravity 只按片源方向定（横屏片源 fit / 竖屏片源 fill），
 // 不再随持屏方向切换——此前 fit↔fill 二值跳变即「中间条突变全屏」的根因。
+/// `AVPlayerLayer` 子类：多接一层「覆盖子层」（切集冻帧），让它跟着自己的 bounds 走。
+/// iOS 上 `CALayer.autoresizingMask` 不可用（macOS-only），子层尺寸只能在 layoutSublayers 里铺。
+final class VideoPlayerLayer: AVPlayerLayer {
+    /// 覆盖子层（切集冻帧层），始终铺满自身 bounds
+    weak var overlayLayer: CALayer?
+
+    override func layoutSublayers() {
+        super.layoutSublayers()
+        syncOverlayFrame()
+    }
+
+    /// 视频层 frame/bounds 被外部改写后立即对齐覆盖层（不必等一次布局）
+    func syncOverlayFrame() {
+        guard let overlay = overlayLayer, overlay.frame != bounds else { return }
+        PlayerSurfaceUIView.withoutLayerActions {
+            overlay.frame = bounds
+        }
+    }
+}
+
+/// 播放视频承载视图（单例容器）
 final class PlayerSurfaceUIView: UIView {
     /// 视频子层：全屏/退出时在 surface 与全屏容器之间搬运
-    private(set) lazy var videoLayer: AVPlayerLayer = {
-        let layer = AVPlayerLayer()
+    private(set) lazy var videoLayer: VideoPlayerLayer = {
+        let layer = VideoPlayerLayer()
         self.layer.addSublayer(layer)
         return layer
     }()
@@ -29,9 +50,117 @@ final class PlayerSurfaceUIView: UIView {
     /// 视频首显开关：加载期间藏住条带（渐变盖着不可见），ready 当拍交叉淡入
     private var isVideoRevealed = true
 
+    // MARK: - 切集冻帧层（全屏切集不闪）
+
+    /// 冻帧层：`videoLayer` 的**子层**——随视频层一起搬进/搬出全屏容器、跟着旋转缩放，
+    /// 无需全屏控制器参与。初始透明，靠 `holdFreezeFrame` 挂图。
+    /// 尺寸由 `VideoPlayerLayer.layoutSublayers` 跟随视频层 bounds（iOS 上
+    /// `CALayer.autoresizingMask` 不可用，是 macOS-only）
+    private lazy var freezeLayer: CALayer = {
+        let layer = CALayer()
+        layer.opacity = 0
+        layer.contentsGravity = .resizeAspectFill
+        videoLayer.overlayLayer = layer
+        videoLayer.addSublayer(layer)
+        return layer
+    }()
+    /// 冻帧持有中（持有期间不动 videoLayer.opacity，由冻帧层独占遮挡）
+    private var isHoldingFreeze = false
+    /// 冻帧最长持有时间：加载失败/超时时兜底放掉，否则永远盖着旧画面
+    private var freezeWatchdog: DispatchWorkItem?
+
+    /// 挂上切集冻帧（全屏路径用）：盖住换 item 期间的黑底。
+    /// 无图（快照 MISS / 纯音频）直接跳过 —— 那就退化成原来的「露出黑底」，
+    /// 比把一段错误画面盖在屏幕上好。
+    func holdFreezeFrame(_ image: UIImage?) {
+        guard let image, let cg = image.cgImage else {
+            print("PLAYER_DBG [FreezeFrame] hold SKIP reason=noImage (退化为原路径)")
+            return
+        }
+        let layer = freezeLayer
+        Self.withoutLayerActions {
+            layer.frame = videoLayer.bounds
+            layer.contents = cg
+            layer.contentsScale = image.scale
+            layer.contentsGravity = Self.contentsGravity(for: videoLayer.videoGravity)
+            layer.opacity = 1
+            layer.removeAnimation(forKey: "freeze.fadeOut")
+        }
+        isHoldingFreeze = true
+        freezeWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.releaseFreezeFrame(reason: "watchdog6s")
+        }
+        freezeWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
+        print("PLAYER_DBG [CHECK] freeze HOLD \(cg.width)x\(cg.height) layer=\(layer.frame) gravity=\(videoLayer.videoGravity == .resizeAspect ? "fit" : "fill")")
+    }
+
+    /// 放掉冻帧：0.15s 淡出（与新 item 首帧重合），淡完清 contents 释放像素
+    func releaseFreezeFrame(reason: String) {
+        guard isHoldingFreeze else { return }
+        isHoldingFreeze = false
+        freezeWatchdog?.cancel()
+        freezeWatchdog = nil
+        let layer = freezeLayer
+        Self.withoutLayerActions {
+            layer.opacity = 0
+        }
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1
+        anim.toValue = 0
+        anim.duration = 0.15
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(anim, forKey: "freeze.fadeOut")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, !self.isHoldingFreeze else { return }
+            PlayerSurfaceUIView.withoutLayerActions {
+                self.freezeLayer.contents = nil
+            }
+        }
+        print("PLAYER_DBG [CHECK] freeze RELEASE reason=\(reason)")
+    }
+
+    /// 无动画立刻丢掉冻帧（全屏退出还原：路径本身连续，不需要交叉）
+    private func discardFreezeFrame() {
+        guard isHoldingFreeze || freezeLayer.contents != nil else { return }
+        isHoldingFreeze = false
+        freezeWatchdog?.cancel()
+        freezeWatchdog = nil
+        Self.withoutLayerActions {
+            freezeLayer.opacity = 0
+            freezeLayer.contents = nil
+            freezeLayer.removeAnimation(forKey: "freeze.fadeOut")
+        }
+    }
+
+    /// UIImage 的层内容重力要跟视频层的 gravity 走，否则 fit 片源会被冻帧裁成 fill
+    private static func contentsGravity(for gravity: AVLayerVideoGravity) -> CALayerContentsGravity {
+        switch gravity {
+        case .resizeAspect: return .resizeAspect
+        case .resizeAspectFill: return .resizeAspectFill
+        case .resize: return .resize
+        default: return .resizeAspect
+        }
+    }
+
     /// 新一集开始（isReady 置 false 时调）：藏住条带，等 isReady 翻转后立即交叉淡入。
     /// 幂等：已藏住时不重复写（退页/订阅重复触发都会到这）
-    func concealForReveal() {
+    /// freezeFrame：全屏切集时用冻帧盖屏（竖屏传 nil，走原来的藏条带 + 渐变交叉）
+    func concealForReveal(freezeFrame: UIImage? = nil) {
+        // ── 全屏（视频层已搬离本 view）：没有卡片渐变兜底 ──
+        // 原来这里把 videoLayer.opacity 置 0，露出的就是全屏容器的黑底 ——
+        // 用户实报「全屏选集切集闪一下」的直接来源。改成：冻住上一帧盖着，
+        // **不碰 videoLayer.opacity**（新 item 首帧直接落在冻帧底下）。
+        if videoLayer.superlayer !== layer {
+            if freezeFrame != nil {
+                holdFreezeFrame(freezeFrame)
+                print("PLAYER_DBG [CHECK] video conceal FULLSCREEN → holdFreezeFrame")
+            } else {
+                print("PLAYER_DBG [CHECK] video conceal FULLSCREEN SKIP reason=noFreezeFrame")
+            }
+            return
+        }
         guard !isVideoRevealed || videoLayer.opacity > 0 else { return }
         isVideoRevealed = false
         PlayerSurfaceUIView.withoutLayerActions {
@@ -49,6 +178,12 @@ final class PlayerSurfaceUIView: UIView {
     /// 淡入用显式 CABasicAnimation——UIView.animate 对裸子层的 opacity 不产生动画
     ///（子层无 view 代理，曾实际跑的是默认 0.25s 隐式动画，时序不可控）
     func scheduleVideoReveal() {
+        // 冻帧持有态（全屏切集）：视频层一直保持 opacity 1，放掉冻帧就是全部动作
+        if isHoldingFreeze {
+            releaseFreezeFrame(reason: "ready")
+            print("PLAYER_DBG [CHECK] video reveal FULLSCREEN → releaseFreezeFrame (no layer fade)")
+            return
+        }
         guard !isVideoRevealed else { return }
         isVideoRevealed = true
         PlayerSurfaceUIView.withoutLayerActions {
@@ -66,6 +201,7 @@ final class PlayerSurfaceUIView: UIView {
     /// 全屏退出还原时调：强制回到已显示态（全屏路径不经首显机制，退出动画本身连续）
     func markRevealed() {
         isVideoRevealed = true
+        discardFreezeFrame()
         PlayerSurfaceUIView.withoutLayerActions {
             videoLayer.opacity = 1
             videoLayer.removeAnimation(forKey: "reveal.fadeIn")
