@@ -501,6 +501,15 @@ struct WebViewContainer: UIViewRepresentable {
         )
         controller.add(context.coordinator, name: "adClean")
 
+        // 年龄确认门自动确认：站点自己的合法弹窗不能删，只能像用户那样点一下
+        //「已满18岁 继续观看」放行（日志经 ageGate 回传，见 AgeGateScript）
+        controller.addUserScript(
+            WKUserScript(source: AgeGateScript.source,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: true)
+        )
+        controller.add(context.coordinator, name: "ageGate")
+
         // 滑动网页收键盘：SPA 在内部容器滚动时 keyboardDismissMode 不生效，
         // 改由页面手势上报（见 KeyboardDismissScript）
         controller.addUserScript(
@@ -569,6 +578,7 @@ struct WebViewContainer: UIViewRepresentable {
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "sniffer")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "adClean")
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "ageGate")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "keyboardDismiss")
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "browserScroll")
     }
@@ -590,6 +600,10 @@ struct WebViewContainer: UIViewRepresentable {
                                    didReceive message: WKScriptMessage) {
             if message.name == "adClean", let text = message.body as? String {
                 print("BROWSER: adClean \(text)")
+                return
+            }
+            if message.name == "ageGate", let text = message.body as? String {
+                print("BROWSER: ageGate \(text)")
                 return
             }
             if message.name == "keyboardDismiss" {
