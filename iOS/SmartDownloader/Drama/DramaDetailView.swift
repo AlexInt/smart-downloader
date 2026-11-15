@@ -33,14 +33,19 @@ private enum DetailLayout {
     static let inlineToolbarHeight: CGFloat = 44
 
     // 为你推荐（设计稿 .reco / .reco-grid / .reco-card）
+    // 2026-11-15 用户拍板：封面不再三档瀑布流，统一「两列平分 + 3:4」——
+    // 宽度 = (390 - 左右 20×2 - 中缝 10) / 2 = 170，高度按宽度等比（170×4/3）。
     static let recoTopPadding: CGFloat = 16
     static let recoTitleBlock: CGFloat = 34      // 22 标题 + 12 margin
-    static let recoBottomPadding: CGFloat = 28
+    /// 卡片底 → 档案之间不再叠三段留白（原 28 + 8 + 16 = 52，用户反馈太大）
+    static let recoBottomPadding: CGFloat = 14
     static let recoColumnGap: CGFloat = 10
     static let recoCardGap: CGFloat = 12
     static let recoColumnWidth: CGFloat = 170   // (390 - 20*2 - 10) / 2
-    static let recoCoverHeights: [CGFloat] = [228, 184, 150]
-    static let recoTextHeight: CGFloat = 86     // 标题 8+36 + 标签 4+15 + 统计 4+15 + 余量
+    static let recoCoverHeight: CGFloat = recoColumnWidth * 4 / 3   // 226.7，3:4 竖版
+    static let recoTextInset: CGFloat = 8       // 卡内文字左右内缩（卡片细线要留呼吸）
+    /// 卡内文字块：上 6 + 标题 20 + 2 + 标签 14 + 3 + 统计 14 + 下 8
+    static let recoTextHeight: CGFloat = 67
 
     // 剧集档案
     static let archiveTopPadding: CGFloat = 16
@@ -49,11 +54,11 @@ private enum DetailLayout {
     static let archiveRowHeight: CGFloat = 26
     static let archiveSectionPadding: CGFloat = 36
     static let archiveSectionGap: CGFloat = 8
-    static let archiveBottomPadding: CGFloat = 28
-    static let archiveSlack: CGFloat = 40       // 估算留白，宁多勿裁
+    static let archiveBottomPadding: CGFloat = 24
+    static let archiveSlack: CGFloat = 24       // 估算留白，宁多勿裁
 }
 
-/// 一张推荐卡片带全局序号：序号决定封面三档高度（设计稿 h-tall/h-mid/h-low 循环）
+/// 一张推荐卡片带全局序号（左/右列分流用）。封面尺寸已统一，序号不再决定高度。
 private struct RecoCardItem: Identifiable {
     let index: Int
     let drama: RecommendedDrama
@@ -112,6 +117,9 @@ struct DramaDetailView: View {
     /// 滚过去之后顶栏换纸底 + 细线 + 墨色图标。没有这个开关，滚到选集以后会剩一条
     /// 灰雾压在宣纸上——深色轨的 scrim 直接搬到纸面上就是坏掉的样子。
     @State private var posterUnderHeader = true
+    /// 剧集档案折叠（用户 2026-11-15 要求：默认折叠，点标题行展开）。
+    /// 视图态、不落库——档案是「排障/取证」用的低频信息，不打扰主流程。
+    @State private var archiveExpanded = false
     /// 下拉刷新（2026-11-14）：取代选集行那个 ↻。三态照画布 30:69 样张自绘，
     /// 不用 `.refreshable`——系统给的是转圈 spinner，跟纸本这套「墨环 + 朱砂印」不是一回事。
     @State private var refreshPhase: PaperRefreshPhase = .idle
@@ -120,7 +128,7 @@ struct DramaDetailView: View {
     /// 本次拖拽的峰值跟手距离：松手回弹会把 pullDistance 打小，判定得靠这个
     @State private var peakPull: CGFloat = 0
     /// 刷新中把内容「按住不下弹」：真实下拉刷新在旋转期间内容停在拉下的位置。
-    /// 否则松手即回弹，海报会立刻盖住纸带，墨环落在剧照上等于消失。
+    /// 否则松手即回弹，封面放大会立刻缩回去、指示器也会跟着跳一下。
     @State private var holdDown: CGFloat = 0
     /// 刷新中墨环的连续旋转角（pulling 阶段改由手指驱动，两者互斥）
     @State private var ringSpin: Double = 0
@@ -212,7 +220,10 @@ struct DramaDetailView: View {
                                 print("PLAYER_DBG [Entry] pull begin pull=\(Int(pull)) peak=\(Int(peakPull)) threshold=\(Int(refreshThreshold)) safeTop=\(Int(topSafeInset))")
                             }
                             if !wasReady, peakPull >= refreshThreshold {
-                                print("PLAYER_DBG [Entry] pull ready peak=\(Int(peakPull)) >= threshold=\(Int(refreshThreshold))")
+                                // 越过阈值瞬间给一次轻触：告诉手指「松手就能刷」，
+                                // 只在这一刻触发（峰值复位前不会重复）
+                                AppHaptics.light()
+                                print("PLAYER_DBG [Entry] pull ready peak=\(Int(peakPull)) >= threshold=\(Int(refreshThreshold)) haptic=light")
                             }
                         } else if wasPulling {
                             print("PLAYER_DBG [Entry] pull end peak=\(Int(peakPull)) pull=0")
@@ -264,9 +275,14 @@ struct DramaDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         // 整页 ScrollView 的 pan 与左缘返回并存：仍只在左缘 + 横向主导时生效
         .simultaneousGesture(edgeBackGesture)
+        // 状态栏文字（用户 2026-11-15：剧集页要白色）：
+        // 压在海报上时 .dark 让系统画白字；滚过海报、顶栏换纸底后必须翻回 .light，
+        // 否则白字落在宣纸上直接消失。色值全是字面量，跟随外观的只有系统状态栏。
+        .preferredColorScheme(posterUnderHeader ? .dark : .light)
         #if DEBUG
         .onAppear {
             applyRefreshPreview()
+            if DramaDebugFlags.archiveExpandedPreview { archiveExpanded = true }
             if DramaDebugFlags.refreshAuto {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { beginRefresh() }
             }
@@ -282,7 +298,8 @@ struct DramaDetailView: View {
         switch state {
         case "pull":
             // 未达阈值：环已探出，态标「下拉刷新」。样张里 ScrollView 并没有真的被
-            // 拉出这么多，所以同步给 holdDown —— 否则纸带不存在，墨环会直接落在剧照上。
+            // 拉出这么多，所以同步给 holdDown —— 否则封面不放大、指示器位置也会
+            // 与真实下拉态对不上。
             refreshPhase = .pulling
             pullDistance = refreshThreshold * 0.95
             holdDown = pullDistance
@@ -337,11 +354,12 @@ struct DramaDetailView: View {
         }
         let left = items.filter { $0.index % 2 == 0 }
         let right = items.filter { $0.index % 2 == 1 }
+        // 卡片尺寸已统一（170 宽 + 3:4 封面 + 固定文字块），两列高度只差「列内卡片数」
+        let cardHeight = DetailLayout.recoCoverHeight + DetailLayout.recoTextHeight
         func columnHeight(_ list: [RecoCardItem]) -> CGFloat {
-            list.reduce(0) { sum, item in
-                sum + DetailLayout.recoCoverHeights[item.index % 3]
-                    + DetailLayout.recoTextHeight + DetailLayout.recoCardGap
-            }
+            guard !list.isEmpty else { return 0 }
+            return CGFloat(list.count) * cardHeight
+                + CGFloat(list.count - 1) * DetailLayout.recoCardGap
         }
         let gridHeight = max(columnHeight(left), columnHeight(right))
         let recoHeight = items.isEmpty ? 0 :
@@ -350,13 +368,21 @@ struct DramaDetailView: View {
 
         var archiveHeight: CGFloat = 0
         if !vm.archiveSections.isEmpty {
-            let rowsTotal = vm.archiveSections.reduce(0) {
-                $0 + CGFloat($1.rows.count) * DetailLayout.archiveRowHeight
+            // 折叠态只留标题行（默认）；展开才把各分组卡片的高度算进来。
+            // 高度预算必须跟着 archiveExpanded 走，否则折叠后页面底会空一屏。
+            var height = DetailLayout.archiveTopPadding + DetailLayout.archiveTitleBlock
+                + DetailLayout.archiveBottomPadding
+            if archiveExpanded {
+                let sectionsHeight = vm.archiveSections.reduce(CGFloat(0)) {
+                    $0 + DetailLayout.archiveSectionPadding
+                        + CGFloat($1.rows.count) * DetailLayout.archiveRowHeight
+                }
+                // 标题行 → 第一张卡、卡与卡之间都是同一个 gap（VStack spacing 8）
+                let spacing = CGFloat(vm.archiveSections.count)
+                    * DetailLayout.archiveSectionGap
+                height += sectionsHeight + spacing + DetailLayout.archiveSlack
             }
-            archiveHeight = DetailLayout.archiveTopPadding + DetailLayout.archiveTitleBlock
-                + CGFloat(vm.archiveSections.count)
-                * (DetailLayout.archiveSectionPadding + DetailLayout.archiveSectionGap)
-                + rowsTotal + DetailLayout.archiveBottomPadding + DetailLayout.archiveSlack
+            archiveHeight = height
         }
 
         // 内容组最后一个元素的设计底 y：折叠 = hint 底 668；
@@ -368,7 +394,9 @@ struct DramaDetailView: View {
             ? 720 + CGFloat(rows) * DetailLayout.inlineRowStep
             : 668
         let recoY = contentBottomDesignY + descShift - DetailLayout.sectionLift + 24
-        let archiveY = recoY + recoHeight + (recoHeight > 0 ? 8 : 0)
+        // 卡片底 → 档案：只在推荐区自身 bottomPadding + 档案 topPadding 里留白
+        //（原先中间还夹 8pt 硬间隔，三段相加 52pt，用户 2026-11-15 反馈太大）
+        let archiveY = recoY + recoHeight
         let totalHeight = max(DWLayout.designHeight, archiveY + archiveHeight + 40)
         return PageLayout(leftItems: left, rightItems: right,
                           recoGridHeight: gridHeight, recoY: recoY, recoHeight: recoHeight,
@@ -454,6 +482,18 @@ struct DramaDetailView: View {
         }
         .designFrame(0, 0, 390, DetailLayout.posterHeight)
         .clipped()
+        // 下拉刷新 = 封面不动、往下撑大（用户 2026-11-15）：
+        // 页面被手指（或 refresh 期间的 holdDown）推下 d，封面反向平移 -d 回到原位；
+        // 同时按 1 + d/376 等比放大，放大后的底边正好落在「随内容下移 d」的位置，
+        // 标题/标签（跟着内容下移）仍然压在封面底部 scrim 上，不会和封面脱开。
+        .scaleEffect(posterZoom, anchor: .topLeading)
+        .offset(y: -refreshBandBottom)
+    }
+
+    /// 下拉放大的倍率。纸带（内容被拉下的距离）每长 1pt，封面同比例撑高 1pt，
+    /// 所以底边位置与内容位移严格一致；1.0 → 无放大，阈值 126 时约 1.33。
+    private var posterZoom: CGFloat {
+        1 + refreshBandBottom / DetailLayout.posterHeight
     }
 
     /// 顶部压暗渐变：现在由 `pinnedHeader` 常驻渲染（不再属于海报层），
@@ -561,8 +601,9 @@ struct DramaDetailView: View {
         }
     }
 
-    /// 纸带下沿（= 内容顶）。跟手时就是下拉距离；刷新期间内容被按住，
-    /// 由 holdDown 撑住这条纸带，指示器才不会跟着回弹落到剧照上去。
+    /// 内容顶被拉下的距离。跟手时就是下拉距离；刷新期间内容被按住，
+    /// 由 holdDown 撑住——它同时驱动封面放大与指示器位置，
+    /// 松手回弹时不能缩回去，否则刚放大的封面会立刻弹回原尺寸。
     private var refreshBandBottom: CGFloat {
         max(pullDistance, holdDown)
     }
@@ -595,8 +636,9 @@ struct DramaDetailView: View {
     }
 
     /// 刷新区 = 墨环 22×22 + 朱砂点 6×6 居中于环心；完成态环消失、朱砂点收拢成 8×8，
-    /// 态标在下方一行（画布 30:72/74/93 + 30:75/86/94）。整组挂在纸带下沿上方，
-    /// 环心 = 下沿 - 42：拉到位时环心 ≈ 65，正好落在安全区（59）之下、海报之上。
+    /// 态标在下方一行（画布 30:72/74/93 + 30:75/86/94）。
+    /// 下拉改「封面原地放大」后（用户 2026-11-15），顶上不再是宣纸条而是剧照本身，
+    /// 所以环与字改纸白 + 轻阴影——与海报上的白剧名同一语言，落在深色剧照上仍然清楚。
     @ViewBuilder
     private var pullRefreshLayer: some View {
         if refreshPhase != .idle {
@@ -605,7 +647,7 @@ struct DramaDetailView: View {
                 ZStack {
                     Circle()
                         .trim(from: 0, to: 0.75)
-                        .stroke(DWColor.paperInk,
+                        .stroke(.white,
                                 style: StrokeStyle(lineWidth: 2, lineCap: .round))
                         .frame(width: RefreshMetrics.ringSize, height: RefreshMetrics.ringSize)
                         .rotationEffect(.degrees(ringAngle))
@@ -618,14 +660,16 @@ struct DramaDetailView: View {
                         .scaleEffect(refreshPhase == .refreshing ? (dotBreath ? 1.16 : 0.86) : 1)
                 }
                 .frame(width: RefreshMetrics.ringSize, height: RefreshMetrics.ringSize)
+                .shadow(color: .black.opacity(0.35), radius: 3, y: 0.5)
 
                 Text(refreshLabel)
                     .font(DWFont.cn(10))
-                    .foregroundStyle(done ? DWColor.paperInk : DWColor.paperInkSub)
+                    .foregroundStyle(.white.opacity(done ? 0.92 : 0.86))
+                    .shadow(color: .black.opacity(0.4), radius: 2, y: 0.5)
             }
             .frame(maxWidth: .infinity)
-            // 整组高约 44（环 22 + 间距 8 + 字 14），底边再留 9pt 才贴纸带下沿：
-            // 环与字都留在宣纸带上，一个像素都不落到剧照上。
+            // 整组高约 44（环 22 + 间距 8 + 字 14），环心 = 内容顶 - 42：
+            // 拉到位时环心 ≈ 73，落在安全区（59）之下、封面顶部——不压灵动岛。
             .offset(y: refreshBandBottom - 53)
             .opacity(refreshRevealOpacity)
             .allowsHitTesting(false)
@@ -719,6 +763,11 @@ struct DramaDetailView: View {
         }
         refreshToken = nil
         print("PLAYER_DBG [Entry] refresh finish outcome=\(outcome.rawValue) hold=\(Int(holdDown))")
+        if outcome == .success {
+            AppHaptics.success()
+        } else {
+            AppHaptics.warning()
+        }
         guard outcome == .success else {
             // 失败/超时：不显示「已更新」，让 toast 说明原因后直接回位。
             // 超时要自己提示：10s 兜底发生时请求可能还挂着（URLSession 默认 60s 才会有结果），
@@ -1052,19 +1101,28 @@ struct DramaDetailView: View {
                 .designFrame(20, 490, 64, 24, alignment: .leading)
 
             // 「共 N 集」已按用户要求移除（2026-11-14）：集数在下方格子里一眼可数，
-            // 这行小字只是噪音。原落位 96…172 留空，「下载全部」仍在 176 不挪位。
+            // 这行小字只是噪音。原来空出的位置就留给行尾两个动作按钮（2026-11-15 右移）。
 
-            // 设计稿「下载全部」：一次把所有可下且未入队的集交给现有调度。
-            // 纸本轨的动作文字一律朱砂（设置页「重命名」/下载页「全选」同一档）。
+            // 「下载全部」紧挨「查看全部」排在行尾（用户 2026-11-15 要求右移）。
+            // 可播集全部落盘后置灰禁用（同用户要求）：再点也只会得到「没有可下载的剧集」，
+            // 按钮状态应该先说话。排队中的集不算已下载，按钮仍可点（downloadAll 会如实提示）。
             Button { vm.downloadAll() } label: {
                 Text("下载全部")
                     .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(DWColor.paperCinnabar)
-                    .frame(width: 64, height: 44, alignment: .leading)
+                    .foregroundStyle(vm.allPlayableDownloaded
+                                     ? DWColor.paperFaint : DWColor.paperCinnabar)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(width: 64, height: 44, alignment: .trailing)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .designFrame(176, 481, 64, 44)
+            .disabled(vm.allPlayableDownloaded)
+            .accessibilityLabel("下载全部")
+            .accessibilityHint(vm.allPlayableDownloaded
+                               ? "所有可下载剧集均已下载"
+                               : "把全部可下载剧集加入下载队列")
+            .designFrame(228, 481, 64, 44, alignment: .trailing)
 
             // 「查看全部 ›」= 内联展开（设计稿 all-open），不再是 sheet。
             // ≤12 集没有额外集可展开：保留版面、置灰禁用，文案如实说明。
@@ -1077,12 +1135,14 @@ struct DramaDetailView: View {
                     .font(DWFont.cn(12, .medium))
                     .foregroundStyle(vm.hasExtraEpisodes
                                      ? DWColor.paperCinnabar : DWColor.paperFaint)
-                    .frame(width: 90, height: 44, alignment: .trailing)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(width: 70, height: 44, alignment: .trailing)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!vm.hasExtraEpisodes)
-            .designFrame(280, 481, 90, 44)
+            .designFrame(300, 481, 70, 44, alignment: .trailing)
 
             episodeGrid(info)
 
@@ -1321,14 +1381,18 @@ struct DramaDetailView: View {
     private func recoColumn(_ items: [RecoCardItem]) -> some View {
         VStack(alignment: .leading, spacing: DetailLayout.recoCardGap) {
             ForEach(items) { item in
-                recoCard(item, coverHeight: DetailLayout.recoCoverHeights[item.index % 3])
+                recoCard(item)
             }
             Spacer(minLength: 0)
         }
         .frame(width: DetailLayout.recoColumnWidth, alignment: .topLeading)
     }
 
-    private func recoCard(_ item: RecoCardItem, coverHeight: CGFloat) -> some View {
+    /// 一张推荐卡。2026-11-15 用户拍板：所有封面统一「列宽 3:4」+ 固定文字块，
+    /// 不再按序号取三档高度——原来 `scaledToFit` 会把窄卡裁成两侧露纸底的小图，
+    /// 一眼看过去大小不齐。现在 `scaledToFill` 等比铺满、超出部分居中裁掉。
+    /// 整卡再描 0.5 细线：浅色封面在宣纸上容易化开，靠这条线分割。
+    private func recoCard(_ item: RecoCardItem) -> some View {
         Button { vm.openRecommendation(item.drama) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 ZStack(alignment: .topLeading) {
@@ -1336,17 +1400,16 @@ struct DramaDetailView: View {
                         AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
-                                // scaledToFit（用户拍板 2026-11-13）：完整显示整张封面不裁切；
-                                // 中/矮两档卡高比 3:4 矮，图片宽度收窄居中，两侧露出纸底
-                                image.resizable().scaledToFit()
-                                    .frame(width: DetailLayout.recoColumnWidth, height: coverHeight)
+                                image.resizable().scaledToFill()
+                                    .frame(width: DetailLayout.recoColumnWidth,
+                                           height: DetailLayout.recoCoverHeight)
+                                    .clipped()
                             default:
-                                recoCoverPlaceholder(title: item.drama.displayTitle,
-                                                     height: coverHeight)
+                                recoCoverPlaceholder(title: item.drama.displayTitle)
                             }
                         }
                     } else {
-                        recoCoverPlaceholder(title: item.drama.displayTitle, height: coverHeight)
+                        recoCoverPlaceholder(title: item.drama.displayTitle)
                     }
                     if let badge = item.drama.displayBadge {
                         Text(badge)
@@ -1359,59 +1422,62 @@ struct DramaDetailView: View {
                             .padding(8)
                     }
                 }
-                .frame(width: DetailLayout.recoColumnWidth, height: coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                // 纸本轨封面收一圈 0.5 细边（下载页 PaperCover 同款），
-                // 否则浅色封面直接化在宣纸里、找不到边界
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
-                }
+                .frame(width: DetailLayout.recoColumnWidth, height: DetailLayout.recoCoverHeight)
 
-                Text(item.drama.displayTitle)
-                    .font(DWFont.serif(13, .medium))
-                    .foregroundStyle(DWColor.paperInk)
-                    .lineLimit(2)
-                    .frame(width: DetailLayout.recoColumnWidth, height: 36,
-                           alignment: .topLeading)
-                    .padding(.top, 8)
+                // 文字块：上 6 + 标题 20 + 2 + 标签 14 + 3 + 统计 14 + 下 8 = 67。
+                // 标题限一行（用户反馈 title 与 tags 之间空太多）：两行会把 36pt 的
+                // 标题框撑出来，单行标题下面就留出一整行空白，比行距本身还显眼。
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(item.drama.displayTitle)
+                        .font(DWFont.serif(13, .medium))
+                        .foregroundStyle(DWColor.paperInk)
+                        .lineLimit(1)
+                        .frame(height: 20, alignment: .leading)
+                        .padding(.top, 6)
 
-                Text(item.drama.tags.isEmpty ? "—" : item.drama.tags.joined(separator: " / "))
-                    .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.paperInkSub)
-                    .lineLimit(1)
-                    .frame(width: DetailLayout.recoColumnWidth, height: 15,
-                           alignment: .leading)
-                    .padding(.top, 4)
+                    Text(item.drama.tags.isEmpty ? "—" : item.drama.tags.joined(separator: " / "))
+                        .font(DWFont.cn(10))
+                        .foregroundStyle(DWColor.paperInkSub)
+                        .lineLimit(1)
+                        .frame(height: 14, alignment: .leading)
+                        .padding(.top, 2)
 
-                HStack(spacing: 3) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(DWColor.paperFaint)
-                    Text(item.drama.displayPlayCount)
-                        .font(DWFont.cn(10, .semibold))
-                        .foregroundStyle(DWColor.paperCinnabar)
-                    if let status = item.drama.serializeStatusText, !status.isEmpty {
-                        Text("· \(status)")
-                            .font(DWFont.cn(10))
+                    HStack(spacing: 3) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
                             .foregroundStyle(DWColor.paperFaint)
+                        Text(item.drama.displayPlayCount)
+                            .font(DWFont.cn(10, .semibold))
+                            .foregroundStyle(DWColor.paperCinnabar)
+                        if let status = item.drama.serializeStatusText, !status.isEmpty {
+                            Text("· \(status)")
+                                .font(DWFont.cn(10))
+                                .foregroundStyle(DWColor.paperFaint)
+                        }
                     }
+                    .frame(height: 14, alignment: .leading)
+                    .padding(.top, 3)
                 }
-                .frame(width: DetailLayout.recoColumnWidth, height: 15,
-                       alignment: .leading)
-                .padding(.top, 4)
+                .frame(width: DetailLayout.recoColumnWidth - DetailLayout.recoTextInset * 2,
+                       height: DetailLayout.recoTextHeight, alignment: .topLeading)
+                .padding(.horizontal, DetailLayout.recoTextInset)
+            }
+            // 整卡裁圆 + 0.5 细线：封面只有上缘两角被裁圆，下缘与文字块齐平，
+            // 细线沿整卡外缘走一圈，两列卡片之间才有清楚的边界。
+            .background(DWColor.paper)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
             }
         }
         .buttonStyle(.plain)
-        .frame(width: DetailLayout.recoColumnWidth,
-               height: coverHeight + DetailLayout.recoTextHeight,
-               alignment: .topLeading)
         .accessibilityLabel("推荐：\(item.drama.displayTitle)")
     }
 
     /// 推荐卡无封面兜底：纸块 + 首字（下载页 `PaperCover.fallback` 同一说法）。
     /// 深色轨这里原本是三色紫渐变，纸本轨没有紫色可用，也不该给一块死灰。
-    private func recoCoverPlaceholder(title: String, height: CGFloat) -> some View {
+    private func recoCoverPlaceholder(title: String) -> some View {
         ZStack {
             DWColor.paperChipIdle
             Text(String(title.prefix(1)))
@@ -1419,57 +1485,90 @@ struct DramaDetailView: View {
                 .tracking(2)
                 .foregroundStyle(DWColor.paperLineIdle)
         }
-        .frame(width: DetailLayout.recoColumnWidth, height: height)
+        .frame(width: DetailLayout.recoColumnWidth, height: DetailLayout.recoCoverHeight)
     }
 
     // MARK: ⑥ 剧集档案（详情接口整包字段，尽量全展示）
 
+    /// 档案区默认折叠（用户 2026-11-15 要求）：这是给排障/取证看的低频信息，
+    /// 不该把一整屏高度固定占着。标题行整行可点，右侧「展开/收起 + 尖角」指示状态；
+    /// 折叠态的高度预算只留标题行（pageLayout 跟着 `archiveExpanded` 走）。
     private func archiveSection(layout: PageLayout) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("剧集档案")
-                    .font(DWFont.serif(15, .medium))
-                    .foregroundStyle(DWColor.paperInk)
-                    .frame(height: 24, alignment: .leading)
-                Text("详情接口原始字段 · 本地留存，离线可读")
-                    .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.paperFaint)
-                    .frame(height: 16, alignment: .leading)
-            }
-            .frame(height: DetailLayout.archiveTitleBlock, alignment: .topLeading)
-
-            ForEach(vm.archiveSections) { section in
-                VStack(alignment: .leading, spacing: 0) {
-                    // 分组名用朱砂：纸本轨里"标题/落款"都用这一档（设置页分组标同款）
-                    Text(section.title)
-                        .font(DWFont.cn(12, .bold))
-                        .foregroundStyle(DWColor.paperCinnabar)
-                        .frame(height: DetailLayout.archiveSectionTitle, alignment: .leading)
-                    ForEach(section.rows) { row in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(row.label)
-                                .font(DWFont.cn(10))
-                                .foregroundStyle(DWColor.paperFaint)
-                                .lineLimit(1)
-                                .frame(width: 108, alignment: .leading)
-                            Text(row.value)
-                                .font(DWFont.cn(10))
-                                .foregroundStyle(DWColor.paperInk)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(height: DetailLayout.archiveRowHeight)
+        VStack(alignment: .leading, spacing: DetailLayout.archiveSectionGap) {
+            Button {
+                withAnimation(motion) { archiveExpanded.toggle() }
+                AppHaptics.light()
+                print("PLAYER_DBG [Entry] archive fold=\(archiveExpanded ? "expanded" : "collapsed") sections=\(vm.archiveSections.count)")
+            } label: {
+                HStack(alignment: .center, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("剧集档案")
+                            .font(DWFont.serif(15, .medium))
+                            .foregroundStyle(DWColor.paperInk)
+                            .frame(height: 24, alignment: .leading)
+                        Text("详情接口原始字段 · 本地留存，离线可读")
+                            .font(DWFont.cn(10))
+                            .foregroundStyle(DWColor.paperFaint)
+                            .frame(height: 16, alignment: .leading)
+                    }
+                    Spacer(minLength: 8)
+                    HStack(spacing: 3) {
+                        Text(archiveExpanded ? "收起" : "展开")
+                            .font(DWFont.cn(12))
+                            .foregroundStyle(DWColor.paperInkSub)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        // 行尾尖角：折叠朝下（› 转 90°）、展开朝上（-90°），语义与
+                        // 设置页行尾箭头同一套（PaperChevronShape 默认朝右）
+                        PaperChevronShape(pointsLeft: false)
+                            .stroke(DWColor.paperLineIdle,
+                                    style: StrokeStyle(lineWidth: 1.2,
+                                                       lineCap: .round, lineJoin: .round))
+                            .frame(width: 6, height: 11)
+                            .rotationEffect(.degrees(archiveExpanded ? -90 : 90))
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                // 纸本卡：比纸底深一档的纸块 + 0.5 细边（不是深色轨那种浮在黑上的实心块）
-                .background(DWColor.paperCanvas, in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
+                .frame(height: DetailLayout.archiveTitleBlock, alignment: .center)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(archiveExpanded ? "收起剧集档案" : "展开剧集档案")
+
+            if archiveExpanded {
+                ForEach(vm.archiveSections) { section in
+                    VStack(alignment: .leading, spacing: 0) {
+                        // 分组名用朱砂：纸本轨里"标题/落款"都用这一档（设置页分组标同款）
+                        Text(section.title)
+                            .font(DWFont.cn(12, .bold))
+                            .foregroundStyle(DWColor.paperCinnabar)
+                            .frame(height: DetailLayout.archiveSectionTitle, alignment: .leading)
+                        ForEach(section.rows) { row in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(row.label)
+                                    .font(DWFont.cn(10))
+                                    .foregroundStyle(DWColor.paperFaint)
+                                    .lineLimit(1)
+                                    .frame(width: 108, alignment: .leading)
+                                Text(row.value)
+                                    .font(DWFont.cn(10))
+                                    .foregroundStyle(DWColor.paperInk)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(height: DetailLayout.archiveRowHeight)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    // 纸本卡：比纸底深一档的纸块 + 0.5 细边（不是深色轨那种浮在黑上的实心块）
+                    .background(DWColor.paperCanvas, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
+                    }
                 }
+                .transition(.opacity)
             }
         }
         .padding(.horizontal, 20)
@@ -1551,6 +1650,12 @@ enum DramaDebugFlags {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-refreshPreview"), i + 1 < args.count else { return nil }
         return args[i + 1]
+    }
+
+    /// 档案区展开定帧（`-archiveExpandedPreview`）：模拟器点不了，展开态的高度预算
+    /// 只能靠启动参数直接落到目标状态来截。
+    static var archiveExpandedPreview: Bool {
+        ProcessInfo.processInfo.arguments.contains("-archiveExpandedPreview")
     }
 
     /// 自动跑一遍下拉刷新（`-refreshAuto`）：验证「刷新 → 已更新 → 收起」整条链路

@@ -200,6 +200,17 @@ final class DramaPageViewModel: ObservableObject {
         }
     }
 
+    /// 「下载全部」是否置灰：全部**可播**集都已落盘（用户 2026-11-15 要求）。
+    /// 只要还有一集可播且没下载，就仍可点——排队中的集也算「还没下载」，
+    /// 按钮保持可点，点了会如实提示「没有可下载的剧集」（与 `downloadAll` 的过滤同口径）。
+    /// 没有任何可播集时不置灰：那是「站点还没开放」的信息，不该由按钮状态表达。
+    var allPlayableDownloaded: Bool {
+        guard let info else { return false }
+        let playable = info.episodes.filter(\.playable)
+        guard !playable.isEmpty else { return false }
+        return playable.allSatisfy { downloadedSorts.contains($0.sort) }
+    }
+
     /// 可下载且未入队的集（已下载、排队中、付费锁定都排除）
     var selectableEpisodes: [ApiDramaEpisode] {
         guard let info else { return [] }
