@@ -225,7 +225,16 @@ final class DramaSession {
         let session = URLSession(configuration: .ephemeral,
                                  delegate: DownloadEngine.TrustAllSessionDelegate(),
                                  delegateQueue: nil)
-        session.dataTask(with: request) { data, _, error in
+        session.dataTask(with: request) { data, response, error in
+            // 网络层的原始事实先落日志：状态码 / 类型 / 长度 / 传输错误。
+            // 「未能读取数据，因为它的格式不正确」这类系统文案只有配上这些才有排障价值
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? -1
+            let contentType = http?.value(forHTTPHeaderField: "Content-Type")
+            let bytes = data?.count ?? 0
+            print("PLAYER_DBG [API] POST \(path) status=\(status) "
+                  + "type=\(contentType ?? "nil") bytes=\(bytes) "
+                  + "error=\(error?.localizedDescription ?? "nil")")
             // 回主线程再碰 UserDefaults / 回调调用方
             DispatchQueue.main.async {
                 if let error {
@@ -233,24 +242,58 @@ final class DramaSession {
                     return
                 }
                 guard let data else {
-                    completion(.failure(DramaError.badResponse))
+                    completion(.failure(DramaError.badBody(
+                        status: status, contentType: contentType, bytes: 0, snippet: "空响应体")))
                     return
                 }
+                let bodyText = String(data: data, encoding: .utf8) ?? ""
                 do {
-                    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          (envelope["errcode"] as? Int) == 0 else {
-                        let snippet = String(data: data, encoding: .utf8)?.prefix(160) ?? ""
+                    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        // 合法 JSON 但不是对象（数组 / 字符串 / 数字），同样按「不是接口数据」报
+                        throw DramaError.badBody(status: status, contentType: contentType,
+                                                 bytes: bytes, snippet: Self.snippet(bodyText))
+                    }
+                    guard (envelope["errcode"] as? Int) == 0 else {
                         // 接口错误（含 token 失效）：清缓存，下次开面板重新登录
                         UserDefaults.standard.removeObject(forKey: "DramaAPI.token.\(self.target.site)")
-                        throw DramaError.apiError(String(snippet))
+                        print("PLAYER_DBG [CHECK] API errcode=\(envelope["errcode"] ?? "nil") "
+                              + "msg=\(envelope["msg"] ?? "nil") status=\(status) "
+                              + "body=<\(Self.snippet(bodyText, limit: 400))>")
+                        throw DramaError.apiError("HTTP \(status) errcode=\(envelope["errcode"] ?? "nil") "
+                                                  + "\(envelope["msg"] ?? "")")
                     }
-                    guard let payload = envelope["data"] as? String else { throw DramaError.badResponse }
+                    guard let payload = envelope["data"] as? String else {
+                        throw DramaError.badBody(status: status, contentType: contentType,
+                                                 bytes: bytes, snippet: Self.snippet(bodyText))
+                    }
                     completion(.success(try Self.decryptPayload(payload, keyString: constants.aesKey, ivString: constants.aesIV)))
-                } catch {
+                } catch let error as DramaError {
+                    print("PLAYER_DBG [CHECK] API FAIL \(path) error=\(error.diagnostic)")
                     completion(.failure(error))
+                } catch {
+                    // JSONSerialization 抛的就是 NSDebugDescription「格式不正确」：
+                    // 把状态码 + 响应片段换成可读的 badBody，别让用户只看到系统文案
+                    let ns = error as NSError
+                    print("PLAYER_DBG [CHECK] API decode FAIL status=\(status) "
+                          + "type=\(contentType ?? "nil") domain=\(ns.domain) code=\(ns.code) "
+                          + "debug=\(ns.userInfo[NSDebugDescriptionErrorKey] ?? "-")")
+                    print("PLAYER_DBG [CHECK] API decode body=<\(Self.snippet(bodyText, limit: 400))>")
+                    completion(.failure(DramaError.badBody(
+                        status: status, contentType: contentType, bytes: bytes,
+                        snippet: Self.snippet(bodyText))))
                 }
             }
         }.resume()
+    }
+
+    /// 响应体片段：空白压成单空格、超长截断。错误态与日志都要能一眼看出
+    /// 站点到底返回了什么（WAF 拦截页通常是 HTML，网关错误页通常是一段 JSON/纯文本）
+    static func snippet(_ text: String, limit: Int = 200) -> String {
+        let collapsed = text
+            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" })
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return "(空响应体)" }
+        return collapsed.count > limit ? String(collapsed.prefix(limit)) + "…" : collapsed
     }
 
     /// base64(空格还原+) -> AES-128-CBC -> PKCS7 去填充 -> JSON（与 video_auto.py 同逻辑）
@@ -368,6 +411,11 @@ final class SeriesDownloadCoordinator {
                     }
                 case .failure(let error):
                     task.state = .failed("获取第\(plan.episode.sort)集地址失败: \(error.localizedDescription)")
+                    if let drama = error as? DramaError {
+                        print("PLAYER_DBG [CHECK] episode \(plan.episode.sort) url FAIL\n\(drama.diagnostic)")
+                    } else {
+                        print("PLAYER_DBG [CHECK] episode \(plan.episode.sort) url FAIL error=\(error.localizedDescription)")
+                    }
                     self?.finishOne()
                 }
             }

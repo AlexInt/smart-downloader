@@ -74,6 +74,10 @@ enum DramaError: LocalizedError {
     case episodeMissing
     case noVideoURL
     case decryptFailed
+    /// 站点返回的不是接口数据（WAF 拦截页 / 网关错误页 / 空响应 / 合法 JSON 但不是对象）。
+    /// **必须带状态码与响应片段**：系统给的那句「未能读取数据，因为它的格式不正确」
+    /// 只说现象不给证据，用户和我们都没法判断到底是拦截、超时还是站点改了协议。
+    case badBody(status: Int, contentType: String?, bytes: Int, snippet: String)
 
     var errorDescription: String? {
         switch self {
@@ -84,6 +88,25 @@ enum DramaError: LocalizedError {
         case .episodeMissing: return "接口未返回该集信息"
         case .noVideoURL: return "接口未返回播放地址"
         case .decryptFailed: return "响应解密失败"
+        case .badBody(let status, let contentType, _, _):
+            return "站点返回的不是接口数据（HTTP \(status)，\(contentType ?? "无 Content-Type")）"
+        }
+    }
+
+    /// 排障详情（多行）：错误态详情块与日志共用一份，避免两处口径漂移。
+    var diagnostic: String {
+        switch self {
+        case .badBody(let status, let contentType, let bytes, let snippet):
+            return [
+                "HTTP 状态：\(status)",
+                "Content-Type：\(contentType ?? "无")",
+                "响应长度：\(bytes) 字节",
+                "响应片段：\(snippet)",
+            ].joined(separator: "\n")
+        case .apiError(let snippet):
+            return "接口返回：\(snippet)"
+        default:
+            return errorDescription ?? ""
         }
     }
 }

@@ -17,6 +17,10 @@ final class DramaPageViewModel: ObservableObject {
 
     @Published private(set) var loading = true
     @Published private(set) var loadError: String?
+    /// 错误详情（多行、可复制）：HTTP 状态 / Content-Type / 响应片段 / 站点身份 / 时间。
+    /// 用户实报「未能读取数据，因为它的格式不正确」只说现象，看不出是拦截还是协议变了，
+    /// 所以错误态必须把这一段爆出来（同一份也进 PLAYER_DBG 日志）
+    @Published private(set) var loadErrorDetail: String?
     @Published private(set) var info: DramaInfo?
     @Published private(set) var downloadedSorts: Set<Int> = []
     /// 未下载集的勾选状态（集 id 维度）；只经 tapEpisode / selectAll / clearSelection 修改
@@ -162,6 +166,26 @@ final class DramaPageViewModel: ObservableObject {
                 DramaArchiveRow(label: "点赞 / 追剧", value: "18.6 万 / 4.2 万")
             ])
         ]
+    }
+
+    /// 错误态定帧（`-dramaErrorPreview`）：模拟器点不了「重试」，也造不出真实的
+    /// WAF 拦截页——用启动参数把错误态摊开，核对详情块会不会撑破布局、
+    /// 复制按钮在长文本下是否还在屏内。Release 不编译。
+    func injectPreviewError() {
+        loading = false
+        info = nil
+        loadError = "站点返回的不是接口数据（HTTP 403，text/html）"
+        loadErrorDetail = [
+            "HTTP 状态：403",
+            "Content-Type：text/html; charset=utf-8",
+            "响应长度：2618 字节",
+            "响应片段：<!DOCTYPE html><html><head><title>403 Forbidden</title></head>"
+                + "<body><center><h1>403 Forbidden</h1></center><hr><center>nginx</center>"
+                + "</body></html>…",
+            "站点：https://preview.local",
+            "剧 ID：9001",
+            "时间：2026-11-15 21:30:00",
+        ].joined(separator: "\n")
     }
     #endif
 
@@ -548,6 +572,7 @@ final class DramaPageViewModel: ObservableObject {
                                completion: ((Bool) -> Void)? = nil) {
         if !quiet { loading = true }
         loadError = nil
+        loadErrorDetail = nil
         print("PLAYER_DBG [Entry] fetch begin quiet=\(quiet) forceHarvest=\(forceHarvest) site=\(target.site) dramaID=\(target.dramaID)")
         let session = DramaSession(target: target)
         self.session = session
@@ -568,6 +593,7 @@ final class DramaPageViewModel: ObservableObject {
             case .failure(let error):
                 // 有缓存时网络失败不白屏：回退缓存继续用
                 let hadMemoryInfo = self.info != nil
+                let detail = Self.diagnosticText(for: error, target: self.target)
                 let cached = DramaCache.load(site: self.target.site, dramaID: self.target.dramaID)
                     .flatMap { DramaCache.dramaInfo(from: $0) }
                 if let cached {
@@ -579,16 +605,51 @@ final class DramaPageViewModel: ObservableObject {
                 // 就整页换成错误态——只弹一条提示条，用户自己决定要不要再拉。
                 // **无条件弹**（旧版只在「无缓存且已有内存内容」时弹，有缓存时静默吞掉，
                 // 下拉刷新失败就成了什么都不发生，用户以为刷过了）。
+                // 提示条带上错误摘要：只说「刷新失败」等于把真实原因藏起来，
+                // 用户没法判断是站点拦截、网络断了还是协议变了
                 if quiet, self.info != nil {
-                    self.showToast("刷新失败，请稍后重试")
+                    self.showToast("刷新失败：\(Self.shortReason(for: error))")
+                    self.loadErrorDetail = detail
                 } else if self.info == nil {
                     self.loadError = error.localizedDescription
+                    self.loadErrorDetail = detail
                 }
                 print("PLAYER_DBG [Entry] fetch FAIL quiet=\(quiet) hasCache=\(cached != nil) hadMemoryInfo=\(hadMemoryInfo) error=\(error.localizedDescription)")
+                print("PLAYER_DBG [CHECK] Entry errorDetail\n\(detail)")
                 if !quiet { self.loading = false }
                 completion?(false)
             }
         }
+    }
+
+    // MARK: - 失败诊断（错误态详情块 + 日志共用）
+
+    /// 失败详情：网络层事实（状态码/类型/响应片段）+ 站点身份 + 时间。
+    /// 一次失败就是一条可复制的证据链，不靠追问「你那边显示什么」。
+    static func diagnosticText(for error: Error, target: DramaTarget) -> String {
+        var lines: [String] = []
+        if let drama = error as? DramaError {
+            lines.append(drama.diagnostic)
+        } else {
+            let ns = error as NSError
+            lines.append("类型：\(ns.domain)(\(ns.code))")
+            lines.append("描述：\(error.localizedDescription)")
+            if let debug = ns.userInfo[NSDebugDescriptionErrorKey] {
+                lines.append("调试：\(debug)")
+            }
+        }
+        lines.append("站点：\(target.site)")
+        lines.append("剧 ID：\(target.dramaID)")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        lines.append("时间：\(formatter.string(from: Date()))")
+        return lines.joined(separator: "\n")
+    }
+
+    /// 提示条的一句话原因（提示条只有一行，取错误描述并截断）
+    static func shortReason(for error: Error) -> String {
+        let text = error.localizedDescription
+        return text.count > 28 ? String(text.prefix(28)) + "…" : text
     }
 
     private func applyLibraryState(for info: DramaInfo) {
