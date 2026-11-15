@@ -1,16 +1,16 @@
 import SwiftUI
 
-// MARK: - 海报卡 + 双列网格（全局组件 · 纸本轨）
+// MARK: - 海报卡 + 海报网格（全局组件 · 纸本轨）
 //
-// 三处共用同一套「封面 3:4 + 固定 67 文字块」的卡片与双列排布：
-//   · 剧集页「为你推荐」（画布 22:163 / 30:104）
-//   · 「我的」页封面墙（画布 19:200）
-//   · 下载页「已下载」（画布 19:272）
+// 三处共用同一套「封面 3:4 + 固定 67 文字块」的卡片：
+//   · 剧集页「为你推荐」（画布 22:163 / 30:104）—— 一行 2 张
+//   · 「我的」页封面墙（画布 19:200）  —— 一行 3 张（2026-11-15 用户拍板）
+//   · 下载页「已下载」（画布 19:272）  —— 一行 3 张（同上）
 // 组件只负责视觉与排布，不碰数据来源、导航、删除等业务；点击由调用方用
 // Button / NavigationLink 包住，选择态只作为纯视觉入参传进来（SOLID：单一职责）。
 //
-// 几何全部来自画布实读（170 = (390 − 20×2 − 10) / 2，封面 170×226.7，文字块 67）：
-// 改这里三处同时生效，别再往各页写一套卡片。
+// 几何来自画布实读：两列卡宽 = (390 − 20×2 − 10) / 2 = 170、封面 170×226.7、文字块 67；
+// 列宽一律按容器现算（`PosterGrid.columns`），改这里三处同时生效，别再往各页写一套卡片。
 
 /// 封面来源：本地缓存文件 / 远程 URL / 无图（纸本占位）
 enum PosterCoverSource {
@@ -40,7 +40,7 @@ struct PosterCardModel: Identifiable {
 enum PosterCardMetrics {
     /// 页面左右边距（三处都是 20：剧集页分节 20、「我的」DWLayout.edge、下载页沿用 20）
     static let horizontalPadding: CGFloat = 20
-    /// 两列中缝（画布 10）
+    /// 列中缝（画布 10；两列/三列同一档）
     static let columnGap: CGFloat = 10
     /// 行距（画布 12）
     static let rowGap: CGFloat = 12
@@ -51,11 +51,13 @@ enum PosterCardMetrics {
     /// 文字左右内缩（卡片细线要留呼吸，画布 8）
     static let textInset: CGFloat = 8
     /// 文字块固定高：上 6 + 标题 20 + 2 + 标签 14 + 3 + 统计 14 + 下 8 = 67
+    /// （三列紧凑版只是字号降一档，行盒高度不变，网格行才对得齐）
     static let textHeight: CGFloat = 67
 
-    /// 列宽（按容器可用宽度现算，不写死 170 —— 390 设计稿上是 170，402 机型上是 176）
-    static func columnWidth(availableWidth: CGFloat) -> CGFloat {
-        (availableWidth - columnGap) / 2
+    /// 列宽（按容器可用宽度现算，不写死 —— 402 机型两列 176、三列 114）
+    static func columnWidth(availableWidth: CGFloat, columns: Int = 2) -> CGFloat {
+        let count = max(columns, 1)
+        return (availableWidth - columnGap * CGFloat(count - 1)) / CGFloat(count)
     }
 }
 
@@ -65,6 +67,13 @@ struct PosterCardView: View {
     let model: PosterCardModel
     /// 选择态：nil = 不显示；true/false = 编辑模式下的勾选圈
     var selection: Bool? = nil
+    /// 三列紧凑版（卡宽 ~113）：字号降一档，13pt 标题在 96pt 内容宽里只剩 7 个字，
+    /// 剧名会被截得认不出（2026-11-15 用户把「我的」/「已下载」改成一行 3 张）
+    var compact: Bool = false
+
+    private var titleFont: Font { DWFont.serif(compact ? 12 : 13, .medium) }
+    private var captionFont: Font { DWFont.cn(compact ? 9 : 10) }
+    private var statFont: Font { DWFont.cn(compact ? 9 : 10, .semibold) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -166,14 +175,14 @@ struct PosterCardView: View {
     private var textBlock: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(model.title)
-                .font(DWFont.serif(13, .medium))
+                .font(titleFont)
                 .foregroundStyle(DWColor.paperInk)
                 .lineLimit(1)
                 .frame(height: 20, alignment: .leading)
                 .padding(.top, 6)
 
             Text(model.subtitle)
-                .font(DWFont.cn(10))
+                .font(captionFont)
                 .foregroundStyle(DWColor.paperInkSub)
                 .lineLimit(1)
                 .frame(height: 14, alignment: .leading)
@@ -189,11 +198,11 @@ struct PosterCardView: View {
                     }
                 }
                 Text(model.stat)
-                    .font(DWFont.cn(10, .semibold))
+                    .font(statFont)
                     .foregroundStyle(DWColor.paperCinnabar)
                 if let trailing = model.statTrailing, !trailing.isEmpty {
                     Text("· \(trailing)")
-                        .font(DWFont.cn(10))
+                        .font(captionFont)
                         .foregroundStyle(DWColor.paperFaint)
                 }
             }
@@ -206,24 +215,26 @@ struct PosterCardView: View {
     }
 }
 
-/// 双列海报网格：列宽自适应父容器，卡片用同一套 `PosterCardView`。
-/// `LazyVGrid` 的 `.flexible()` 让两列平分可用宽度，不依赖 `UIScreen.main`（iOS 26 起 deprecated）。
+/// 海报网格：列宽自适应父容器，卡片用同一套 `PosterCardView`。
+/// `LazyVGrid` 的 `.flexible()` 让各列平分可用宽度，不依赖 `UIScreen.main`（iOS 26 起 deprecated）。
 struct PosterGrid<Item: Identifiable, Card: View>: View {
     let items: [Item]
+    /// 一行几张：剧集页「为你推荐」2 张；「我的」/「已下载」3 张
+    var columns: Int = 2
     var columnGap: CGFloat = PosterCardMetrics.columnGap
     var rowGap: CGFloat = PosterCardMetrics.rowGap
     @ViewBuilder var card: (Item) -> Card
 
-    /// 两列平分：第一列右间距 = 中缝，第二列不再加（否则右缘多出 10pt）
-    private var columns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: columnGap, alignment: .top),
-            GridItem(.flexible(), spacing: 0, alignment: .top)
-        ]
+    /// 各列平分：除最后一列外每列右间距 = 中缝，最后一列不再加（否则右缘多出一段留白）
+    private var gridColumns: [GridItem] {
+        let count = max(columns, 1)
+        return (0..<count).map { index in
+            GridItem(.flexible(), spacing: index == count - 1 ? 0 : columnGap, alignment: .top)
+        }
     }
 
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: rowGap) {
+        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: rowGap) {
             ForEach(items) { item in
                 card(item)
             }
@@ -231,20 +242,33 @@ struct PosterGrid<Item: Identifiable, Card: View>: View {
     }
 }
 
-#Preview("海报卡 · 双列") {
+#Preview("海报卡 · 两列 / 三列") {
     ScrollView {
-        PosterGrid(items: [
-            PosterCardModel(id: "1", title: "都重生了谁谈恋爱啊",
-                            subtitle: "都市 / 重生 / 逆袭", stat: "16W",
-                            statIcon: .play, statTrailing: "更新至 32 集",
-                            badge: "连载中 · VIP"),
-            PosterCardModel(id: "2", title: "凡人修仙传",
-                            subtitle: "仙侠 / 热血", stat: "8.2W", statIcon: .play),
-            PosterCardModel(id: "3", title: "无封面剧集", subtitle: "—", stat: "—")
-        ]) { model in
-            PosterCardView(model: model)
+        VStack(alignment: .leading, spacing: 24) {
+            Text("为你推荐 · 两列").font(DWFont.serif(15, .medium))
+            PosterGrid(items: PreviewPosters.two) { model in
+                PosterCardView(model: model)
+            }
+            Text("我的 / 已下载 · 三列").font(DWFont.serif(15, .medium))
+            PosterGrid(items: PreviewPosters.three, columns: 3) { model in
+                PosterCardView(model: model, compact: true)
+            }
         }
         .padding(.horizontal, PosterCardMetrics.horizontalPadding)
     }
     .background(DWColor.paper)
+}
+
+private enum PreviewPosters {
+    static let all: [PosterCardModel] = [
+        PosterCardModel(id: "1", title: "都重生了谁谈恋爱啊",
+                        subtitle: "都市 / 重生 / 逆袭", stat: "16W",
+                        statIcon: .play, statTrailing: "更新至 32 集",
+                        badge: "连载中 · VIP"),
+        PosterCardModel(id: "2", title: "凡人修仙传",
+                        subtitle: "仙侠 / 热血", stat: "8.2W", statIcon: .play),
+        PosterCardModel(id: "3", title: "无封面剧集", subtitle: "—", stat: "—")
+    ]
+    static var two: [PosterCardModel] { all }
+    static var three: [PosterCardModel] { all + [PosterCardModel(id: "4", title: "一品布衣", subtitle: "全 24 集", stat: "可离线播放")] }
 }

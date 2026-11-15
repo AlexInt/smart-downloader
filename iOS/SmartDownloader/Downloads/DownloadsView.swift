@@ -338,8 +338,9 @@ struct DownloadsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     seriesHeaderRow
-                    // 双列海报卡组件与剧集页推荐 / 「我的」封面墙共用（Components/PosterGrid.swift）
-                    PosterGrid(items: completedCards) { card in
+                    // 三列海报卡组件与剧集页推荐 / 「我的」封面墙共用（Components/PosterGrid.swift），
+                    // 一行 3 张（2026-11-15 用户拍板），字号走 `compact` 档
+                    PosterGrid(items: completedCards, columns: 3) { card in
                         completedCard(card)
                     }
                 }
@@ -367,7 +368,8 @@ struct DownloadsView: View {
             } label: {
                 PosterCardView(
                     model: seriesCardModel(name: name, episodes: episodes),
-                    selection: vm.selectionMode ? vm.seriesAllSelected(group) : nil
+                    selection: vm.selectionMode ? vm.seriesAllSelected(group) : nil,
+                    compact: true
                 )
             }
             .buttonStyle(.plain)
@@ -390,7 +392,8 @@ struct DownloadsView: View {
             } label: {
                 PosterCardView(
                     model: standaloneCardModel(task),
-                    selection: vm.selectionMode ? vm.selected.contains(task.id) : nil
+                    selection: vm.selectionMode ? vm.selected.contains(task.id) : nil,
+                    compact: true
                 )
             }
             .buttonStyle(.plain)

@@ -215,11 +215,12 @@ struct ProfileView: View {
         if viewModel.items.isEmpty {
             emptyState
         } else {
-            // 双列海报卡组件与剧集页推荐 / 下载页「已下载」共用（Components/PosterGrid.swift）：
-            // 封面 3:4 + 固定 67 文字块，列宽按容器现算（不再写死 3 列 106×114）
-            PosterGrid(items: viewModel.items) { item in
+            // 三列海报卡组件与剧集页推荐 / 下载页「已下载」共用（Components/PosterGrid.swift）：
+            // 封面 3:4 + 固定 67 文字块，列宽按容器现算（不再写死 3 列 106×114）；
+            // 一行 3 张（2026-11-15 用户拍板），字号走 `compact` 档
+            PosterGrid(items: viewModel.items, columns: 3) { item in
                 NavigationLink(value: ProfileRoute.drama(item.target)) {
-                    PosterCardView(model: cardModel(item))
+                    PosterCardView(model: cardModel(item), compact: true)
                 }
                 .buttonStyle(.plain)
             }
