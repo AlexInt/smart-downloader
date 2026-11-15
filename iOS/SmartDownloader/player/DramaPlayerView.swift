@@ -656,6 +656,9 @@ struct DramaPlayerView: View {
 }
 
 // Xcode 15+ / iOS 17+；旧版请改用 PreviewProvider。
+// `DramaEpisode.designPreview` 只在 Debug 编译（#if DEBUG），预览块必须一起门控，
+// 否则 Release 构建会因「no member designPreview」直接失败
+#if DEBUG
 #Preview("墨本 · 完整态（静态稿面）") {
     DramaPlayerView(
         episode: .designPreview,
@@ -663,3 +666,4 @@ struct DramaPlayerView: View {
         isActive: false
     )
 }
+#endif
