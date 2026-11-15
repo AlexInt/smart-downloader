@@ -75,7 +75,7 @@ private enum RefreshMetrics {
     static let dotIdle: CGFloat = 6        // 30:74 朱砂点 6×6 r3
     static let dotDone: CGFloat = 8        // 30:93 朱砂点·收拢 8×8 r4
     static let labelGap: CGFloat = 8       // 态标在刷新区下方一行（30:75）
-    /// 顶栏在多长的下拉里退完：退满后纸带上只剩墨环与态标，深色 scrim 不压在纸面上
+    /// 顶栏在多长的下拉里退完：退满后顶部只剩白环与态标，深色 scrim 不压在剧照上
     static let headerFadeSpan: CGFloat = 40
 }
 
@@ -171,7 +171,7 @@ struct DramaDetailView: View {
                             .frame(width: DWLayout.designWidth * scale,
                                    height: layout.totalHeight * scale,
                                    alignment: .topLeading)
-                            // 刷新期间整块内容跟着被"按住"，露出顶上那条纸带给墨环站
+                            // 刷新期间整块内容跟着被"按住"，让放大后的封面留在屏上
                             .offset(y: holdDown)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -251,8 +251,8 @@ struct DramaDetailView: View {
                     // 顶栏（返回 / 收藏）钉在屏幕顶部：**不随页面滚动**，用户拍板 2026-11-14
                     .overlay(alignment: .topLeading) {
                         pinnedHeader(scale: scale)
-                            // 下拉时退场：不退的话 96 高的 scrim 会把顶部纸带整个盖掉，
-                            // 墨环根本没有落脚的地方（画布样张里刷新区就在页面最顶）。
+                            // 下拉时退场：不退的话 96 高的 scrim 会把顶部整个盖掉，
+                            // 指示器根本没有落脚的地方（画布样张里刷新区就在页面最顶）。
                             .opacity(headerOpacity)
                             .animation(reduceMotion ? nil : .easeOut(duration: 0.12),
                                        value: headerOpacity)
@@ -572,7 +572,7 @@ struct DramaDetailView: View {
 
     /// 顶部安全区（状态栏 + 灵动岛）。实测 402 宽机型：岛体压到 y46、安全区 59。
     /// 画布样张里刷新区就钉在卡片最顶（环心 32），照搬到真机上墨环正中正好被
-    /// 灵动岛的黑胶囊吃掉——所以整套落位改成以「纸带下沿」为基准，天然躲开这块黑区。
+    /// 灵动岛的黑胶囊吃掉——所以整套落位改成以「内容顶」为基准，天然躲开这块黑区。
     private var topSafeInset: CGFloat {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -580,16 +580,16 @@ struct DramaDetailView: View {
             .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 0
     }
 
-    /// 触发阈值：纸带得长到能把墨环整只推到安全区之下才算数。
+    /// 触发阈值：内容得被拉下足够距离，才能把墨环整只推到安全区之下。
     /// 环心 = 下沿 - 42、半径 11，所以下沿要 ≥ 安全区 + 53；取满一格刷新区
     /// （安全区 + 64）留一点余量，402 宽机型 ≈ 114pt，一把拉得到。
     private var refreshThreshold: CGFloat {
         topSafeInset + RefreshMetrics.zone
     }
 
-    /// 顶栏退场进度。顶栏是 96 高的固定层，不退场就把纸带整个盖住（环心 65 正在它里面），
-    /// 墨环无处落脚——画布样张里刷新区在页面最顶，所以下拉时顶栏必须让开。
-    /// 前 40pt 退完：拉到位那一刻顶栏已经不在，纸面上只剩墨环与态标。
+    /// 顶栏退场进度。顶栏是 96 高的固定层，不退场就把顶部整个盖住（环心 65 正在它里面），
+    /// 指示器无处落脚——画布样张里刷新区在页面最顶，所以下拉时顶栏必须让开。
+    /// 前 40pt 退完：拉到位那一刻顶栏已经不在，剧照上只剩白环与态标。
     private var headerOpacity: Double {
         switch refreshPhase {
         case .idle:
@@ -677,8 +677,8 @@ struct DramaDetailView: View {
         }
     }
 
-    /// 整组的显现曲线。纸带短的时候，环按「下沿 - 42」的锚法正好落在灵动岛那块黑胶囊里，
-    /// 只会露出一小截黑弧，看着像脏点——所以纸带没长够就整组不显示，长够了再淡入。
+    /// 整组的显现曲线。内容被拉得不够时，环按「下沿 - 42」的锚法正好落在灵动岛那块黑胶囊里，
+    /// 只会露出一小截白弧，看着像脏点——所以内容没拉够就整组不显示，拉够了再淡入。
     /// 起点 安全区+49 正是"环顶刚好离开岛下沿"的位置，到阈值时全亮。
     private var refreshRevealOpacity: Double {
         switch refreshPhase {
@@ -692,7 +692,7 @@ struct DramaDetailView: View {
         }
     }
 
-    /// 松手触发：把内容按住（holdDown）让纸带留在顶上，环转起来、点开始呼吸，
+    /// 松手触发：把内容按住（holdDown）让放大后的封面留在屏上，环转起来、点开始呼吸，
     /// 走 VM 的静默刷新（不切整页 loading，否则海报与页内容会被骨架屏顶掉）。
     /// 收尾有两个来源：VM 回调，以及 10s 兜底——刷新期间滚动是锁着的，
     /// 万一请求卡住（弱网、域名解析挂起），不能让用户连着十几秒划不动页面。
@@ -731,7 +731,7 @@ struct DramaDetailView: View {
 
     /// 刷新期间的回弹位移诊断：每 0.25s 最多一条，回弹归零或打满 12 条即停。
     /// 用途：真机上判断 `scrollDisabled` 会不会中断系统回弹——
-    /// ①`pull` 归零 → 回弹正常走完，纸带 126 全由 holdDown 撑着；
+    /// ①`pull` 归零 → 回弹正常走完，内容被 holdDown 按住的 126 全由它撑着；
     /// ②`pull` 停在峰值不动 → 回弹被冻住，此时内容 = pull + holdDown，
     ///   若两者都≈126 就是双倍位移（视觉上先往下蹦一段再回来）。
     private func logRefreshScrollDuringRefresh(_ pull: CGFloat) {
