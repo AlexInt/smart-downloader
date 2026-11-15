@@ -8,6 +8,8 @@ import SwiftUI
 /// → PlayerFeedView / DramaPlayerView / Components/ToastView（View）。
 struct DramaPlayerContainer: View {
     let request: ImmersivePlaybackRequest
+    /// 下载管理器（选集面板的下载态与单集下载都依赖它；预览宿主可省）
+    var manager: DownloadManager? = nil
     /// 显式关闭：把外层 fullScreenCover(item:) 的绑定置 nil，比只调 dismiss() 可靠
     var onClose: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
@@ -21,8 +23,8 @@ struct DramaPlayerContainer: View {
         })
             .onAppear {
                 print("PLAYER_DBG [Container] appear series=\(request.seriesName)")
-                print("PLAYER_DBG [Container] appear → configure")
-                feedVM.configure(request: request)
+                print("PLAYER_DBG [Container] appear → configure manager=\(manager != nil)")
+                feedVM.configure(request: request, manager: manager)
             }
             .onDisappear {
                 print("PERF_DBG exit t=\(PERF.ms()) phase=containerDisappear (feedVM.stop begin)")

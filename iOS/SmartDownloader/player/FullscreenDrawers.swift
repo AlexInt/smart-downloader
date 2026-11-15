@@ -194,12 +194,13 @@ final class RateDrawerPanel: FullscreenDrawerPanel {
 // MARK: - 选集抽屉 22:78
 
 final class EpisodeDrawerPanel: FullscreenDrawerPanel {
-    var total: Int = 0 {
-        didSet { if total != oldValue { rebuildGrid() } }
+    /// 面板格子（集号是真实集号；状态含已下载/下载中/未开放）
+    private(set) var items: [EpisodePanelItem] = []
+    /// 标题位置的一次性提示（下载入队 / 站点未开放…），nil 时显示「选集」
+    private var hint: String? {
+        didSet { if hint != oldValue { setNeedsLayout() } }
     }
-    var current: Int = 0 {
-        didSet { if current != oldValue { rebuildGrid() } }
-    }
+    private(set) var current: Int = 0
     var onSelect: ((Int) -> Void)?
     var onClose: (() -> Void)?
 
@@ -231,6 +232,8 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
         static let dot: CGFloat = 4
         static let dotGap: CGFloat = 3
         static let titleFont: CGFloat = 17
+        /// 提示文案字号（比标题小一档：标题位临时让给提示，不能撑破 216 宽）
+        static let hintFont: CGFloat = 12
     }
 
     override init(frame: CGRect) {
@@ -265,7 +268,15 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
                                   y: (L.closeBox - L.closeGlyph) / 2 * s,
                                   width: L.closeGlyph * s, height: L.closeGlyph * s)
 
-        titleLabel.font = PlayerFullscreenControlsView.serifFont(L.titleFont * s, weight: .medium)
+        if let hint {
+            titleLabel.text = hint
+            titleLabel.font = .systemFont(ofSize: L.hintFont * s, weight: .medium)
+            titleLabel.textColor = UIColor(hex: "#A05243")
+        } else {
+            titleLabel.text = "选集"
+            titleLabel.font = PlayerFullscreenControlsView.serifFont(L.titleFont * s, weight: .medium)
+            titleLabel.textColor = .white
+        }
         titleLabel.frame = CGRect(x: L.padding * sx, y: L.titleTop * sy,
                                   width: L.titleWidth * sx, height: L.titleHeight * sy)
 
@@ -298,20 +309,38 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
         }
     }
 
+    /// 应用一次面板快照（控制器订阅 `playback.episodePanelSubject` 后每次变化都调）：
+    /// **集号列表变了才重建网格**，只是下载态/提示变化时就地重配每格——
+    /// 否则下载进度每 0.3s 推进一次就重建整块网格，滚动位置会被拽回当前集并闪一下。
+    func apply(state: EpisodePanelState, current: Int) {
+        let sortsChanged = state.items.map(\.sort) != items.map(\.sort)
+        items = state.items
+        self.current = current
+        hint = state.hint
+        if sortsChanged {
+            rebuildGrid()
+        } else {
+            for (cell, item) in zip(cells, items) {
+                cell.configure(item: item, isCurrent: item.sort == current)
+            }
+        }
+        setNeedsLayout()
+    }
+
     private func rebuildGrid() {
         cells.forEach { $0.removeFromSuperview() }
         cells.removeAll()
-        guard total > 0 else {
+        guard !items.isEmpty else {
             setNeedsLayout()
             return
         }
-        for index in 1...total {
+        for item in items {
             let cell = EpisodeCellView()
-            cell.configure(index: index, isCurrent: index == current)
+            cell.configure(item: item, isCurrent: item.sort == current)
             cell.onTap = { [weak self] in
                 guard let self else { return }
-                print("PLAYER_DBG [Drawer] episode select \(index) current=\(self.current)")
-                self.onSelect?(index)
+                print("PLAYER_DBG [Drawer] episode select \(item.sort) current=\(self.current) phase=\(item.phase)")
+                self.onSelect?(item.sort)
             }
             gridView.addSubview(cell)
             cells.append(cell)
@@ -322,7 +351,7 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
 
     /// 打开/切集时把当前集滚进视野（画布静态稿是首屏，真实集数上千必须定位）
     private func scrollToVisible(index: Int) {
-        guard let cell = cells.first(where: { $0.index == index }) else { return }
+        guard let cell = cells.first(where: { $0.sort == index }) else { return }
         let inset = L.cellGap * designScale
         let rect = cell.frame.insetBy(dx: 0, dy: -inset * 3)
         scrollView.scrollRectToVisible(rect, animated: false)
@@ -340,11 +369,19 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
 }
 
 /// 单集格子（画布 22:92 / 22:98）
+///
+/// 状态口径与竖屏弹层、剧集页选集区一致（2026-11-15）：
+/// 当前集 = 朱砂数字 + 点 + 朱砂描边；已下载 = 墨白数字；
+/// 未下载且可下载 = 数字压暗 + 右下小下箭头；站点未开放 = 更淡且无箭头；
+/// 排队/下载中/失败 = 朱砂或淡环。
 final class EpisodeCellView: UIView {
-    private(set) var index: Int = 0
+    private(set) var sort: Int = 0
+    private var item = EpisodePanelItem(sort: 0, phase: .idle, playable: true)
     private var isCurrent = false
     private let numberLabel = UILabel()
     private let dot = UIView()
+    private let todoGlyph = EpisodeTodoGlyphView()
+    private let ringLayer = CAShapeLayer()
     var onTap: (() -> Void)?
     var designScale: CGFloat = 1 {
         didSet {
@@ -359,19 +396,37 @@ final class EpisodeCellView: UIView {
         addSubview(numberLabel)
         dot.isHidden = true
         addSubview(dot)
+        todoGlyph.isHidden = true
+        addSubview(todoGlyph)
+        ringLayer.fillColor = UIColor.clear.cgColor
+        ringLayer.lineWidth = 2
+        ringLayer.lineCap = .round
+        ringLayer.strokeEnd = 1
+        ringLayer.isHidden = true
+        layer.addSublayer(ringLayer)
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
     }
 
     required init?(coder: NSCoder) { fatalError("不支持") }
 
-    func configure(index: Int, isCurrent: Bool) {
-        self.index = index
+    func configure(item: EpisodePanelItem, isCurrent: Bool) {
+        self.sort = item.sort
+        self.item = item
         self.isCurrent = isCurrent
-        numberLabel.text = "\(index)"
+        numberLabel.text = "\(item.sort)"
         applyStyle()
         isAccessibilityElement = true
-        accessibilityLabel = "第 \(index) 集"
+        accessibilityLabel = accessibilityLabel(item)
         accessibilityTraits = isCurrent ? [.button, .selected] : [.button]
+    }
+
+    private func accessibilityLabel(_ item: EpisodePanelItem) -> String {
+        switch item.phase {
+        case .done: return "第 \(item.sort) 集，已下载"
+        case .queued, .active: return "第 \(item.sort) 集，正在下载"
+        case .failed: return "第 \(item.sort) 集，下载失败"
+        case .idle: return item.playable ? "第 \(item.sort) 集，未下载" : "第 \(item.sort) 集，站点未开放"
+        }
     }
 
     override func layoutSubviews() {
@@ -391,6 +446,16 @@ final class EpisodeCellView: UIView {
         } else {
             numberLabel.frame = bounds
         }
+        // 右下角未下载下箭头（7×8，离边 4）
+        todoGlyph.frame = CGRect(x: bounds.width - 11 * s, y: bounds.height - 12 * s,
+                                 width: 7 * s, height: 8 * s)
+        // 进度环：描在格子内 1pt 处（圆角同步缩进，避免边缘被裁）
+        let inset = 1 * s
+        let ringRect = bounds.insetBy(dx: inset, dy: inset)
+        ringLayer.frame = bounds
+        ringLayer.lineWidth = 2 * s
+        ringLayer.path = UIBezierPath(roundedRect: ringRect,
+                                      cornerRadius: max(9 * s - inset, 1)).cgPath
     }
 
     private func applyStyle() {
@@ -400,16 +465,78 @@ final class EpisodeCellView: UIView {
         layer.borderColor = isCurrent
             ? UIColor(hex: "#A04D42").withAlphaComponent(0.5).cgColor
             : UIColor.clear.cgColor
-        numberLabel.textColor = isCurrent ? UIColor(hex: "#A05243") : UIColor(hex: "#E8E6DF")
+        numberLabel.textColor = numberColor
         dot.backgroundColor = UIColor(hex: "#A05243")
         dot.layer.cornerRadius = 2 * designScale
         dot.isHidden = !isCurrent
+        todoGlyph.isHidden = !(item.phase == .idle && !isCurrent && item.playable)
+        todoGlyph.color = UIColor(hex: "#C4C7C3")
+        applyRing()
         setNeedsLayout()
     }
 
+    private var numberColor: UIColor {
+        if isCurrent { return UIColor(hex: "#A05243") }
+        if item.isDownloaded { return UIColor(hex: "#E8E6DF") }
+        return item.playable
+            ? UIColor(hex: "#C4C7C3")
+            : UIColor(hex: "#C4C7C3").withAlphaComponent(0.45)
+    }
+
+    private func applyRing() {
+        switch item.phase {
+        case .idle, .done:
+            ringLayer.isHidden = true
+        case .queued:
+            ringLayer.isHidden = false
+            ringLayer.strokeColor = UIColor(hex: "#C4C7C3").withAlphaComponent(0.32).cgColor
+            ringLayer.strokeEnd = 1
+        case .active(let progress):
+            ringLayer.isHidden = false
+            ringLayer.strokeColor = UIColor(hex: "#A05243").cgColor
+            ringLayer.strokeEnd = CGFloat(min(max(progress, 0.03), 1))
+        case .failed:
+            ringLayer.isHidden = false
+            ringLayer.strokeColor = UIColor(hex: "#A05243").cgColor
+            ringLayer.strokeEnd = 1
+        }
+    }
+
     @objc private func tapped() {
-        print("PLAYER_DBG [Drawer] cell tap index=\(index)")
+        print("PLAYER_DBG [Drawer] cell tap sort=\(sort) phase=\(item.phase) playable=\(item.playable)")
         onTap?()
+    }
+}
+
+/// 未下载格右下角的小下箭头（与竖屏弹层的 `EpisodeTodoGlyph` 同一形状）
+final class EpisodeTodoGlyphView: UIView {
+    var color: UIColor = UIColor(hex: "#C4C7C3") {
+        didSet { setNeedsDisplay() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) { fatalError("不支持") }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        let w = bounds.width, h = bounds.height
+        ctx.setStrokeColor(color.cgColor)
+        ctx.setLineWidth(max(1, w / 7))
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        ctx.move(to: CGPoint(x: w * 0.5, y: 0))
+        ctx.addLine(to: CGPoint(x: w * 0.5, y: h * 0.76))
+        ctx.move(to: CGPoint(x: w * 0.16, y: h * 0.46))
+        ctx.addLine(to: CGPoint(x: w * 0.5, y: h * 0.82))
+        ctx.addLine(to: CGPoint(x: w * 0.84, y: h * 0.46))
+        ctx.strokePath()
     }
 }
 

@@ -124,7 +124,7 @@ struct SmartDownloaderApp: App {
                     DramaPreviewHost(manager: manager)
                 }
                 .fullScreenCover(isPresented: $showPlayerPreview) {
-                    PlayerPreviewHost()
+                    PlayerPreviewHost(manager: manager)
                 }
                 #endif
                 // 系统 launch screen（渐变图）→ 同色系 splash（logo 呼吸）→ 淡出进 App

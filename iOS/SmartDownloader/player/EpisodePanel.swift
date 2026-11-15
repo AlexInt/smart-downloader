@@ -30,7 +30,8 @@ enum EpisodeGridMetrics {
 }
 
 struct EpisodeGrid: View {
-    let total: Int
+    /// 面板格子：集号是队列里的真实集号（不按 1…total 编号）
+    let items: [EpisodePanelItem]
     let current: Int
     /// 网格可用宽度（由容器现量后传入：整屏宽 − 左右内边距）
     var availableWidth: CGFloat
@@ -48,26 +49,44 @@ struct EpisodeGrid: View {
             alignment: .leading,
             spacing: EpisodeGridMetrics.gap
         ) {
-            ForEach(1...max(total, 1), id: \.self) { index in
-                cell(index)
+            ForEach(items) { item in
+                cell(item)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func cell(_ index: Int) -> some View {
-        let isCurrent = index == current
+    private func cell(_ item: EpisodePanelItem) -> some View {
+        let isCurrent = item.sort == current
+        let numberColor: Color = {
+            if isCurrent { return DWColor.overlayCinnabar }
+            if item.isDownloaded { return DWColor.overlayInk }
+            return item.playable ? DWColor.overlayInkSub : DWColor.overlayInkSub.opacity(0.45)
+        }()
         return Button {
-            onSelect(index)
+            onSelect(item.sort)
         } label: {
-            HStack(spacing: isCurrent ? 3 : 0) {
-                Text("\(index)")
-                    .font(isCurrent ? DWFont.en(14, .medium) : DWFont.en(14, .regular))
-                    .foregroundStyle(isCurrent ? DWColor.overlayCinnabar : DWColor.overlayInk)
-                if isCurrent {
-                    Circle()
-                        .fill(DWColor.overlayCinnabar)
-                        .frame(width: EpisodeGridMetrics.dot, height: EpisodeGridMetrics.dot)
+            ZStack {
+                HStack(spacing: isCurrent ? 3 : 0) {
+                    Text("\(item.sort)")
+                        .font(isCurrent ? DWFont.en(14, .medium) : DWFont.en(14, .regular))
+                        .foregroundStyle(numberColor)
+                    if isCurrent {
+                        Circle()
+                            .fill(DWColor.overlayCinnabar)
+                            .frame(width: EpisodeGridMetrics.dot, height: EpisodeGridMetrics.dot)
+                    }
+                }
+                // 未下载且可下载：右下角小下箭头（对应剧集页 `.dl-todo` 的「点我可下」语义）。
+                // 注意顺序：先给图元自身 padding，再按格子尺寸做 bottomTrailing 对齐——
+                // 反过来（先对齐再 padding）会让整块放大 8pt 溢出格子、箭头被裁在边缘外
+                if !item.isDownloaded && item.playable {
+                    EpisodeTodoGlyph()
+                        .stroke(DWColor.overlayInkSub,
+                                style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                        .frame(width: 7, height: 8)
+                        .padding(4)
+                        .frame(width: side, height: side, alignment: .bottomTrailing)
                 }
             }
             .frame(width: side, height: side)
@@ -79,18 +98,70 @@ struct EpisodeGrid: View {
                         .strokeBorder(DWColor.episodeCellStroke, lineWidth: 1)
                 }
             }
+            .overlay {
+                progressRing(item.phase)
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("第 \(index) 集")
+        .accessibilityLabel(accessibilityLabel(item))
         .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+    }
+
+    /// 下载进度环（深色轨）：排队淡环 / 下载中朱砂弧 / 失败朱砂整环。
+    /// 已下载与未开始不画（已下载靠数字恢复墨白、未下载靠下箭头）。
+    @ViewBuilder
+    private func progressRing(_ phase: EpisodeDownloadPhase) -> some View {
+        switch phase {
+        case .idle, .done:
+            EmptyView()
+        case .queued:
+            RoundedRectangle(cornerRadius: EpisodeGridMetrics.cellRadius)
+                .stroke(DWColor.overlayInkSub.opacity(0.32), lineWidth: 2)
+                .padding(1)
+        case .active(let progress):
+            RoundedRectangle(cornerRadius: EpisodeGridMetrics.cellRadius)
+                .trim(from: 0, to: progress)
+                .stroke(DWColor.overlayCinnabar,
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .padding(1)
+        case .failed:
+            RoundedRectangle(cornerRadius: EpisodeGridMetrics.cellRadius)
+                .stroke(DWColor.overlayCinnabar, lineWidth: 2)
+                .padding(1)
+        }
+    }
+
+    private func accessibilityLabel(_ item: EpisodePanelItem) -> String {
+        switch item.phase {
+        case .done: return "第 \(item.sort) 集，已下载"
+        case .queued, .active: return "第 \(item.sort) 集，正在下载"
+        case .failed: return "第 \(item.sort) 集，下载失败"
+        case .idle: return item.playable ? "第 \(item.sort) 集，未下载" : "第 \(item.sort) 集，站点未开放"
+        }
+    }
+}
+
+/// 未下载格右下角的小下箭头（描边形；尺寸按画布 1pt 线稿口径）
+struct EpisodeTodoGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let w = rect.width, h = rect.height
+        path.move(to: CGPoint(x: w * 0.5, y: 0))
+        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.76))
+        path.move(to: CGPoint(x: w * 0.16, y: h * 0.46))
+        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.82))
+        path.addLine(to: CGPoint(x: w * 0.84, y: h * 0.46))
+        return path
     }
 }
 
 /// 竖屏选集面板：底部升起的墨本弹层（照横屏 22:78 的材质与网格，改成竖屏铺满宽度）
 struct EpisodePanel: View {
-    let total: Int
+    let items: [EpisodePanelItem]
     let current: Int
+    /// 一次性提示（下载入队 / 站点未开放…）：非空时顶替标题，2.4s 后恢复「选集」
+    var hint: String?
     var onSelect: (Int) -> Void
     var onClose: () -> Void
 
@@ -111,14 +182,21 @@ struct EpisodePanel: View {
                         .accessibilityLabel("关闭")
                         Spacer(minLength: 0)
                     }
-                    Text("选集")
-                        .font(DWFont.serif(17, .medium))
-                        .foregroundStyle(.white)
+                    if let hint {
+                        Text(hint)
+                            .font(DWFont.cn(12, .medium))
+                            .foregroundStyle(DWColor.overlayCinnabar)
+                            .lineLimit(1)
+                    } else {
+                        Text("选集")
+                            .font(DWFont.serif(17, .medium))
+                            .foregroundStyle(.white)
+                    }
                 }
                 .frame(height: 32)
 
                 ScrollView {
-                    EpisodeGrid(total: total, current: current,
+                    EpisodeGrid(items: items, current: current,
                                 availableWidth: geo.size.width - EpisodeGridMetrics.horizontalPadding * 2,
                                 onSelect: onSelect)
                         .padding(.bottom, 8)
@@ -190,7 +268,11 @@ struct OverlayCloseGlyph: View {
 #Preview("选集网格") {
     ZStack {
         Color.black
-        EpisodeGrid(total: 60, current: 8, availableWidth: 366) { _ in }
+        EpisodeGrid(items: (1...60).map {
+            EpisodePanelItem(sort: $0,
+                             phase: $0 == 8 ? .done : ($0 == 9 ? .active(0.4) : .idle),
+                             playable: $0 % 7 != 0)
+        }, current: 9, availableWidth: 366) { _ in }
             .padding(18)
     }
     .ignoresSafeArea()

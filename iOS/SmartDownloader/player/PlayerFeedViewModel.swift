@@ -11,10 +11,25 @@ final class PlayerFeedViewModel: ObservableObject {
     @Published private(set) var toastText: String?
     /// 当前页播放是否已就绪：驱动容器刷新卡片 rootView，让视频层显露出来
     @Published private(set) var playbackReady = false
+    /// 选集面板格子（真实集号 + 下载态 + 站点可播）：2026-11-15 起面板不再按 1…total 编号
+    @Published private(set) var episodeItems: [EpisodePanelItem] = []
+    /// 面板一次性提示（下载已入队 / 站点未开放 / 已在下载中…），2.4s 后自动清空
+    @Published private(set) var episodeHint: String?
 
     let playback: DramaPlayerViewModel
     private let playerService = PlaybackPlayerService()
+    private let panelService = EpisodePanelService()
     private var queue: PlaybackQueueService?
+    /// 播放请求带的站点身份（下载页入口为 nil，服务里按剧名反查）
+    private var playbackTarget: DramaTarget?
+    /// 下载管理器：面板下载态跟着它实时刷新；预览宿主可能没注入
+    private var manager: DownloadManager?
+    private var managerCancellable: AnyCancellable?
+    /// 面板刷新去抖（下载进度变化很密，0.25s 内合并成一次）
+    private var panelRefreshWork: DispatchWorkItem?
+    /// 面板提示令牌：旧任务不得清掉新提示
+    private var hintToken = UUID()
+    private var hintTask: DispatchWorkItem?
     /// 最近一条 toast 的令牌：只有持有当前令牌的任务才有权清除，避免旧任务误清新提示
     private var toastToken = UUID()
     private var toastTask: DispatchWorkItem?
@@ -40,7 +55,7 @@ final class PlayerFeedViewModel: ObservableObject {
     var tags: String? { queue?.tags }
     var totalEpisodes: Int { slots.count }
 
-    func configure(request: ImmersivePlaybackRequest) {
+    func configure(request: ImmersivePlaybackRequest, manager: DownloadManager? = nil) {
         guard !configured else {
             print("PLAYER_DBG [VM] configure SKIP reason=alreadyConfigured series=\(request.seriesName)")
             return
@@ -49,6 +64,8 @@ final class PlayerFeedViewModel: ObservableObject {
         // 防御性复位：VM 当前按容器生命周期每次新建，但若将来被复用，
         // 上一轮的「已到底」标记不得吞掉本轮的边界提示（评估报告 P2）
         endToastShown = false
+        self.manager = manager
+        playbackTarget = request.target
         let q = PlaybackQueueService(request: request)
         queue = q
         slots = q.slots
@@ -57,13 +74,20 @@ final class PlayerFeedViewModel: ObservableObject {
         // 播放 VM 不持有——一次性注入，避免播放侧自己反查
         playback.seriesName = q.seriesName
         playback.episodeTotal = q.slots.count
+        // 选集面板（2026-11-15）：格子由本类装配后推进播放 VM 的 subject，
+        // 点按也统一收口到 selectEpisode（持有队列/下载知识的是本类，不是播放 VM）
+        playback.onEpisodeSelected = { [weak self] sort in
+            self?.selectEpisode(sort: sort) ?? false
+        }
+        observeDownloads(manager)
+        refreshEpisodePanel(reason: "configure")
         // 进入即预热首集 + 相邻集：与 150ms 停稳防抖并行，首次起播也走 HIT 路径
         if let current = q.current {
             let neighbors = q.neighbors(of: current.sort)
             playerService.preload([current] + neighbors)
             print("PLAYER_DBG [VM] preload entry sort=\(current.sort) neighbors=\(neighbors.map(\.sort))")
         }
-        print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil")")
+        print("PLAYER_DBG [VM] configure series=\(request.seriesName) startSort=\(request.startSort) knownSorts=\(request.knownSorts.count) → slots=\(slots.count) sorts=\(slots.map(\.sort)) current=\(currentSort.map(String.init) ?? "nil") manager=\(manager != nil)")
         // 姿态触发：设备稳定转横自动进全屏（仅横屏片源），稳定回竖自动退出
         let trigger = PlayerOrientationTrigger(playback: playback)
         trigger.start()
@@ -92,6 +116,8 @@ final class PlayerFeedViewModel: ObservableObject {
         if queue?.refreshAvailability() == true, let refreshed = queue {
             slots = refreshed.slots
         }
+        // 磁盘刚对过账：面板格子同步刷新（不再重复扫盘），「播放中刚下完的集」立刻可点
+        refreshEpisodePanel(reason: "pageSettled", scanDisk: false)
         guard let slot = slots.first(where: { $0.sort == sort }) else {
             print("PLAYER_DBG [VM] pageSettled NO SLOT sort=\(sort)")
             return
@@ -120,6 +146,138 @@ final class PlayerFeedViewModel: ObservableObject {
             // 「已经到底了」不再在停稳末页时提示（用户拍板 2026-11-14）：
             // 改为末页再滑一次（想看下一集但已无资源）才提示，见 pulledBeyondEnd()
         }
+    }
+
+    // MARK: - 选集面板（2026-11-15）
+
+    /// 面板数据刷新：集号来自队列槽位（真实集号），下载态来自磁盘 + 下载任务。
+    /// `scanDisk` = 先对账磁盘（页面停稳/下载完成时都要，避免面板显示过期可用性）。
+    func refreshEpisodePanel(reason: String, scanDisk: Bool = true) {
+        guard let queue else {
+            print("PLAYER_DBG [VM] panel refresh SKIP reason=noQueue source=\(reason)")
+            return
+        }
+        if scanDisk, self.queue?.refreshAvailability() == true, let refreshed = self.queue {
+            slots = refreshed.slots
+        }
+        let items = panelService.items(slots: slots, seriesName: queue.seriesName,
+                                       target: playbackTarget, manager: manager)
+        if items != episodeItems {
+            episodeItems = items
+            print("PLAYER_DBG [CHECK] panel refresh source=\(reason) cells=\(items.count) "
+                  + "downloaded=\(items.filter(\.isDownloaded).map(\.sort)) "
+                  + "pending=\(items.filter { $0.phase != .idle && !$0.isDownloaded }.map(\.sort))")
+        }
+        publishEpisodePanel()
+    }
+
+    /// 点面板里的一格：先对账磁盘，已下载 → 切集播放；未下载 → 入队下载。
+    /// 返回 true = 面板可以收起（真的切了集，或点的就是当前集）；
+    /// false = 留在面板里（下载已入队 / 站点未开放 / 缺元数据，靠进度环与标题提示反馈）。
+    @discardableResult
+    func selectEpisode(sort: Int) -> Bool {
+        print("PLAYER_DBG [CHECK] selectEpisode sort=\(sort) current=\(currentSort.map(String.init) ?? "nil") cells=\(episodeItems.count)")
+        if sort == currentSort {
+            // 点的是当前集：不切集，但把面板/抽屉收起来（否则用户点了没反应，会反复点）
+            print("PLAYER_DBG [CHECK] selectEpisode SKIP reason=sameEpisode sort=\(sort) → close")
+            return true
+        }
+        if self.queue?.refreshAvailability() == true, let refreshed = self.queue {
+            slots = refreshed.slots
+            refreshEpisodePanel(reason: "selectEpisode", scanDisk: false)
+        }
+        guard let slot = slots.first(where: { $0.sort == sort }) else {
+            print("PLAYER_DBG [CHECK] selectEpisode SKIP reason=noSlot sort=\(sort)")
+            setEpisodeHint("第\(sort)集不在本剧集数中", reason: "noSlot")
+            return false
+        }
+        if slot.isAvailable {
+            print("PLAYER_DBG [CHECK] selectEpisode → play sort=\(sort) via autoAdvanceSort")
+            playback.autoAdvanceSort = sort
+            return true
+        }
+        guard let manager else {
+            print("PLAYER_DBG [CHECK] selectEpisode SKIP reason=noManager sort=\(sort)")
+            setEpisodeHint("第\(sort)集尚未下载", reason: "noManager")
+            return false
+        }
+        if let item = episodeItems.first(where: { $0.sort == sort }) {
+            switch item.phase {
+            case .queued, .active:
+                print("PLAYER_DBG [CHECK] selectEpisode SKIP reason=downloading sort=\(sort)")
+                setEpisodeHint("第\(sort)集正在下载", reason: "alreadyQueued")
+                return false
+            case .idle, .failed, .done:
+                break   // failed 可重试；done 但磁盘还没就绪 → 交给 requestDownload 再判
+            }
+            if !item.playable {
+                print("PLAYER_DBG [CHECK] selectEpisode REFUSE reason=notPlayable sort=\(sort)")
+                setEpisodeHint("第\(sort)集站点未开放下载", reason: "notPlayable")
+                AppHaptics.warning()
+                return false
+            }
+        }
+        switch panelService.requestDownload(sort: sort, seriesName: seriesName,
+                                            target: playbackTarget, manager: manager) {
+        case .queued(let queuedSort):
+            AppHaptics.light()
+            setEpisodeHint("已加入下载队列：第\(queuedSort)集", reason: "queued")
+            scheduleEpisodePanelRefresh()
+        case .alreadyQueued(let s):
+            setEpisodeHint("第\(s)集正在下载", reason: "alreadyQueued")
+        case .notPlayable(let s):
+            AppHaptics.warning()
+            setEpisodeHint("第\(s)集站点未开放下载", reason: "notPlayable")
+        case .missingMetadata, .missingTarget:
+            setEpisodeHint("缺少剧集信息，请回剧集页下载", reason: "missingMetadata")
+        }
+        return false
+    }
+
+    /// 下载任务状态变化 → 面板去抖刷新（进度很密，0.25s 合并一次）
+    private func observeDownloads(_ manager: DownloadManager?) {
+        managerCancellable = nil
+        guard let manager else {
+            print("PLAYER_DBG [VM] panel observe DISABLED reason=noManager")
+            return
+        }
+        managerCancellable = manager.objectWillChange
+            // objectWillChange 在状态变更**之前**发出：切到下一轮 runloop 再读才是新值
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.scheduleEpisodePanelRefresh() }
+        print("PLAYER_DBG [VM] panel observe manager=ON")
+    }
+
+    private func scheduleEpisodePanelRefresh() {
+        panelRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshEpisodePanel(reason: "downloads")
+        }
+        panelRefreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// 面板提示（标题位置显示）：新提示顶掉旧的，2.4s 后按令牌清除
+    private func setEpisodeHint(_ text: String, reason: String) {
+        hintTask?.cancel()
+        let token = UUID()
+        hintToken = token
+        episodeHint = text
+        print("PLAYER_DBG [VM] panel hint=\(text) reason=\(reason)")
+        publishEpisodePanel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.hintToken == token else { return }
+            self.episodeHint = nil
+            print("PLAYER_DBG [VM] panel hint clear reason=timeout2.4s")
+            self.publishEpisodePanel()
+        }
+        hintTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work)
+    }
+
+    /// 面板状态同步给播放 VM 的专用通道（全屏抽屉订阅它，不碰 objectWillChange）
+    private func publishEpisodePanel() {
+        playback.episodePanelSubject.send(EpisodePanelState(items: episodeItems, hint: episodeHint))
     }
 
     /// 预热「当前集 + 调度顺序上相邻的集」（走 PlaybackQueueService 的推荐接入点，算法换序自动跟随）
@@ -211,6 +369,15 @@ final class PlayerFeedViewModel: ObservableObject {
         settleWork?.cancel()
         settleWork = nil
         settleGeneration += 1
+        // 面板刷新/提示一并停掉，并清空共享状态（下一个播放页重新装配）
+        panelRefreshWork?.cancel()
+        panelRefreshWork = nil
+        hintTask?.cancel()
+        hintTask = nil
+        managerCancellable = nil
+        episodeItems = []
+        episodeHint = nil
+        publishEpisodePanel()
         // 退出播放页顺手清掉挂着的提示，避免下个页面复用时残留
         toastTask?.cancel()
         toastText = nil

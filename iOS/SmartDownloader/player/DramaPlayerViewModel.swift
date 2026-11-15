@@ -189,6 +189,16 @@ final class DramaPlayerViewModel: ObservableObject {
     var episodeTotal: Int = 0
     /// 当前集号（未加载时为 nil）
     var currentEpisodeIndex: Int? { currentEpisode?.sort }
+
+    // MARK: 选集面板数据通道（2026-11-15）
+    //
+    // 面板的格子由 `PlayerFeedViewModel` 装配（它才持有队列/下载知识）后推进这个 subject：
+    // 全屏控制层只在抽屉打开时消费它，**不要挂到 objectWillChange** —— 那会让每次
+    // 进度 tick / 播放态翻转都重绘整块抽屉。
+    let episodePanelSubject = CurrentValueSubject<EpisodePanelState, Never>(EpisodePanelState())
+    /// 抽屉里点了某一集：由 FeedVM 实现（先对账磁盘，再切集或入队下载），
+    /// 返回 true 才表示真的切了集（抽屉据此决定是否收起）。
+    var onEpisodeSelected: ((Int) -> Bool)?
     /// 进后台那一刻是否在播：回前台只续「用户期望在播」的状态，不替已暂停的用户点播放
     private var wasPlayingBeforeBackground = false
     /// item 网络失败自动重试过的集号（每集最多一次；就绪即清空）——防「失败→重建→再失败」死循环

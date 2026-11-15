@@ -67,8 +67,9 @@ func makePreviewPlaybackRequest() -> ImmersivePlaybackRequest {
 
 /// 样张宿：与正式入口同一套 DramaPlayerContainer，不复制任何播放逻辑
 struct PlayerPreviewHost: View {
+    var manager: DownloadManager
     var body: some View {
-        DramaPlayerContainer(request: makePreviewPlaybackRequest(), onClose: {})
+        DramaPlayerContainer(request: makePreviewPlaybackRequest(), manager: manager, onClose: {})
     }
 }
 #endif

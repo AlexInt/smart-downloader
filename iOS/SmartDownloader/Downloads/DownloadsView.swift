@@ -732,7 +732,8 @@ struct SeriesDetailView: View {
             PlayerView(item: item)
         }
         .fullScreenCover(item: $immersivePlayback, onDismiss: { refreshProgress() }) { request in
-            DramaPlayerContainer(request: request, onClose: { immersivePlayback = nil })
+            DramaPlayerContainer(request: request, manager: manager,
+                                 onClose: { immersivePlayback = nil })
         }
         .onAppear { refreshProgress() }
     }

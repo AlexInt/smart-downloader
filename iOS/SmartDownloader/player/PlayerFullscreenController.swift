@@ -140,6 +140,12 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
                 self?.refreshEpisodeMeta()
             }
             .store(in: &cancellables)
+        // 选集面板数据：FeedVM 装配后推进 subject（真实集号 + 下载态 + 提示）。
+        // 只在抽屉打开时消费，**不要改挂 objectWillChange**——那会让每次进度 tick 重绘抽屉
+        playback.episodePanelSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in self?.applyEpisodePanelState(state) }
+            .store(in: &cancellables)
         // 锁定态翻转：立刻重算控件可见性（锁上时全部收起，只剩解锁钮）
         playback.$isFullscreenLocked
             .removeDuplicates()
@@ -567,15 +573,19 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             UIView.animate(withDuration: 0.2) { backdrop.alpha = 1 }
             container.setVideoRect(geo.shrunkVideoFrame, cornerRadius: 2, animated: true)
 
+            // 面板数据来自 FeedVM 推给播放 VM 的专用通道（真实集号 + 下载态 + 提示），
+            // 打开时取当前快照，之后由 episodePanelSubject 热更新（见 init 里的订阅）
+            let state = playback.episodePanelSubject.value
             let panel = EpisodeDrawerPanel()
-            panel.total = max(playback.episodeTotal, 1)
-            panel.current = playback.currentEpisodeIndex ?? 1
-            panel.onSelect = { [weak self] index in
+            panel.apply(state: state, current: drawerCurrentSort(state))
+            panel.onSelect = { [weak self] sort in
                 guard let self else { return }
-                print("PLAYER_DBG [Fullscreen] episode drawer select \(index) → autoAdvanceSort")
-                // 复用自动连播通道（翻页 → 停稳 → pageSettled 全套加载语义），不另开旁路
-                self.playback.autoAdvanceSort = index
-                self.dismissDrawer(animated: true)
+                // 点按收口在 FeedVM：已下载 → 切集（true，收起抽屉）；
+                // 未下载 → 入队下载 / 提示（false，抽屉留着看进度环与标题提示）
+                let switched = self.playback.onEpisodeSelected?(sort) ?? false
+                print("PLAYER_DBG [CHECK] drawerSelect sort=\(sort) switched=\(switched) → \(switched ? "close" : "keepOpen")")
+                self.controls?.keepVisible()
+                if switched { self.dismissDrawer(animated: true) }
             }
             panel.onClose = { [weak self] in
                 self?.dismissDrawer(animated: true)
@@ -585,6 +595,19 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
                 (panel as? EpisodeDrawerPanel)?.revealCurrent()
             }
         }
+    }
+
+    /// 抽屉「当前集」：播放器当前集优先，未加载时退到面板第一格
+    private func drawerCurrentSort(_ state: EpisodePanelState) -> Int {
+        playback.currentEpisodeIndex ?? state.items.first?.sort ?? 1
+    }
+
+    /// 面板快照热更新：只在选集抽屉打开时下发（下载进度/提示变化不重绘其它界面）
+    private func applyEpisodePanelState(_ state: EpisodePanelState) {
+        guard openDrawer == .episodes, let panel = drawerPanel as? EpisodeDrawerPanel else { return }
+        let current = drawerCurrentSort(state)
+        print("PLAYER_DBG [CHECK] drawerPanel apply cells=\(state.items.count) current=\(current) hint=\(state.hint ?? "nil")")
+        panel.apply(state: state, current: current)
     }
 
     /// 面板挂载 + 右侧滑入动画。面板带 transform 不能 setFrame（会经逆变换重设 bounds），

@@ -13,6 +13,29 @@ struct PlayableEpisode: Identifiable, Equatable {
     var isAvailable: Bool { playlistURL != nil }
 }
 
+/// 选集面板的一格（2026-11-15）。
+/// 集号一律是**真实集号**（队列槽位的 sort），不是数组下标；
+/// 下载态来自磁盘账本 + 下载任务，playable 来自剧集缓存——与剧集页选集区同一套口径：
+/// 已下载 → 点即播；未下载且可播 → 点即下载；站点未开放 → 如实提示。
+struct EpisodePanelItem: Identifiable, Equatable {
+    let sort: Int
+    var phase: EpisodeDownloadPhase
+    /// 站点是否开放该集（剧集缓存缺失时为 true：让点击走「缺元数据」提示，而不是假灰）
+    var playable: Bool
+    var id: Int { sort }
+    var isDownloaded: Bool {
+        if case .done = phase { return true }
+        return false
+    }
+}
+
+/// 选集面板的一次完整快照：格子 + 一次性提示。
+/// 提示显示在面板标题位置（竖屏弹层与全屏抽屉同一个位置），2.4s 后自动清空。
+struct EpisodePanelState: Equatable {
+    var items: [EpisodePanelItem] = []
+    var hint: String? = nil
+}
+
 /// 拉起沉浸式播放页的请求。
 /// knownSorts = 调用方已经掌握的全剧集号（剧集页直接持有 info.episodes）；
 /// 为空时由 service 反查本地缓存，再退化为「真实已下载的集」。全程不凭空造集号。

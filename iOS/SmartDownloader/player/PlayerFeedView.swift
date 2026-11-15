@@ -150,11 +150,15 @@ struct PlayerFeedView: View {
             // 展开动画会被整段吞掉（只剩遮罩淡入），这是原来「弹出感不明显」的原因。
             BottomSheet(isPresented: showEpisodePanel, height: sheetHeight) {
                 EpisodePanel(
-                    total: currentEpisodeTotal,
+                    items: vm.episodeItems,
                     current: currentEpisodeIndex,
-                    onSelect: { index in
-                        showEpisodePanel = false
-                        jumpToEpisode(index)
+                    hint: vm.episodeHint,
+                    onSelect: { sort in
+                        // 点按收口在 VM：先对账磁盘，已下载 → 切集播放；未下载 → 入队下载。
+                        // 只有真的切了集才收起面板（下载中留着看进度环与提示）
+                        let switched = vm.selectEpisode(sort: sort)
+                        print("PLAYER_DBG [FeedView] panel select sort=\(sort) switched=\(switched) → \(switched ? "close" : "keepOpen")")
+                        if switched { showEpisodePanel = false }
                     },
                     onClose: { showEpisodePanel = false }
                 )
@@ -170,30 +174,9 @@ struct PlayerFeedView: View {
     /// 倍速改用同一容器后沿用同一比例，「拉起半屏」观感一致）
     private static let sheetHeightRatio: CGFloat = 0.465
 
-    /// 当前集的「第几集 / 共几集」：选集网格要用真实集号（槽位的 sort 就是集号）
+    /// 当前集号：选集网格的「当前集」高亮要用真实集号（槽位的 sort 就是集号）
     private var currentEpisodeIndex: Int {
-        scrollID ?? vm.currentSort ?? 1
-    }
-
-    private var currentEpisodeTotal: Int {
-        max(vm.totalEpisodes, 1)
-    }
-
-    /// 选集跳转：走既有分页管线，不自己加载。
-    /// 复用 autoAdvanceSort 通道（Coordinator 订阅后动画翻页 → 停稳 → pageSettled
-    /// → 预热池/autoplay 全套规则照旧生效），与「播完自动连播」同一条路，
-    /// 避免另开一条「直接 load」的旁路造成两套加载语义。
-    private func jumpToEpisode(_ index: Int) {
-        guard index != currentEpisodeIndex else {
-            print("PLAYER_DBG [FeedView] jump SKIP reason=sameEpisode sort=\(index)")
-            return
-        }
-        guard vm.slots.contains(where: { $0.sort == index }) else {
-            print("PLAYER_DBG [FeedView] jump SKIP reason=noSlot sort=\(index)")
-            return
-        }
-        print("PLAYER_DBG [FeedView] jump sort=\(index) via autoAdvanceSort")
-        vm.playback.autoAdvanceSort = index
+        scrollID ?? vm.currentSort ?? vm.episodeItems.first?.sort ?? 1
     }
 
     @ViewBuilder

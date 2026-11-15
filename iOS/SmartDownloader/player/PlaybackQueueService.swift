@@ -148,21 +148,25 @@ struct PlaybackQueueService {
 
     // MARK: - 候选池构建（离线，不联网，不编造集号）
 
-    /// 集号来源优先级：调用方已知的全剧集数 → 本地 SQLite 缓存反查 → 真实已下载的集。
-    /// 没有剧集元数据时，我们并不知道这部剧有没有下一集，因此只列真实已下载的集；
-    /// 此时只有 1 集就不能滑，如实提示「已是最后一集」，绝不造一个空槽位凑数。
+    /// 集号来源优先级：调用方已知的全剧集数 ∪ 真实已下载集 → 本地 SQLite 缓存 ∪ 已下载集。
+    /// 取并集（2026-11-15）：缓存/已知列表可能比磁盘旧（播放中刚下完一集、或只下了
+    /// 列表里没有的集），只信其一都会让面板漏集——面板是「这一集能不能点」的入口，
+    /// 少一格就等于用户在该剧里看不到自己刚下的那集。
     private static func allSorts(forSeries name: String, known: [Int], downloaded: [Int]) -> [Int] {
+        let base: [Int]
+        let source: String
         if !known.isEmpty {
-            print("PLAYER_DBG [Service] allSorts source=known count=\(known.count)")
-            return known.sorted()
+            base = known
+            source = "known"
+        } else {
+            let cached = DramaCache.allSorts(forSeriesName: name)
+            base = cached
+            source = cached.isEmpty ? "downloadedFallback" : "sqlite"
         }
-        let cached = DramaCache.allSorts(forSeriesName: name)
-        guard cached.isEmpty else {
-            print("PLAYER_DBG [Service] allSorts source=sqlite count=\(cached.count)")
-            return cached
-        }
-        print("PLAYER_DBG [Service] allSorts source=downloadedFallback count=\(downloaded.count) sorts=\(downloaded.sorted())")
-        return downloaded.sorted()
+        let merged = Set(base).union(downloaded).sorted()
+        print("PLAYER_DBG [Service] allSorts source=\(source) base=\(base.count) "
+              + "downloaded=\(downloaded.count) merged=\(merged.count)")
+        return merged
     }
 
     /// 文件系统是「是否已下载」的账本，集号来自调用方 / DramaCache。
