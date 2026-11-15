@@ -174,13 +174,6 @@ final class DramaPlayerViewModel: ObservableObject {
     var episodeTotal: Int = 0
     /// 当前集号（未加载时为 nil）
     var currentEpisodeIndex: Int? { currentEpisode?.sort }
-    /// 当前集点赞/收藏展示值（画布 22:49 / 22:60；本地无服务端计数，按集号给稳定占位）
-    var currentLikeCount: Int {
-        DramaEpisode.likeCount(for: currentEpisode?.sort ?? 1)
-    }
-    var currentSavedCount: Int {
-        DramaEpisode.savedCount(for: currentEpisode?.sort ?? 1)
-    }
     /// 进后台那一刻是否在播：回前台只续「用户期望在播」的状态，不替已暂停的用户点播放
     private var wasPlayingBeforeBackground = false
     /// item 网络失败自动重试过的集号（每集最多一次；就绪即清空）——防「失败→重建→再失败」死循环

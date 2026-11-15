@@ -334,9 +334,6 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         controls.onEpisodeTapped = { [weak self] in
             self?.presentDrawer(.episodes)
         }
-        controls.onNextEpisode = { [weak self] in
-            self?.advanceToNextEpisode()
-        }
         controls.onQualityTapped = { [weak self] in
             // 本地 HLS 只有单一路径清晰度：不做假选项，给一句说明
             print("PLAYER_DBG [Fullscreen] quality tap → toast reason=singleVariant")
@@ -501,7 +498,6 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         guard let controls else { return }
         let index = playback.currentEpisodeIndex ?? 1
         controls.updateTitle(series: playback.seriesName, index: index)
-        controls.updateCounts(like: playback.currentLikeCount, saved: playback.currentSavedCount)
         print("PLAYER_DBG [Fullscreen] meta series=\(playback.seriesName) index=\(index) total=\(playback.episodeTotal)")
     }
 
@@ -662,6 +658,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private func presentMoreMenu(from source: UIView, anchorView: UIView?) {
         guard let host = controls ?? anchorView else { return }
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        // 下一集：原底栏左侧位置已改为播放/暂停（用户 2026-11-15），功能移到这里不丢
+        sheet.addAction(UIAlertAction(title: "下一集", style: .default) { [weak self] _ in
+            print("PLAYER_DBG [Fullscreen] menu next episode")
+            self?.advanceToNextEpisode()
+        })
         sheet.addAction(UIAlertAction(title: playback.isCleanScreen ? "退出清屏" : "清屏模式",
                                       style: .default) { [weak self] _ in
             self?.playback.isCleanScreen.toggle()

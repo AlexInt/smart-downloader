@@ -7,7 +7,8 @@ import AVFoundation
 // 按画布 22:1「观影控件层」（844×390）1:1 重做。三栏布局，全部坐标来自画布节点实读：
 //   顶栏：返回 18×20 @(98,30)｜剧名与集数 13px serif @(122,30)｜更多 16×20 @(745,31)
 //   中部：亮度 26×26 @(106,180)｜暂停双竖条 48×48 @(398,174)｜锁 44×44 @(734,118)｜音量 44×44 @(734,172)
-//   底栏：下一集 20×20 @(98,310)｜当前时间 @(132,311)｜进度轨道 556×2 @(206,318) + 圆点 @(264,315)
+//   底栏：播放/暂停 20×20 @(98,310)（原画布此位是「下一集」，2026-11-15 用户改）
+//        ｜当前时间 @(132,311)｜进度轨道 556×2 @(206,318) + 圆点 @(264,315)
 //        ｜总时长 @(774,311)｜点赞 @(98,344)｜收藏 @(176,344)｜倍速 @(596,347)｜1080P @(658,347)｜选集 @(726,347)
 //   字幕：23px Noto Sans SC Bold 居中 @(326,330)
 //
@@ -52,19 +53,21 @@ final class PlayerFullscreenControlsView: UIView {
     private let volumeGlyph = PlayerFullscreenControlsView.makeVolumeGlyph()
 
     // MARK: 底栏
-    private let nextButton = UIButton(type: .custom)
-    private let nextGlyph = PlayerFullscreenControlsView.makeNextGlyph()
+    // 播放/暂停（原画布 22:41「下一集」的位置）：用户 2026-11-15 点名——进度条左边这个位置
+    // 应该是播放/暂停，而且必须跟着播放态翻面。「下一集」移到顶栏「更多」菜单里（功能不丢）。
+    private let barPlayButton = UIButton(type: .custom)
+    private let barPlayGlyph = PlayerFullscreenControlsView.makeBarPlayGlyph()
+    private let barPauseGlyph = PlayerFullscreenControlsView.makeBarPauseGlyph()
     private let currentTimeLabel = UILabel()
     private let progressTrack = UIView()
     private let progressFill = UIView()
     private let progressDot = UIView()
     private let totalTimeLabel = UILabel()
+    // 点赞 / 收藏：只留图标（用户 2026-11-15：数字移除，本地只记状态不报数）
     private let likeButton = UIButton(type: .custom)
     private let likeGlyph = PlayerFullscreenControlsView.makeHeartGlyph()
-    private let likeCountLabel = UILabel()
     private let saveButton = UIButton(type: .custom)
     private let saveGlyph = PlayerFullscreenControlsView.makeStarGlyph()
-    private let saveCountLabel = UILabel()
     private let rateButton = UIButton(type: .custom)
     private let qualityButton = UIButton(type: .custom)
     private let episodeButton = UIButton(type: .custom)
@@ -105,7 +108,7 @@ final class PlayerFullscreenControlsView: UIView {
     /// 选集（横屏用右侧抽屉，画布 22:73）
     var onEpisodeTapped: (() -> Void)?
     /// 下一集
-    var onNextEpisode: (() -> Void)?
+    // 下一集按钮已移入顶栏「更多」菜单（2026-11-15），控制层不再单独发这个回调
     /// 清晰度（本地 HLS 只有单一清晰度，点击给出说明 toast）
     var onQualityTapped: (() -> Void)?
 
@@ -197,9 +200,10 @@ final class PlayerFullscreenControlsView: UIView {
         addSubview(subtitleLabel)
 
         // 底栏
-        nextButton.addTarget(self, action: #selector(nextTapped), for: .touchUpInside)
-        nextButton.addSubview(nextGlyph)
-        addSubview(nextButton)
+        barPlayButton.addTarget(self, action: #selector(barPlayTapped), for: .touchUpInside)
+        barPlayButton.addSubview(barPlayGlyph)
+        barPlayButton.addSubview(barPauseGlyph)
+        addSubview(barPlayButton)
 
         currentTimeLabel.font = Self.monoFont(11)
         currentTimeLabel.textColor = .white
@@ -220,21 +224,15 @@ final class PlayerFullscreenControlsView: UIView {
         totalTimeLabel.textAlignment = .right
         addSubview(totalTimeLabel)
 
-        // 点赞（画布 22:49：心形 18 + gap 5 + 10px 数字）
+        // 点赞（画布 22:49：心形 18；数字已按用户要求移除，只记本地状态不报数）
         likeButton.addTarget(self, action: #selector(likeTapped), for: .touchUpInside)
         likeButton.addSubview(likeGlyph)
         addSubview(likeButton)
-        likeCountLabel.font = Self.sansFont(10, weight: .regular)
-        likeCountLabel.textColor = .white
-        addSubview(likeCountLabel)
 
-        // 收藏（画布 22:60：星形 18 + gap 5 + 10px 数字）
+        // 收藏（画布 22:60：星形 18；同上，无数字）
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.addSubview(saveGlyph)
         addSubview(saveButton)
-        saveCountLabel.font = Self.sansFont(10, weight: .regular)
-        saveCountLabel.textColor = .white
-        addSubview(saveCountLabel)
 
         // 右栏工具（画布 22:68「倍速」12px / 22:69「1080P」12px Inter Medium / 22:70「选集」12px）
         configureTool(rateButton, title: "倍速", font: Self.sansFont(12, weight: .regular),
@@ -251,7 +249,7 @@ final class PlayerFullscreenControlsView: UIView {
         lockButton.accessibilityLabel = "锁定"
         volumeButton.accessibilityLabel = "音量"
         playPauseButton.accessibilityLabel = "播放"
-        nextButton.accessibilityLabel = "下一集"
+        barPlayButton.accessibilityLabel = "暂停"
         rateButton.accessibilityLabel = "倍速"
         qualityButton.accessibilityLabel = "清晰度"
         episodeButton.accessibilityLabel = "选集"
@@ -285,12 +283,18 @@ final class PlayerFullscreenControlsView: UIView {
             }
             .store(in: &cancellables)
         // 播放态：暂停时显示播放三角，播放中显示双竖条（画布 22:28 画的是双竖条 = 播放中）
+        // 中部大按钮与底栏进度条左侧的按钮共用一个状态，两边必须同步翻面
         playback.$isPlaying
             .removeDuplicates()
             .sink { [weak self] playing in
-                self?.playGlyph.isHidden = playing
-                self?.pauseGlyph.isHidden = !playing
-                self?.playPauseButton.accessibilityLabel = playing ? "暂停" : "播放"
+                guard let self else { return }
+                self.playGlyph.isHidden = playing
+                self.pauseGlyph.isHidden = !playing
+                self.playPauseButton.accessibilityLabel = playing ? "暂停" : "播放"
+                self.barPlayGlyph.isHidden = playing
+                self.barPauseGlyph.isHidden = !playing
+                self.barPlayButton.accessibilityLabel = playing ? "暂停" : "播放"
+                print("PLAYER_DBG [Fullscreen] isPlaying=\(playing) → bar glyph \(playing ? "pause" : "play")")
             }
             .store(in: &cancellables)
         playback.$isMuted
@@ -375,8 +379,8 @@ final class PlayerFullscreenControlsView: UIView {
         let normalControls: [UIView] = [
             backButton, titleLabel, moreButton,
             brightnessButton, playPauseButton,
-            nextButton, currentTimeLabel, totalTimeLabel,
-            likeButton, likeCountLabel, saveButton, saveCountLabel,
+            barPlayButton, currentTimeLabel, totalTimeLabel,
+            likeButton, saveButton,
             rateButton, qualityButton, episodeButton,
             subtitleLabel, progressTrack, progressDot
         ]
@@ -460,9 +464,13 @@ final class PlayerFullscreenControlsView: UIView {
         subtitleLabel.font = Self.sansFont(23 * s, weight: .bold)
 
         // ── 底栏 ──
-        // 下一集：画布 20×20 @(98,310)，命中区 44
-        nextButton.frame = centered(at: CGPoint(x: X(108), y: Y(320)), size: 44)
-        nextGlyph.frame = CGRect(x: (44 - 20) / 2, y: (44 - 20) / 2, width: 20, height: 20)
+        // 播放/暂停：占原「下一集」位（画布 20×20 @(98,310)，命中区 44）
+        barPlayButton.frame = centered(at: CGPoint(x: X(108), y: Y(320)), size: 44)
+        let barGlyphRect = CGRect(x: (44 - 20) / 2, y: (44 - 20) / 2, width: 20, height: 20)
+        barPlayGlyph.frame = barGlyphRect
+        barPauseGlyph.frame = barGlyphRect
+        barPlayGlyph.glyphScale = s
+        barPauseGlyph.glyphScale = s
         // 当前时间：画布 46×13 @(132,311)
         currentTimeLabel.frame = CGRect(x: X(132), y: Y(311), width: 60 * geo.sx, height: 14 * s)
         currentTimeLabel.font = Self.monoFont(11 * s)
@@ -485,11 +493,10 @@ final class PlayerFullscreenControlsView: UIView {
         totalTimeLabel.frame = CGRect(x: X(774), y: Y(311), width: 45 * geo.sx, height: 14 * s)
         totalTimeLabel.font = Self.monoFont(11 * s)
 
-        // 点赞与数字：画布 58×22 @(98,344)，心形 18 + gap 5 + 文本
-        layoutAction(button: likeButton, glyph: likeGlyph, count: likeCountLabel,
+        // 点赞 / 收藏：只留图标（数字已移除），画布 18×18 @(98,344) / @(176,344)
+        layoutAction(button: likeButton, glyph: likeGlyph,
                      designX: 98, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
-        // 收藏与数字：画布 62×22 @(176,344)
-        layoutAction(button: saveButton, glyph: saveGlyph, count: saveCountLabel,
+        layoutAction(button: saveButton, glyph: saveGlyph,
                      designX: 176, designMidY: M.actionMidY, scale: s, X: X, Y: Y)
 
         // 右栏工具：倍速 @596 / 1080P @658 / 选集 @726，y=347（中心 355）
@@ -510,23 +517,17 @@ final class PlayerFullscreenControlsView: UIView {
         CGRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
     }
 
-    private func layoutAction(button: UIButton, glyph: FullscreenGlyphView, count: UILabel,
+    private func layoutAction(button: UIButton, glyph: FullscreenGlyphView,
                               designX: CGFloat, designMidY: CGFloat,
                               scale s: CGFloat,
                               X: (CGFloat) -> CGFloat, Y: (CGFloat) -> CGFloat) {
-        // 画布：图标 18、gap 5，数字 hug。整体高 22、宽 58/62。
+        // 画布：图标 18，命中区图标 +10。数字已移除，整体只有一枚图标
         let iconSize = 18 * s
         let midY = Y(designMidY)
-        button.frame = CGRect(x: X(designX), y: midY - iconSize / 2,
+        button.frame = CGRect(x: X(designX) - 5, y: midY - iconSize / 2 - 5,
                               width: iconSize + 10, height: iconSize + 10)
         glyph.frame = CGRect(x: 5, y: 5, width: iconSize, height: iconSize)
         glyph.glyphScale = s
-        // 数字：图标右侧 5pt
-        count.sizeToFit()
-        count.font = Self.sansFont(10 * s, weight: .regular)
-        count.frame = CGRect(x: button.frame.maxX + 1,
-                             y: midY - count.frame.height / 2,
-                             width: count.frame.width, height: count.frame.height)
     }
 
     private func layoutTool(_ button: UIButton, designX: CGFloat, designW: CGFloat,
@@ -581,9 +582,9 @@ final class PlayerFullscreenControlsView: UIView {
         keepVisible()
     }
 
-    @objc private func nextTapped() {
-        print("PLAYER_DBG [Fullscreen] next episode tap")
-        onNextEpisode?()
+    @objc private func barPlayTapped() {
+        print("PLAYER_DBG [CHECK] fullscreen bar play/pause tap → togglePlayback (isPlaying=\(playback.isPlaying))")
+        playback.togglePlayback()
         keepVisible()
     }
 
@@ -624,13 +625,6 @@ final class PlayerFullscreenControlsView: UIView {
         titleLabel.text = "\(series)  第\(index)集"
     }
 
-    /// 点赞/收藏数值（画布 22:52「1.8万」/ 22:63「44.9万」）
-    func updateCounts(like: Int, saved: Int) {
-        likeCountLabel.text = Self.compactCount(like)
-        saveCountLabel.text = Self.compactCount(saved)
-        setNeedsLayout()
-    }
-
     /// 字幕（画布 22:40）：无字幕轨时整块隐藏
     func updateSubtitle(_ text: String?) {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -661,13 +655,6 @@ final class PlayerFullscreenControlsView: UIView {
         String(format: "%.2f", rate)
             .replacingOccurrences(of: "0$", with: "")
             .replacingOccurrences(of: "\\.$", with: "")
-    }
-
-    private static func compactCount(_ value: Int) -> String {
-        guard value >= 10000 else { return "\(value)" }
-        let text = String(format: "%.1f", Double(value) / 10000)
-            .replacingOccurrences(of: ".0", with: "")
-        return "\(text)万"
     }
 
     // MARK: 图标构件（按画布几何绘制，尺寸随 glyphScale 缩放）
@@ -768,19 +755,28 @@ final class PlayerFullscreenControlsView: UIView {
         VolumeGlyphView()
     }
 
-    static func makeNextGlyph() -> FullscreenGlyphView {
-        // 画布 22:41：三角 8×12 实心 @(4,4) + 竖线 2.2×13 r1 @(14,3.5)
+    static func makeBarPlayGlyph() -> FullscreenGlyphView {
+        // 底栏播放/暂停（原 22:41 位，20×20 框）：播放三角 7×11 居中偏移 1 视觉配重
         FullscreenGlyphView { ctx, size, color in
             let s = size.width / 20
             let tri = CGMutablePath()
-            tri.move(to: CGPoint(x: 4 * s, y: 4 * s))
-            tri.addLine(to: CGPoint(x: 12 * s, y: 10 * s))
-            tri.addLine(to: CGPoint(x: 4 * s, y: 16 * s))
+            tri.move(to: CGPoint(x: 6 * s, y: 4.5 * s))
+            tri.addLine(to: CGPoint(x: 15 * s, y: 10 * s))
+            tri.addLine(to: CGPoint(x: 6 * s, y: 15.5 * s))
             tri.closeSubpath()
             fill(ctx, tri, color)
-            let bar = CGRect(x: 14 * s, y: 3.5 * s, width: 2.2 * s, height: 13 * s)
-            fill(ctx, CGPath(roundedRect: bar, cornerWidth: 1 * s,
-                             cornerHeight: 1 * s, transform: nil), color)
+        }
+    }
+
+    static func makeBarPauseGlyph() -> FullscreenGlyphView {
+        // 双竖条 2.6×11 r1.3，x=6.2 / 11.2，与播放三角同视觉重量
+        FullscreenGlyphView { ctx, size, color in
+            let s = size.width / 20
+            for x in [6.2, 11.2] {
+                let bar = CGRect(x: x * s, y: 4.5 * s, width: 2.6 * s, height: 11 * s)
+                fill(ctx, CGPath(roundedRect: bar, cornerWidth: 1.3 * s,
+                                 cornerHeight: 1.3 * s, transform: nil), color)
+            }
         }
     }
 

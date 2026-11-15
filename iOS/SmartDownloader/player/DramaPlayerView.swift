@@ -334,48 +334,32 @@ struct DramaPlayerView: View {
     }
 
     /// 右侧互动列（画布 2:106）：收藏（星形）在上、点赞（心形）在下。
-    /// 每组 = 26×26 描边图标 + 5pt 间距 + 10px 数值，整列 44 宽、两组间 32。
+    /// 每组只有 26×26 描边图标（数值已按用户要求移除，只记本地状态不报数），整列 44 宽、两组间 32。
     private var rightActionColumn: some View {
         VStack(spacing: 32) {
             // 收藏
-            VStack(spacing: 5) {
-                Button {
-                    guard isActive else { return }
-                    playback.saved.toggle()
-                } label: {
-                    OverlayStarGlyph(size: 26, color: savedTint)
-                        .frame(width: 44, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playback.saved ? "取消收藏" : "收藏")
-
-                Text(Self.compactCount(episode.savedCount))
-                    .font(DWFont.cn(10, .regular))
-                    .foregroundStyle(DWColor.overlayInkSub)
-                    .lineLimit(1)
-                    .allowsHitTesting(false)
+            Button {
+                guard isActive else { return }
+                playback.saved.toggle()
+            } label: {
+                OverlayStarGlyph(size: 26, color: savedTint)
+                    .frame(width: 44, height: 26)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(playback.saved ? "取消收藏" : "收藏")
 
             // 点赞
-            VStack(spacing: 5) {
-                Button {
-                    guard isActive else { return }
-                    playback.liked.toggle()
-                } label: {
-                    OverlayHeartGlyph(size: 26, color: likedTint)
-                        .frame(width: 44, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playback.liked ? "取消点赞" : "点赞")
-
-                Text(Self.compactCount(episode.likeCount))
-                    .font(DWFont.cn(10, .regular))
-                    .foregroundStyle(DWColor.overlayInkSub)
-                    .lineLimit(1)
-                    .allowsHitTesting(false)
+            Button {
+                guard isActive else { return }
+                playback.liked.toggle()
+            } label: {
+                OverlayHeartGlyph(size: 26, color: likedTint)
+                    .frame(width: 44, height: 26)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(playback.liked ? "取消点赞" : "点赞")
         }
         .frame(width: 44, height: 150, alignment: .top)
     }
@@ -686,15 +670,6 @@ struct DramaPlayerView: View {
                 .foregroundStyle(DWColor.textHint)
         }
         .allowsHitTesting(false)
-    }
-
-    /// 计数缩写：237000 → 23.7万（画布 2:110 的值是「23.7万」）
-    private static func compactCount(_ value: Int) -> String {
-        guard value >= 10000 else { return "\(value)" }
-        let wan = Double(value) / 10000
-        // 一位小数，整数则不带小数点：237000 → 23.7万、10000 → 1万
-        let text = String(format: "%.1f", wan).replacingOccurrences(of: ".0", with: "")
-        return "\(text)万"
     }
 }
 

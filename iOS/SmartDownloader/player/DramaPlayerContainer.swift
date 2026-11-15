@@ -29,5 +29,9 @@ struct DramaPlayerContainer: View {
                 feedVM.stop()
                 print("PERF_DBG exit t=\(PERF.ms()) phase=containerDisappearDone (feedVM.stop returned)")
             }
+            // 播放页沉浸式：隐藏状态栏（用户 2026-11-15 要求）。
+            // App 锁竖屏、横屏靠容器自转，系统状态栏仍按竖屏画在屏幕一侧，
+            // 与旋转后的画面叠在一起（「15:46 / 5G / 89%」压在视频上）。
+            .statusBarHidden(true)
     }
 }
