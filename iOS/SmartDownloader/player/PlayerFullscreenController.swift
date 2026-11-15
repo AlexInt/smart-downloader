@@ -736,11 +736,13 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
 
     private func installGestures(on container: FullscreenPlayerView) {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
         container.addGestureRecognizer(tap)
 
         let long = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         long.minimumPressDuration = 0.15
         long.allowableMovement = 10_000   // 2x 不靠位移距离撚断（同卡片 maximumDistance 10_000）
+        long.delegate = self
         container.addGestureRecognizer(long)
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSeekPan(_:)))
@@ -749,6 +751,22 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         container.addGestureRecognizer(pan)
         seekPan = pan
         print("PLAYER_DBG [Fullscreen] gestures installed (tap/longPress/seekPan)")
+    }
+
+    /// 落在控件上的触摸不交给容器手势：否则点「更多/锁/倍速」会连带触发容器 tap 的暂停。
+    /// 只排除 UIControl 及其子视图（glyph/label），压暗层与空白区照常落给容器手势。
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard let controls, let hit = touch.view else { return true }
+        var node: UIView? = hit
+        while let cur = node, cur !== controls {
+            if cur is UIControl {
+                print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=onControl \(type(of: cur))")
+                return false
+            }
+            node = cur.superview
+        }
+        return true
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -788,7 +806,14 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             controls?.showTransient()
             return
         }
-        print("PLAYER_DBG [CHECK] fullscreen TAP → togglePlayback")
+        // 清屏态（控件全收起）：第一下点按只呼出控件，不暂停/播放。
+        // 否则「想点一下调出控件」会把正看着的片子停掉 —— 2026-11-15 用户实报。
+        if controls?.isChromeVisible != true {
+            print("PLAYER_DBG [CHECK] fullscreen TAP chrome=hidden → reveal controls only")
+            controls?.showTransient()
+            return
+        }
+        print("PLAYER_DBG [CHECK] fullscreen TAP chrome=visible → togglePlayback")
         playback.togglePlayback()
         controls?.showTransient()
     }

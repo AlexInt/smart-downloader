@@ -376,10 +376,18 @@ final class PlayerFullscreenControlsView: UIView {
         lockGlyph.isLocked = locked
     }
 
+    /// 控制层此刻是否真的画在屏幕上（清屏态为 false）。
+    /// 容器点按靠它区分「第一次点按 = 呼出控件」与「控件已在 = 暂停/播放」（2026-11-15 用户拍板）。
+    /// 与 `updateVisibility` 共用同一口径，别各写一份判断。
+    var isChromeVisible: Bool {
+        let locked = playback.isFullscreenLocked
+        return locked ? userVisible : (userVisible || playback.isScrubbing)
+    }
+
     private func updateVisibility(animated: Bool) {
         let locked = playback.isFullscreenLocked
         // 锁定态：点按只呼出解锁钮，其余一律不显示（含压暗——锁屏看电影不该有控件噪点）
-        let visible = locked ? userVisible : (userVisible || playback.isScrubbing)
+        let visible = isChromeVisible
         if visible != lastLoggedVisible {
             lastLoggedVisible = visible
             print("PLAYER_DBG [Fullscreen] controls visible=\(visible) user=\(userVisible) scrub=\(playback.isScrubbing) locked=\(locked)")
