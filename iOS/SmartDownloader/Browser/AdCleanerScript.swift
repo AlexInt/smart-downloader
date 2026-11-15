@@ -13,9 +13,18 @@ import Foundation
 /// 两层策略，全通用词表、不针对任何站点（AGENTS：代码内不硬编码站点）：
 ///  1. 选择器直删：常见广告类名/id 词表（含拼音 tanchuang/guanggao、gg 等国内站惯用），
 ///     含 <video> 的元素一律不删（防误伤播放器）；
-///  2. 空浮层启发式：fixed + 近全屏 + 无有效内容（无表单/大图/文字）的「点击劫持层」。
-///     首见**立刻隐藏**（不等观察期），DOM 留 2s：期间填入真实内容（Nuxt 水合挂登录框）
-///     就 `restored` 撤销隐藏交还页面，仍空才删节点。
+///  2. 空浮层启发式：fixed + 近全屏 + **确实没有可见内容**（无表单/大图/文字）的
+///     「点击劫持层」。首见先判内容，真有内容就 `kept` 放过（登录框/年龄确认/
+///     公告等真实弹窗一律不碰）；确认是空层才隐藏，DOM 留 2s，期间填入内容就
+///     `restored` 撤销隐藏交还页面，仍空才删节点。
+///
+/// 两条铁律（都踩过坑）：
+///  - **隐藏后的复查不能被 visibility 守卫挡住**：旧实现先判 `visibility === 'hidden'`
+///    就 return，导致「被我们藏起来」的层永远走不到 restore/删除分支。站点年龄确认
+///    弹窗被藏掉后不恢复，只剩它身后的全屏暗色底盖住整页（2026-11-15）。
+///  - **只把「看得见的」内容算作真实内容**：广告弹窗内容被 CSS 词表藏掉后，背板里
+///    的图片不该再让它被判成「有内容」而保留；但判断年龄确认弹窗恢复时，又要能透过
+///    「我们加在根节点上的 visibility:hidden」看到里面的文字/图片。
 ///
 /// WKWebView 的 console.log 真机不进 Xcode 控制台，所有动作都经
 /// messageHandlers.adClean 回传原生打印（`BROWSER: adClean ...`），靠日志调优词表。
@@ -179,18 +188,65 @@ enum AdCleanerScript {
       }
 
       // ---- 判据 ----
+      // node 在 root（含）以内是否「可能被看见」：root 自身被我们加的
+      // visibility:hidden 要忽略，否则隐藏态下永远判不出内容已填入；
+      // 更内层的 visibility:hidden/display:none 照常算隐藏（广告弹窗内容
+      // 被 CSS 词表藏掉后，不该再算作背板的真实内容）。
+      function visibleWithin(node, root) {
+        var n = node;
+        while (n && n.nodeType === 1) {
+          try {
+            var cs = getComputedStyle(n);
+            if (cs.display === 'none') return false;
+            if (cs.visibility === 'hidden' && n !== root) return false;
+            if (n === root) return true;
+          } catch (e) { return false; }
+          n = n.parentElement;
+        }
+        return true;
+      }
+
+      // 可见文字：不能用 innerText——元素处于 visibility:hidden 时它可能返回空，
+      // 而「我们隐藏后，内容是否已经水合进来」恰恰要在隐藏态下判断。
+      function hasVisibleText(el) {
+        try {
+          var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          var total = 0, node;
+          while ((node = walker.nextNode())) {
+            var text = (node.nodeValue || '').replace(/\s+/g, '');
+            if (!text) continue;
+            var p = node.parentElement;
+            if (!p || !visibleWithin(p, el)) continue;
+            total += text.length;
+            if (total > 6) return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
       function hasRealContent(el) {
         try {
           if (el.querySelector('video, input, form, textarea, select')) return true;
           var imgs = el.querySelectorAll('img');
           for (var i = 0; i < imgs.length; i++) {
             var r = imgs[i].getBoundingClientRect();
-            if (r.width > 8 && r.height > 8) return true;
+            if (r.width > 8 && r.height > 8 && visibleWithin(imgs[i], el)) return true;
           }
-          var t = (el.innerText || '').replace(/\s+/g, '');
-          if (t.length > 6) return true;
+          if (hasVisibleText(el)) return true;
         } catch (e) {}
         return false;
+      }
+
+      // 删掉广告节点后，它的祖先里可能有一块全屏 fixed 背板（站点把暗色底画在
+      // 背板而不是弹窗上）——内容一空要立刻复查，否则会留下一层遮罩盖住页面。
+      function checkEnclosingLayers(from) {
+        var now = Date.now();
+        var p = from;
+        for (var i = 0; p && p.nodeType === 1 && i < 6; i++) {
+          checkFixedLayer(p, now);
+          if (p === document.body) break;
+          p = p.parentElement;
+        }
       }
 
       // 命中词表就删（含 video 的一律跳过）。返回是否已处理
@@ -209,42 +265,94 @@ enum AdCleanerScript {
             // 删掉的多半就是那个「锁着滚动」的弹窗：顺手把站点加的滚动锁解开
             //（站点自己的关闭回调永远不会执行了，不解锁页面就永久滑不动）
             unlockScroll('removed:' + sel, 0);
+            // 弹窗背后若还有一块全屏暗色背板，现在它已经是空层，立刻复查
+            checkEnclosingLayers(parent);
           } catch (e) {}
           return true;
         }
         return false;
       }
 
-      // 空浮层启发式：首见即隐藏（不给用户看到的机会），2s 后仍空才删节点
+      // 隐藏 / 恢复一块被我们判定为「空浮层」的全屏层。
+      // 隐藏前记下它原本的内联值，恢复时原样还回去（不要留下 visibility:visible
+      // 这类残留，站点自己的样式可能靠内联值工作）。
+      function hideLayer(f, now, reason) {
+        if (!f.hasAttribute('data-dwprevvis')) {
+          f.setAttribute('data-dwprevvis', f.style.getPropertyValue('visibility'));
+          f.setAttribute('data-dwprevpe', f.style.getPropertyValue('pointer-events'));
+        }
+        f.setAttribute('data-dwhidden', '1');
+        f.setAttribute('data-dwseen', String(now));
+        f.style.setProperty('visibility', 'hidden', 'important');
+        f.style.setProperty('pointer-events', 'none', 'important');
+        say('candidate', f, reason);
+      }
+
+      function restoreLayer(f, how) {
+        var pv = f.getAttribute('data-dwprevvis') || '';
+        var pp = f.getAttribute('data-dwprevpe') || '';
+        if (pv) f.style.setProperty('visibility', pv); else f.style.removeProperty('visibility');
+        if (pp) f.style.setProperty('pointer-events', pp); else f.style.removeProperty('pointer-events');
+        f.removeAttribute('data-dwhidden');
+        f.removeAttribute('data-dwprevvis');
+        f.removeAttribute('data-dwprevpe');
+        say('restored', f, how);
+      }
+
+      // 空浮层启发式：先判内容，真有内容一律放过；确认是空层才隐藏，
+      // 之后每次复查都重新判内容：填入了就恢复，持续为空才删节点。
       function checkFixedLayer(f, now) {
         try {
           if (!f || !f.parentNode || f.nodeType !== 1) return;
           var cs = getComputedStyle(f);
           if (cs.position !== 'fixed') return;
-          if (cs.display === 'none' || cs.visibility === 'hidden') return;
+          if (cs.display === 'none') return;
+          var hiddenByUs = f.getAttribute('data-dwhidden') === '1';
+          // 站点自己藏起来的层不管；但「被我们藏起来」的层必须继续往下走，
+          // 否则永远走不到 restore / 删除分支（年龄确认弹窗就是这么消失的）
+          if (cs.visibility === 'hidden' && !hiddenByUs) return;
           var r = f.getBoundingClientRect();
           var vw = window.innerWidth, vh = window.innerHeight;
           if (r.width < vw * 0.9 || r.height < vh * 0.85) return;
 
           var seen = parseInt(f.getAttribute('data-dwseen') || '0', 10);
-          if (!seen) {
-            f.setAttribute('data-dwseen', String(now));
-            f.setAttribute('data-dwhidden', '1');
-            f.style.setProperty('visibility', 'hidden', 'important');
-            f.style.setProperty('pointer-events', 'none', 'important');
-            say('candidate', f, 'fullsize-fixed(已隐藏,2s后仍空才删)');
-            // 全屏浮层多半配着滚动锁：藏掉它的同时把 html/body 的 overflow 解开
-            unlockScroll('popup-hidden', 0);
+          var real;
+          if (hiddenByUs) {
+            // visibility 会继承：根节点被我们藏起来后，里面的文字/图片也全是
+            // hidden，直接量必然判空。先同步摘掉我们加的隐藏再量——同一段 JS
+            // 内完成，浏览器不会在中间绘制；量完仍空就原样藏回去。
+            f.style.removeProperty('visibility');
+            f.style.removeProperty('pointer-events');
+            real = hasRealContent(f);
+            if (!real) {
+              f.style.setProperty('visibility', 'hidden', 'important');
+              f.style.setProperty('pointer-events', 'none', 'important');
+            }
+          } else {
+            real = hasRealContent(f);
+          }
+
+          if (real) {
+            // 真实弹窗（登录框 / 年龄确认 / 公告等）：首见就放过；
+            // 若曾被我们藏起来，说明水合内容已填入 → 撤销隐藏交还页面
+            if (hiddenByUs) {
+              restoreLayer(f, 'fullsize-fixed(填入真实内容)');
+            } else if (!seen) {
+              f.setAttribute('data-dwseen', String(now));
+              say('kept', f, 'fullsize-fixed(有真实内容,不处理)');
+            }
             return;
           }
-          if (hasRealContent(f)) {
-            // 水合填入了真实内容（登录框等）：撤销隐藏，交还页面
-            if (f.getAttribute('data-dwhidden')) {
-              f.removeAttribute('data-dwhidden');
-              f.style.setProperty('visibility', 'visible', 'important');
-              f.style.setProperty('pointer-events', 'auto', 'important');
-              say('restored', f, 'fullsize-fixed(填入真实内容)');
-            }
+          if (!seen) {
+            hideLayer(f, now, 'fullsize-fixed(空浮层,已隐藏,2s后仍空才删)');
+            // 这里**不**解滚动锁：有可能是水合中的真实弹窗，2s 内会 restore；
+            // 提前解开会把站点合法的滚动锁（如年龄确认期间的锁）掰掉。
+            return;
+          }
+          if (!hiddenByUs) {
+            // 首见时有内容（例如广告弹窗），随后内容被我们删掉 → 背板变空层。
+            // 重新从「刚隐藏」开始计时，避免暗色背板继续盖住页面。
+            hideLayer(f, now, 'fullsize-fixed(内容被清空,已隐藏,2s后仍空才删)');
             return;
           }
           if (now - seen < 1800) return;
@@ -264,9 +372,11 @@ enum AdCleanerScript {
             try {
               if (!el || !el.parentNode) continue;
               if (el.querySelector('video')) continue;
-              el.parentNode.removeChild(el);
+              var parent = el.parentNode;
+              parent.removeChild(el);
               say('removed', el, SELECTORS[i]);
               unlockScroll('sweep:' + SELECTORS[i], 0);
+              checkEnclosingLayers(parent);
             } catch (e) {}
           }
         }
