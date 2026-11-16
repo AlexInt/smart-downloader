@@ -255,3 +255,4 @@ cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader 
 - 交接状态（已完成 / 待办 / 进度）见根目录 `HANDOFF.md`；本文档只维护规则与约定。每完成一个任务同步更新 HANDOFF.md。
 - 文档中的 Mermaid 图：节点标签用双引号、边标签用 `-->|"label"|` 语法，并在 directive 中配置 `textColor`/`primaryTextColor`/`edgeLabelTextColor`（深色文字）与 `edgeLabelBackground`（白底），否则渲染出错或文字不可见。
 - 提交惯例：每个任务完成即 commit，中文 message，`feat`/`fix`/`refactor`/`docs` 前缀；不 push 除非用户要求。
+- **对用户沟通禁用内部代号与档位黑话**（2026-11-16 用户两次「说人话」反馈后成文）：面向用户的回复禁止「包 A/包 B」「A 档/B 档」这类分阶段代号，必须用直白功能描述——例：「竖屏播放卡片界面从 SwiftUI 换成 UIKit」而非「包 B」、「松手才生效的快进」而非「A 档」。文档与代码注释内部可沿用既有代号（有上下文）。审查报告的改进建议同样不得自动排入 HANDOFF 待办，需用户逐项拍板后才排期。
