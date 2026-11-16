@@ -38,6 +38,9 @@ struct PlayerFeedView: View {
                     // ── 顶部悬浮条（2026-11-16 用户拍板：顶栏固定不随卡片滚动，
                     //    停稳后数据换当前集；返回/标题/倍速/更多四件从卡片抽离，
                     //    画布坐标与卡片 designOverlay 同源 390×840 contain） ──
+                    //    ignoresSafeArea 必须挂：geo 拿到全屏尺寸（874）才与卡片同
+                    //    缩放系数（1.031）；漏挂时 geo 是安全区内区域（781），画布
+                    //    被压进安全区内——左右多出边距、整体下移、字变小（已踩）
                     GeometryReader { geo in
                         topBar
                             .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
@@ -45,6 +48,7 @@ struct PlayerFeedView: View {
                                              geo.size.height / DWLayout.designHeight))
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
+                    .ignoresSafeArea()
 
                     // 叠层面板（盖在分页之上，禁掉下层手势）
                     overlays
