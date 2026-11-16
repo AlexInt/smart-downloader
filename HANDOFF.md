@@ -1,7 +1,7 @@
 # HANDOFF.md — 交接文档
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络/并发约定，最高优先级）。本文只讲「做到哪了 / 还剩什么 / 怎么验」。**实现细节与防回归约束在 AGENTS 与代码注释里，完整过程在 git 历史**，本文不重复每个 build 日志。
->
+> 
 > 最后更新：2026-11-16 · 全部「待真机验证」挂账销账（30 个验证点 82 处，用户逐一确认通过）· `feat/drama-page-paper` 已合并至 `main`，后续修复直接在 `main` 上提交 · 基准提交见 `git log -1`
 
 ## 1. 项目一览
@@ -22,57 +22,26 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 - **我的域**：四分类分页左右滑 · 海报网格（PosterGrid 三处共用）· 滑动返回不卡顿（后台装配 + 代际令牌）
 - **数据**：SQLite 三表 + DramaDatabase 单入口迁移 · 播放进度 / 剧级收藏入库 · 续播位置正确 · 同集只有一条记录
 
-## 3. `player/` 模块架构地图（MVVM + Service）
+## 3. `player/` 模块架构地图
 
-依赖方向：**View → ViewModel → Service → 系统/Model**，单向不可反向；组装根只做 DI。
+→ 已并入 `docs/agents/conventions-player.md` 顶部（改 player/ 前读那一个文件即可）。
 
-| 文件 | 层 | 职责 |
-|---|---|---|
-| `PlaybackModels.swift` / `DramaEpisode.swift` | Model | 纯数据：`PlayableEpisode` / `ImmersivePlaybackRequest`、卡片展示模型 |
-| `PlaybackQueueService.swift` | Service | **上下滑资源调度唯一入口**：全剧集数三来源、槽位、history 回溯栈、`resolveNext/resolvePrevious`（推荐算法接入点）、`neighbors(of:)` |
-| `PlaybackPlayerService.swift` | Service | 唯一常驻 `AVPlayer`、`makeItem`（预热池 HIT/MISS）、`preload`/`clear`/`teardown` |
-| `PlayerPreferences.swift` | Service | 静音/清屏/**剩余时间显示**持久化（UserDefaults 封装）；点赞/收藏已迁 `EpisodeActionsStore`（SQLite）|
-| `PlayerGesturePolicy.swift` | Service | 仅剩 scrub 灵敏度纯函数（命中带已废）|
-| `PlaybackProgressTracker.swift` | Service | 进度落库与续播：1Hz 攒内存 + 关键时机 flush，播完/接近片尾从头播 |
-| `PlayerOrientationTrigger.swift` | Service | CoreMotion 重力向量姿态判稳（滞后 55°/28° + 0.6s 稳定窗），进/出全屏与全屏内左右转向意图的唯一触发源；无按钮入口 |
-| `PlayerFullscreenController.swift` | Service | 全屏动画核心：订阅 `$isFullscreen`，把 `videoLayer` 在 feed surface 与 keyWindow 容器之间搬运 + transform 旋转 ±90° 与等比铺满连续动画（退出反向）；起/终点用「视频显示带」 |
-| `DramaPlayerViewModel.swift` | ViewModel | 单集播放状态机：load（KVO 直挂 + 看门狗 + 代际令牌）、isReady/isLoadingSlow/isScrubbing、seek、倍速、时间进度 |
-| `PlayerFeedViewModel.swift` | ViewModel | 分页数据源、当前页、`schedulePageSettle` 停稳防抖 + 相邻集预热、边界 toast；组装 `DramaPlayerViewModel` |
-| `PlayerFeedView.swift` | View | 分页容器 SwiftUI 侧：onAppear/onChange 转发 `schedulePageSettle` |
-| `PlayerPagingScrollView.swift` | View | **UIKit `UIScrollView.isPagingEnabled` + `UIHostingController` 卡片**；seekPan/edgePan 识别器、`refreshCardsIfNeeded`（currentSort/isReady/toast/槽位可用性 变化时重设 rootView）；挂载单例 surface 与全屏控制器，`videoGravity` 在此按片源方向统一设置 |
-| `DramaPlayerView.swift` | View | 单张卡片（390×840 逐节点，**卡片内零连续手势**，点按/长按离散手势在此；视频区透明，控件已抽成可复用组件）|
-| `PlayerSurfaceContainer.swift` | View | `PlayerSurfaceUIView` **单例视频容器**：唯一 `AVPlayerLayer` 宿主，挂分页滚动层下对位活跃卡；`videoLayer` 是可搬运子层（背板层不能离开自己的 view）；首显机制 concealForReveal/scheduleVideoReveal + `withoutLayerActions` 禁隐式动作（原每卡一个 `PlayerSurfaceView` 已废）|
-| `PlayerFullscreenControlsView.swift` | View | 全屏控制层（UIKit + Combine，横屏坐标空间挂全屏容器内）：顶栏返回/清屏/静音 + 底栏进度条/时间；点按呼出 3s 收起；订阅同一个 VM，状态不另立源 |
-| `DramaPlayerContainer.swift` | 组装根 | fullScreenCover 入口，onAppear configure + onDisappear stop |
-| `Components/ToastView.swift` | 全局组件 | 通用 toast，不依赖业务/坐标系 |
+## 4. 关键设计决策
 
-其余域（Shared / Drama / Downloads / Browser / Infra / Settings）见 AGENTS「目录」节。
-行为数据表（`episode_actions` / `local_actions`）在 `Drama/EpisodeActionsStore.swift`，详情整包与推荐剧在 `DramaCache.saveDetail` / `drama_related`，
-建表与迁移统一在 `Drama/DramaDatabase.swift`（schema v2），与 `drama_cache` 同一个 SQLite 文件，
-写入方是播放页与下载页 AVKit 播放，读取方是下载列表与播放页续播 —— 口径统一由 `MediaIdentity` 表达。
+→ 已并入 AGENTS「具体约定」各条与 `docs/agents/conventions-*.md`：原 1–7 与 AGENTS 重复（分页 UIKit / 禁连续手势 / 单播放器 / ZStack 保活 / 日志），4.8 进 `conventions-drama-profile.md`，4.9 进 `conventions-player.md`。此处不再重复维护。
 
-## 4. 关键设计决策（勿轻易推翻）
-
-1. **分页用 UIKit `UIScrollView.isPagingEnabled`**。SwiftUI `ScrollView + .scrollTargetBehavior(.paging)` 与卡片 GeometryReader/手势冲突，四轮排障完全滑不动，已弃用（勿改回）。轻滑翻页靠 `scrollViewWillEndDragging` 里 15% 位移或 0.3 速度阈值。
-2. **卡片内禁止任何连续手势**——手势分类与长按 2x↔seek 仲裁细则见 AGENTS「具体约定」2。seekPan 已加 `gestureRecognizerShouldBegin` 方向过滤（拒纵向主导）。
-3. **单播放器常驻**，切集只 `replaceCurrentItem`，禁止滑动时新建 AVPlayer；秒开靠预热池三件套（AGENTS「具体约定」3），不是多 player pool。
-4. **App 用 ZStack 保活容器而非 TabView**：WKWebView 不离屏，避免切回浏览页时离屏唤醒阻塞主线程（AGENTS「具体约定」8）。
-5. **集数绝不造假**：来源优先级 = 调用方 knownSorts → SQLite `DramaCache.allSorts` → 磁盘已下载兜底。没有元数据时只有 1 集就不能滑，toast「已经到底了」。
-6. **推荐算法接入点**：只改 `PlaybackQueueService.resolveNext/resolvePrevious`；`neighbors(of:)` 也走它们，预热自动跟随新序。
-7. **诊断日志**：`PLAYER_DBG` 前缀 + `[CHECK]` 断言行；失败分支必须有 log；排障后保留不清理（全文见 AGENTS）。
-8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已移除**；主屏 12 格直点（`tapEpisodeDirect`），「查看全部」是内联展开（`showAllEpisodesInline`），展开的 13+ 集走多选语义（`tapEpisode`）+ 底部工具条，两条点击路径按 `multiSelect` 分流、别合并。展开时 `pageLayout` 的 recoY 必须按 `contentBottomDesignY = 720 + extraEpisodeRows*56` 下推，否则推荐区会压住额外集。勿改回固定高度 / sheet / CTA。
-9. **播放页两条有意取舍（2026-11-13 用户拍板）**：① 全屏 = 观影模式——竖屏画布的信息区/点赞收藏/上滑提示在全屏控制层 `PlayerFullscreenControlsView` 不渲染（只有顶栏返回/清屏/静音 + 底栏进度条/时间），点赞收藏回竖屏卡片操作，勿当缺失补回全屏（原 `landscapeOverlay` 路线已随包 A 退役）；② 片源方向未知（`AVPlayerItem.presentationSize` 0×0）按竖屏 fill 处理，宁可不切换也不猜方向。详见 AGENTS「iOS 架构约定」第 12 条。
-
-## 5. 待办清单（按优先级）
+## 5. 待办清单（按优先级，2026-11-16 同步）
 
 | # | 事项 | 优先级 |
 |---|---|---|
-| 1 | **本轮全部改动的真机回归**（清单见 §7）：GCD 迁移行为不变量 + 保活 + 手势 + toast/服务器/进度条/剩余时间 + 详情页滚动/直点/推荐跳转/档案 | 高（验证） |
-| 2 | 浏览页路由统一（见 §6，本轮只查未改） | 中 |
-| 3 | 相邻卡片首帧海报（渐变占位 → AVAssetImageGenerator + 磁盘缓存，可复用预热池 asset） | 中 |
-| 4 | 本地推荐算法（接入点已留 §4.6） | 按需 |
-| 5 | 「长按 2x 中途继续上滑切集」手势竞争观察（离散手势回卡片后未专测此组合） | 低 |
-| 6 | **播放器视图壳 UIKit+Combine 化**：**包 A（全屏链路）已完成**（§2，分支 feat/player-uikit-shell）；包 B 待做——竖屏卡片 DramaPlayerView UIKit 化（designFrame 转 frame+scale）、卡片手势迁 UIGestureRecognizer（六条仲裁约束逐条对照）、PlayerFeedView/Container 胶水收编、UIHostingController 退役；VM/Service/Model（GCD+Combine）零改动路线已在包 A 验证（全屏控制器/控制层直接订阅同一批 @Published）；前置调研：specs/播放器旋转方案调研.md（ZFPlayer/SJRotation/KSPlayer 源码级对照 + 借鉴清单，搬运粒度维持 videoLayer 勿改搬 view） | 中 |
+| 1 | **审查第一批止血**（iOS-REVIEW.md）：P0 下载引擎静态 Set/Dict 加锁 + DramaFavorites 连接泄漏 + seek 闸门泄漏一行 + `0$` 倍速文案 + `detailFetchedAt` 双 close + 搬迁失败不删源键 | 高 |
+| 2 | **手势 A 档**（行业基线已核，不推翻拍板）：拖动中不实时 seek（松手才 seek）+ 目标时间跟随浮层；横屏竖滑 = 左亮度右音量 + 亮度死钮接真 | 高 |
+| 3 | 手势 B 档待拍板：竖屏全屏按钮（推翻「无按钮入口」）、edgePan 改交互式跟随（推翻「越阈即退」） | 中（等用户拍板） |
+| 4 | 审查第二批：追更 SQL 下沉 DramaCache、删 ProfileView `preferredColorScheme`、prune 合批改队列、playIfDone 下沉、「已看完」口径统一、同集去重冒烟固化入库、DWUIColor 镜像 | 中 |
+| 5 | 三机型快照首跑（SE 上播放页 0.79 缩放与详情页安全区表现，AGENTS「布局缩放与机型适配」第 3 条） | 中 |
+| 6 | 播放器视图壳 UIKit 化包 B：竖屏卡片 UIKit 化（**DramaPlayerView 是用户文件，等用户发起**；VM/Service 零改动路线已在包 A 验证） | 中（依赖用户） |
+| 7 | 中期：无障碍第一遍（标签/命中区）、SQLite WAL+withConnection、千行文件拆分、AGENTS 简介块行号改锚定符号名 | 低 |
+| 8 | 本地推荐算法（接入点 = `PlaybackQueueService.resolveNext/Previous`） | 按需 |
 
 ## 6. 待查 / 已知问题
 
@@ -84,23 +53,10 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 
 ## 7. 验证与调试
 
-```bash
-# 编译（模拟器，无签名）
-xcodebuild -project iOS/SmartDownloader.xcodeproj -scheme SmartDownloader \
-  -destination 'generic/platform=iOS Simulator' build
-# 冒烟（macOS，不需手机；命令详见 AGENTS「常用命令」）
-cd iOS/smoke && swiftc -O -o coretest main.swift .../Downloader.swift ... ; SMARTDOWNLOADER_DIR="$PWD/out" ./coretest
-# 真机日志（用户跑，代理只看 log；Debug 构建卡顿探针自动开）
-xcrun devicectl device process launch --console --device <id> com.firefish.smartdownloader
-```
+编译 / 冒烟 / 真机日志命令 → AGENTS「常用命令」与「诊断日志约定」第 7 条；模拟器验收（装机/截图/Debug 参数/探针死路）→ AGENTS「模拟器视觉验收」节，此处不重复。
 
 - 排障一律**先加 log 再请用户贴 log**，靠日志判读不靠猜（本项目协作模式）。
-- **纸本视觉验收走模拟器**（不需要真机）：构建 / 装机 / 截图 / Debug 启动参数（`-startDownloadedPage` `-startEditMode`）/ 慢速 HLS 造下载中 / 「模拟器拿不到 print 与 UserDefaults，只能靠屏幕探针」全部记在 AGENTS「模拟器视觉验收」一节。
-- 秒开：`preload OK` / `preload EVICT` / `makeItem HIT|MISS` / `load OK waitedMs=` / `spinner show` / `status STALE`。
-- 交互：`TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began`（竖滑不应再出现）/ `edgePan → back` / `scrub show|hide`。
-- tab 卡顿：`PERF_DBG stallProbe enabled`（探针自检）+ `PERF_DBG mainStall ms=`（>100ms 真卡顿）+ `PERF_DBG tabSwitch`，切回浏览页看 mainStall 是否消失。
-
-**本轮真机回归重点**：① WiFi/蜂窝下载（IP 直连/WebKit 降级日志）；② 切回浏览页不再 mainStall；③ 竖滑/斜滑不再误暂停；④ 点按显示进度条 3s、上升淡入；⑤ 右侧时长切剩余时间、杀进程重开记住；⑥ toast 2s 收回；⑦ 播放不再偶现「无法连接服务器」；⑧ 秒开 `makeItem HIT`、长按 2x/横滑 seek/翻页仲裁不变；⑨ 详情页整页能滚到推荐与档案、`PLAYER_DBG [Entry] reco refresh count=10 archiveSections=9`、推荐卡片 push 新剧集页后返回能回原剧、格子直点（未下载→入队 / 下载中→取消 / 已下载→播放）、「下载全部」不重复入队、左缘返回手势与整页 ScrollView 不打架；⑩ 角标与金环（未下载灰箭头 / 已下载金三角 / 下载中金环+n/100 / 选中集不叠加）、「查看全部 ›」内联展开 13+ 集后推荐区被正确下推不重叠、「收起 ›」能收回、工具条全选→下载所选可提交、选集行 ↻ 刷新生效；⑪ 快速横滑结束不再误暂停、且 seek/翻页/2x 仲裁不变（误吞时应见 `TAP SKIP reason=justEndedSeek`）；⑫ 横屏片源竖屏持机完整显示不裁切（`videoOrientation landscape=true`）、竖屏片源维持拉满；⑬ 旋转横屏后返回/清屏/静音/进度条尺寸正常（landscapeOverlay）、旋转回竖屏恢复画布布局、横屏下点按暂停/长按 2x/横滑 seek/左缘返回照常；⑭ **（全屏改造后，取代 ⑬ 的旋转条目）**：App 锁竖屏——转设备不再引发界面翻转；横屏片源稳定转横自动进全屏（动画连续、视频全程可见不跳变、无按钮）、45° 边界倾斜不反复进出、全屏内左上返回 icon 回竖屏（动画反向回原卡）、点按暂停/长按 2x/横滑 seek 可用且不误暂停、竖屏片源转横不动作、上下滑切集不受影响、杀进程重开全屏态不残留；**两个转向都验**——向左倒与向右倒各进一次全屏，画面均不上下倒置（返回 icon 左上、进度条在底），退出反向动画两个方向同样正常（de08f27 修的就是另一半转向倒置）；全屏中再转向另一侧应单段转体（锚点：`flip angle=` / `flip done`），两侧都要验。
+- 高频日志锚点：秒开 `preload OK` / `makeItem HIT|MISS` / `load OK waitedMs=`；交互 `TAP → togglePlayback` / `LONGPRESS began|ended` / `seekPan began` / `edgePan → back`；卡顿 `PERF_DBG mainStall ms=`（>100ms 真卡顿）。
 
 ## 8. 维护本文档
 

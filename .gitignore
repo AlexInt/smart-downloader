@@ -51,3 +51,4 @@ iOS/smoke_screenshot*.png
 
 # WorkBuddy 本地工作区数据（记忆/日志，不入产品仓库）
 .workbuddy/
+drama-screenshots/

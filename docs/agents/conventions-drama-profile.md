@@ -33,3 +33,8 @@
    - **`DramaCoverCache.layoutVersion` 是提取规则的一部分**：挑图规则一改**必须递增**（现 `v2`，目录 `Caches/DramaCovers/v2`，根目录散落的旧文件首次访问时删掉）。因为 `storeImageData` 有 fresh-skip，不换目录的话错图会一直用满 15 天。
    - **收割写封面 = 每个 id 本次收割写一次，且是覆盖写**（`storeImageData(overwrite: true)` + 收割器 `storedCoverIDs` 节流）：poll 有 5 轮不能轮轮重写，但 ↻ 刷新必须能纠正旧错图。覆盖后文件 URL 没变，`AsyncImage` 不会自己重读——`applyCover` 比对 `DramaCoverCache.modifiedAt` 发现有改写就 `coverReloadToken += 1` 重建，否则用户看不到纠正结果。
    - 排障证据：`harvest round … cover=pick 1200x1600 shown:… score:… top:… blob:… big:… excl:…` / `harvest recCovers stored=N/M byTitle=X byID=Y dropped=Z cards=N` / `cover cache STORED id=… via=harvest` / `cover cache cleanup legacy v1 files=N`。**这些别删**。
+
+## 剧集详情页是可滚动画布（搬自 HANDOFF §4.8，勿轻易推翻）
+
+8. **剧集详情页是可滚动画布，不是固定 840**：设计稿 `.screen` 本来 `overflow-y:auto`，推荐/档案在首屏之外。缩放改按屏宽（`geo.size.width / 390`），`scaleEffect(anchor: .topLeading)` 后必须再给一层缩放后尺寸的 frame，否则 ScrollView contentSize 不对。**底部 CTA 已移除**；主屏 12 格直点（`tapEpisodeDirect`），「查看全部」是内联展开（`showAllEpisodesInline`），展开的 13+ 集走多选语义（`tapEpisode`）+ 底部工具条，两条点击路径按 `multiSelect` 分流、别合并。展开时 `pageLayout` 的 recoY 必须按 `contentBottomDesignY = 720 + extraEpisodeRows*56` 下推，否则推荐区会压住额外集。勿改回固定高度 / sheet / CTA。
+9. **播放页两条有意取舍（2026-11-13 用户拍板）**：① 全屏 = 观影模式——竖屏画布的信息区/点赞收藏/上滑提示在全屏控制层 `PlayerFullscreenControlsView` 不渲染（只有顶栏返回/清屏/静音 + 底栏进度条/时间），点赞收藏回竖屏卡片操作，勿当缺失补回全屏（原 `landscapeOverlay` 路线已随包 A 退役）；② 片源方向未知（`AVPlayerItem.presentationSize` 0×0）按竖屏 fill 处理，宁可不切换也不猜方向。详见 AGENTS「iOS 架构约定」第 12 条。

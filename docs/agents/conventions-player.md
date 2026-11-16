@@ -4,6 +4,35 @@
 
 （编号沿用 AGENTS.md「具体约定」1–24 的全局引用）
 
+## player/ 模块架构地图（搬自 HANDOFF §3）
+
+依赖方向：**View → ViewModel → Service → 系统/Model**，单向不可反向；组装根只做 DI。
+
+| 文件                                            | 层         | 职责                                                                                                                                                                                                             |
+| --------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PlaybackModels.swift` / `DramaEpisode.swift` | Model     | 纯数据：`PlayableEpisode` / `ImmersivePlaybackRequest`、卡片展示模型                                                                                                                                                      |
+| `PlaybackQueueService.swift`                  | Service   | **上下滑资源调度唯一入口**：全剧集数三来源、槽位、history 回溯栈、`resolveNext/resolvePrevious`（推荐算法接入点）、`neighbors(of:)`                                                                                                                 |
+| `PlaybackPlayerService.swift`                 | Service   | 唯一常驻 `AVPlayer`、`makeItem`（预热池 HIT/MISS）、`preload`/`clear`/`teardown`                                                                                                                                          |
+| `PlayerPreferences.swift`                     | Service   | 静音/清屏/**剩余时间显示**持久化（UserDefaults 封装）；点赞/收藏已迁 `EpisodeActionsStore`（SQLite）                                                                                                                                     |
+| `PlayerGesturePolicy.swift`                   | Service   | 仅剩 scrub 灵敏度纯函数（命中带已废）                                                                                                                                                                                         |
+| `PlaybackProgressTracker.swift`               | Service   | 进度落库与续播：1Hz 攒内存 + 关键时机 flush，播完/接近片尾从头播                                                                                                                                                                        |
+| `PlayerOrientationTrigger.swift`              | Service   | CoreMotion 重力向量姿态判稳（滞后 55°/28° + 0.6s 稳定窗），进/出全屏与全屏内左右转向意图的唯一触发源；无按钮入口                                                                                                                                         |
+| `PlayerFullscreenController.swift`            | Service   | 全屏动画核心：订阅 `$isFullscreen`，把 `videoLayer` 在 feed surface 与 keyWindow 容器之间搬运 + transform 旋转 ±90° 与等比铺满连续动画（退出反向）；起/终点用「视频显示带」                                                                                    |
+| `DramaPlayerViewModel.swift`                  | ViewModel | 单集播放状态机：load（KVO 直挂 + 看门狗 + 代际令牌）、isReady/isLoadingSlow/isScrubbing、seek、倍速、时间进度                                                                                                                               |
+| `PlayerFeedViewModel.swift`                   | ViewModel | 分页数据源、当前页、`schedulePageSettle` 停稳防抖 + 相邻集预热、边界 toast；组装 `DramaPlayerViewModel`                                                                                                                                 |
+| `PlayerFeedView.swift`                        | View      | 分页容器 SwiftUI 侧：onAppear/onChange 转发 `schedulePageSettle`                                                                                                                                                       |
+| `PlayerPagingScrollView.swift`                | View      | **UIKit `UIScrollView.isPagingEnabled` + `UIHostingController` 卡片**；seekPan/edgePan 识别器、`refreshCardsIfNeeded`（currentSort/isReady/toast/槽位可用性 变化时重设 rootView）；挂载单例 surface 与全屏控制器，`videoGravity` 在此按片源方向统一设置  |
+| `DramaPlayerView.swift`                       | View      | 单张卡片（390×840 逐节点，**卡片内零连续手势**，点按/长按离散手势在此；视频区透明，控件已抽成可复用组件）                                                                                                                                                    |
+| `PlayerSurfaceContainer.swift`                | View      | `PlayerSurfaceUIView` **单例视频容器**：唯一 `AVPlayerLayer` 宿主，挂分页滚动层下对位活跃卡；`videoLayer` 是可搬运子层（背板层不能离开自己的 view）；首显机制 concealForReveal/scheduleVideoReveal + `withoutLayerActions` 禁隐式动作（原每卡一个 `PlayerSurfaceView` 已废） |
+| `PlayerFullscreenControlsView.swift`          | View      | 全屏控制层（UIKit + Combine，横屏坐标空间挂全屏容器内）：顶栏返回/清屏/静音 + 底栏进度条/时间；点按呼出 3s 收起；订阅同一个 VM，状态不另立源                                                                                                                           |
+| `DramaPlayerContainer.swift`                  | 组装根       | fullScreenCover 入口，onAppear configure + onDisappear stop                                                                                                                                                       |
+| `Components/ToastView.swift`                  | 全局组件      | 通用 toast，不依赖业务/坐标系                                                                                                                                                                                             |
+
+其余域（Shared / Drama / Downloads / Browser / Infra / Settings）见 AGENTS「目录」节。
+行为数据表（`episode_actions` / `local_actions`）在 `Drama/EpisodeActionsStore.swift`，详情整包与推荐剧在 `DramaCache.saveDetail` / `drama_related`，
+建表与迁移统一在 `Drama/DramaDatabase.swift`（schema v2），与 `drama_cache` 同一个 SQLite 文件，
+写入方是播放页与下载页 AVKit 播放，读取方是下载列表与播放页续播 —— 口径统一由 `MediaIdentity` 表达。
+
 1. 上下滑资源调度唯一入口是 `PlaybackQueueService`；**后续本地推荐算法只改 `resolveNext(from:in:)` / `resolvePrevious(from:in:)`**，不动 View / 容器 / ViewModel。
 
 2. 播放页用 **UIKit 原生分页**：`PlayerPagingScrollView`（`UIViewRepresentable` 包 `UIScrollView.isPagingEnabled = true` + `UIHostingController` 承载 SwiftUI 卡片）。纵向 pan 由 UIKit 独占，**卡片内禁止任何连续手势（包括局部 DragGesture）** —— 曾因进度带 390×120 的局部 DragGesture 吃掉全部纵向滑动，导致分页完全滑不动。手势分两类落位：
@@ -33,3 +62,7 @@
 23. **选集格「选中 + 下载」叠加时，边缘环整套换纸白**（2026-11-15 用户拍板「下载边缘进度颜色应该是白色的」）：
    - 环**不再因为选中而不画**（旧写法 `if !isSelected { progressRing(phase) }` 直接丢掉进度），改由 `progressRing(_:onCinnabar:)` 按底色换色：选中格（朱砂底）轨道 `paper@0.45`、进度 `paper`、完成环 `paper@0.9`、失败环 `paperInk`（朱砂底上朱砂不可见，换最重的墨保住「失败 = 最重一条线」的语义）；非选中格维持原三档（`paperTrack@0.55` / `paperTrackFill` / `paperInkSub`）。
    - 验收不能靠手指（模拟器点不了）：`-dramaPreview -dramaRingPreview active` 看「选中 + 42/100 白弧」、`-dramaRingPreview done` 看「选中 + 已下载白闭环」。
+
+## 播放页两条有意取舍（2026-11-13 用户拍板，搬自 HANDOFF §4.9）
+
+
