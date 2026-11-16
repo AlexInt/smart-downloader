@@ -126,6 +126,18 @@ View → ViewModel → Service → 系统能力 / Model
 15. **刷新走「静默」路径**：`vm.refresh(quiet: true, completion:)`。默认 `fetchAndCache` 会把 `loading` 置真，整页当场退回骨架屏，海报与内容全消失、指示器还悬在上头。静默模式下网络失败也不撕页面（有内容只弹 toast）。
 16. **海报卡只有一份，列数由调用方给**（`Components/PosterGrid.swift`，2026-11-15 用户要求「这几处一样的布局要求可以单独抽出一个组件」）：剧集页「为你推荐」、 「我的」封面墙、下载页「已下载」三处**共用 `PosterCardView` + `PosterGrid`**，几何全在 `PosterCardMetrics`——封面 3:4、卡宽 `(可用宽 − 中缝 10 × (列数−1)) / 列数`、整卡 r8 + 0.5 `paperRule` 细线、文字块固定 67（上 6 + 标题 20 + 2 + 副标 14 + 3 + 统计 14 + 下 8）。**列数**：剧集页「为你推荐」**一行 2 张**（`PosterGrid` 默认 `columns: 2`，另用 `.frame(width: 170)` 钉回设计值）；「我的」封面墙与下载页「已下载」**一行 3 张**（`columns: 3`，2026-11-15 用户拍板，卡宽约 113）。**三列用 `compact: true`**：标题 13→12、副标/统计 10→9（13pt 标题在 ~97pt 内容宽里只剩 7 个字，剧名会被截得认不出），行盒高度不变、网格行才对齐。**不要再往任何一页写一套卡片**：各页只把自己的数据映射成 `PosterCardModel`；「我的」/下载页直接用 `PosterGrid`（`.flexible()` 按容器现算，**不要 `UIScreen.main`**）。组件只管视觉与排布——点击、导航、删除、编辑勾选都留在调用方（SOLID：单一职责），编辑态勾选圈通过 `selection: Bool?` 纯视觉入参传入。**下载页「已下载」是网格**（原 82 高行式列表删除）：卡片点击进剧详情 / 播放，编辑模式点卡勾选整剧或单条，**删整剧从 List 左滑改为长按 `contextMenu`**（编辑模式的批量删除照旧）。
 
+### 布局缩放与机型适配（2026-11-16 成文；缘起：用户对「designFrame 不考虑其他设备」的担忧）
+
+1. **designFrame 的适用边界**：`designFrame(x,y,w,h)`（`Shared/DesignTokens.swift:226`）是设计稿坐标的裸 `.position()` 映射，**只允许出现在「按画布整页对齐」的骨架页**——现状仅 `DramaDetailView`（25 处）与 `DramaPlayerView`（23 处，用户文件）两个文件。**不要再往列表页/设置页/浏览页/我的页加 designFrame**：那些页面是流式布局（List/ScrollView/VStack + 常量 + 容器现算），混入绝对坐标会失去机型自适应。
+2. **三套缩放策略，新页面按内容性质对号入座**（不是偏好选择）：
+   - **骨架画布页**（整页按画布对齐、内容纵向流可滚动）→ **width-scale**：`scale = geo.size.width / 390`，画布 `scaleEffect(scale, anchor: .topLeading)` + 外层 frame 补真实占位（范本 `DramaDetailView.swift:167-186`，含「scaleEffect 不改布局尺寸」注释）；纵向高度差异由 ScrollView 吸收。
+   - **整页设计页**（横纵都按画布整体呈现、不可滚动）→ **min 双轴**：`scale = min(w/390, h/840)`（范本 `DramaPlayerView.swift:93`，用户文件）；小屏整页等比缩小、UI 完整为先。
+   - **流式内容**（列表/网格/弹层）→ **容器现算**：`PosterGrid` `.flexible()`、`EpisodeGridMetrics.cell(availableWidth:)`、`GeometryReader` 现量；禁 `UIScreen.main`（既有约定）。
+   - 全屏控制层沿用画布单位 × `sx`（`PlayerFullscreenControlsView.M.edge`），与 width-scale 同性质。
+3. **机型适配的验收 = 三机型快照，不靠推理**：布局相关改动（designFrame 数值、缩放策略、安全区处理）必须在**小屏（375pt 级，如 iPhone SE 或等效）/ 标准（iPhone 17 Pro 402×874）/ Max（iPhone 17 Pro Max）**三档模拟器各截关键态（详情页顶部+页底、播放页竖屏+全屏、下载页）。已实证安全区差异会咬人（下拉刷新阈值踩过灵动岛坑），这类问题只能跑出来看，模拟器命令见「模拟器视觉验收」节。
+4. **不引入 AutoLayout**（2026-11-16 记录）：本项目 UI 主体是 SwiftUI，AutoLayout 是 UIKit 约束体系，SwiftUI 的对应物是 flexible frame / `layout protocol` / size class；画布逐像素对齐是产品主张，等比缩放画布正是它在多机型上的实现手段，二者不是对立面。**触发布局体系级重构（届时用 SwiftUI size class / layout protocol，仍不是 AutoLayout）的条件：上 iPad / 支持系统横屏 / Mac Catalyst**——三者任一立项时另开专项。
+5. **Dynamic Type 与画布对齐的分工**：全库固定字号是画布对齐的一部分，不因多机型适配而整体放开；正文类长文本（错误详情/空态提示/简介）优先支持 `@ScaledMetric`，逐像素对齐的画布指标框除外。已记入审查报告 P1-⑫（`iOS-REVIEW.md`）。
+
 ### 具体约定
 
 1. 上下滑资源调度唯一入口是 `PlaybackQueueService`；**后续本地推荐算法只改 `resolveNext(from:in:)` / `resolvePrevious(from:in:)`**，不动 View / 容器 / ViewModel。
@@ -264,6 +276,8 @@ View → ViewModel → Service → 系统能力 / Model
 ## 模拟器视觉验收（不碰真机，2026-11-14 建立）
 
 纸本轨对齐画布需要「改一版、截一张、量一次」，真机往返太慢。以下是实测可用的链路与踩过的死路。
+
+**多机型验收（2026-11-16 起，见「布局缩放与机型适配」第 3 条）**：布局相关改动换 `-destination 'platform=iOS Simulator,name=<机型>'` 分别截小屏（375pt 级）/ 标准（iPhone 17 Pro）/ Max 三档；`xcrun simctl list devices available` 现查可用机型名。
 
 **构建**（约 4 分钟）：
 
