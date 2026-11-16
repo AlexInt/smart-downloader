@@ -689,12 +689,59 @@ struct PaperProgressBar: View {
 
 /// 剧详情页：该剧全部集（含下载中的），点集播放，左滑删单集，右上角删全剧。
 /// 画布未覆盖此页，沿用纸本语言（宣纸底 + 衬线标题 + 细线行），与列表页同一套行样式。
+// MARK: - 剧详情页播放意图 VM（审查 P1-⑨ 下沉：View 只发意图 + 绑定）
+//
+// 「点一集该发生什么」是业务判断：done 守卫、失败重试、HLS/非 HLS 播放器选型、
+// 集号解析——此前全在 SeriesDetailView.playIfDone 里，违反 View 层硬约束
+// （View 不写业务判断）。与列表页 DownloadsViewModel.handleTap 同一范式：
+// VM 判断并发布状态，View 只绑定 sheet/fullScreenCover。主线程约定同 DownloadManager。
+
+final class SeriesDetailViewModel: ObservableObject {
+    /// AVKit 回退（非 HLS 文件夹）
+    @Published var playerItem: PlayerItem?
+    /// 沉浸式播放页请求（HLS 剧集，走上下滑切集）
+    @Published var immersiveRequest: ImmersivePlaybackRequest?
+
+    private let manager: DownloadManager
+    private let seriesName: String
+
+    init(manager: DownloadManager, seriesName: String) {
+        self.manager = manager
+        self.seriesName = seriesName
+    }
+
+    /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
+    /// 全剧集数同步与滑动调度交给 PlaybackQueueService，这里只说明剧名与起始集号。
+    /// 未完成的条目：失败点一下重试（直链仍在就重跑），其余状态只打日志。
+    func play(_ task: DownloadTask, identity: MediaIdentity) {
+        guard task.state == .done, let url = task.outputURL else {
+            print("PLAYER_DBG [Entry] play SKIP state=\(task.state) output=\(task.outputURL == nil ? "nil" : "yes") title=\(task.title)")
+            if case .failed = task.state, !task.url.isEmpty {
+                print("PLAYER_DBG [Entry] play → retry failed title=\(task.title)")
+                manager.run(task)
+            }
+            return
+        }
+        guard task.isHLSFolder else {
+            print("PLAYER_DBG [Entry] play → AVKit fallback (non-HLS) title=\(task.title)")
+            playerItem = PlayerItem(url: url, isHLSFolder: false, identity: identity)
+            return
+        }
+        let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 1
+        print("PLAYER_DBG [Entry] play series=\(seriesName) title=\(task.title) parsedSort=\(sort) knownSorts=0 (rely on cache)")
+        immersiveRequest = ImmersivePlaybackRequest(
+            seriesName: seriesName,
+            intro: nil,
+            startSort: sort
+        )
+    }
+}
+
 struct SeriesDetailView: View {
     @ObservedObject var manager: DownloadManager
     let seriesName: String
-    @State private var playerItem: PlayerItem?
-    /// 剧集点播走沉浸式播放页；playerItem 仅作非 HLS 文件夹的 AVKit 回退
-    @State private var immersivePlayback: ImmersivePlaybackRequest?
+    /// 播放意图 VM（审查 P1-⑨）：判断与路由在 VM，本 View 只发意图 + 绑定两个出口
+    @StateObject private var vm: SeriesDetailViewModel
     @State private var confirmDelete = false
     /// 「播到哪」只读状态：进入本页 / 播放入口关闭时刷新
     @StateObject private var progressVM = PlaybackProgressViewModel()
@@ -705,6 +752,7 @@ struct SeriesDetailView: View {
     init(manager: DownloadManager, seriesName: String) {
         self.manager = manager
         self.seriesName = seriesName
+        _vm = StateObject(wrappedValue: SeriesDetailViewModel(manager: manager, seriesName: seriesName))
         _sortOrder = State(initialValue: DownloadsSortPreferences().sortOrder)
     }
 
@@ -718,7 +766,7 @@ struct SeriesDetailView: View {
                 TaskRow(task: task, showSeries: false, progress: progressVM.progress(for: task))
                     .paperListRow()
                     .contentShape(Rectangle())
-                    .onTapGesture { playIfDone(task) }
+                    .onTapGesture { vm.play(task, identity: progressVM.identity(for: task)) }
             }
             .onDelete { offsets in
                 for offset in offsets { manager.remove(episodes[offset]) }
@@ -751,12 +799,12 @@ struct SeriesDetailView: View {
             isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("删除全剧", role: .destructive) { manager.deleteSeries(seriesName) }
         }
-        .sheet(item: $playerItem, onDismiss: { refreshProgress() }) { item in
+        .sheet(item: $vm.playerItem, onDismiss: { refreshProgress() }) { item in
             PlayerView(item: item)
         }
-        .fullScreenCover(item: $immersivePlayback, onDismiss: { refreshProgress() }) { request in
+        .fullScreenCover(item: $vm.immersiveRequest, onDismiss: { refreshProgress() }) { request in
             DramaPlayerContainer(request: request, manager: manager,
-                                 onClose: { immersivePlayback = nil })
+                                 onClose: { vm.immersiveRequest = nil })
         }
         .onAppear { refreshProgress() }
     }
@@ -764,32 +812,6 @@ struct SeriesDetailView: View {
     /// 播放进度由播放页落盘，本页只在进入与播放入口关闭时重新读取
     private func refreshProgress() {
         progressVM.refresh(episodes)
-    }
-
-    /// 剧集内点播：优先沉浸式竖屏播放页（可上下滑切集）；非 HLS 文件夹回退 AVKit。
-    /// 全剧集数同步与滑动调度交给 PlaybackQueueService，这里只说明剧名与起始集号。
-    /// 未完成的条目：失败点一下重试（直链仍在就重跑），其余状态只打日志。
-    private func playIfDone(_ task: DownloadTask) {
-        guard task.state == .done, let url = task.outputURL else {
-            print("PLAYER_DBG [Entry] playIfDone SKIP state=\(task.state) output=\(task.outputURL == nil ? "nil" : "yes") title=\(task.title)")
-            if case .failed = task.state, !task.url.isEmpty {
-                print("PLAYER_DBG [Entry] playIfDone → retry failed title=\(task.title)")
-                manager.run(task)
-            }
-            return
-        }
-        guard task.isHLSFolder else {
-            print("PLAYER_DBG [Entry] playIfDone → AVKit fallback (non-HLS) title=\(task.title)")
-            playerItem = PlayerItem(url: url, isHLSFolder: false, identity: progressVM.identity(for: task))
-            return
-        }
-        let sort = DownloadManager.episodeSort(fromFolderName: task.title) ?? 1
-        print("PLAYER_DBG [Entry] playIfDone series=\(seriesName) title=\(task.title) parsedSort=\(sort) knownSorts=0 (rely on cache)")
-        immersivePlayback = ImmersivePlaybackRequest(
-            seriesName: seriesName,
-            intro: nil,
-            startSort: sort
-        )
     }
 }
 
