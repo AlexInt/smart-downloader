@@ -213,7 +213,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
         private var scrubBaseFraction: Double?
-        private var edgeDragStarted = false
+        private var edgeBackFired = false
         /// 横向手势独占期间系统分页 pan 的锁定标志：幂等开关，防重复禁用/漏恢复
         ///（seekPan 与 edgePan 都会 lock，两者结束顺序不定，unlock 幂等保护）
         private var systemPanLocked = false
