@@ -35,6 +35,17 @@ struct PlayerFeedView: View {
                     )
                     .ignoresSafeArea()
 
+                    // ── 顶部悬浮条（2026-11-16 用户拍板：顶栏固定不随卡片滚动，
+                    //    停稳后数据换当前集；返回/标题/倍速/更多四件从卡片抽离，
+                    //    画布坐标与卡片 designOverlay 同源 390×840 contain） ──
+                    GeometryReader { geo in
+                        topBar
+                            .frame(width: DWLayout.designWidth, height: DWLayout.designHeight)
+                            .scaleEffect(min(geo.size.width / DWLayout.designWidth,
+                                             geo.size.height / DWLayout.designHeight))
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    }
+
                     // 叠层面板（盖在分页之上，禁掉下层手势）
                     overlays
                 }
@@ -179,6 +190,96 @@ struct PlayerFeedView: View {
         scrollID ?? vm.currentSort ?? vm.episodeItems.first?.sort ?? 1
     }
 
+    // MARK: - 顶部悬浮条（2026-11-16 从卡片 DramaPlayerView 抽离：顶栏固定不随卡片滚，
+    //    停稳后数据换当前集；清屏态常驻语义与原卡片一致。画布坐标同源，勿另造一套）
+
+    private var topBar: some View {
+        ZStack(alignment: .topLeading) {
+            backButton
+                .designFrame(16, 70, 22, 22)
+            Text(topTitle)
+                .font(DWFont.serif(15, .medium))
+                .foregroundStyle(DWColor.overlayInk)
+                .lineLimit(1)
+                .designFrame(44, 71, 220, 22, alignment: .leading)
+                .allowsHitTesting(false)
+            rateButton
+                .designFrame(272, 68, 54, 26)
+            moreButton
+                .designFrame(344, 72, 20, 20)
+        }
+    }
+
+    /// 顶部标题：剧集名 + 第n集（格式与全屏控制层 updateTitle 逐字一致，勿两处分叉）
+    private var topTitle: String {
+        let name = vm.seriesName.isEmpty ? "" : "\(vm.seriesName)  "
+        return "\(name)第\(currentEpisodeIndex)集"
+    }
+
+    private var backButton: some View {
+        Button { onClose() } label: {
+            Image("ic_back")
+                .renderingMode(.template)
+                .resizable().scaledToFit()
+                .foregroundStyle(DWColor.overlayInk)
+                .frame(width: 13, height: 13)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("返回")
+    }
+
+    /// 倍速（画布 2:94：54×26，表盘 + 「倍速」12px 纸白）。点按打开倍速面板；
+    /// 悬浮条本身就是当前页，不再需要卡片的 isActive 守卫
+    private var rateButton: some View {
+        Button {
+            print("PLAYER_DBG [CHECK] rate button tap → open rate panel rate=\(vm.playback.playbackRate)×")
+            showEpisodePanel = false
+            showRatePanel = true
+        } label: {
+            HStack(spacing: 5) {
+                OverlayRateGlyph(size: 16, color: DWColor.overlayInk)
+                Text(vm.playback.playbackRate == 1.0 ? "倍速" : vm.playback.rateShortText)
+                    .font(DWFont.cn(12, .regular))
+                    .foregroundStyle(DWColor.overlayInk)
+                    .lineLimit(1)
+            }
+            .frame(width: 54, height: 26)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("倍速，当前 \(vm.playback.playbackRateText) 倍速")
+    }
+
+    /// 更多（画布 2:99：20×20 三点）。清屏入口已在右下角常驻，这里收容「从头播放」
+    /// 等补充操作；静音项与右下角静音钮同一状态源（vm.playback.isMuted）
+    private var moreButton: some View {
+        Menu {
+            Button {
+                vm.playback.seek(fraction: 0)
+                print("PLAYER_DBG [CHECK] more menu → replay from start")
+            } label: {
+                Label("从头播放", systemImage: "arrow.counterclockwise")
+            }
+            Button {
+                vm.playback.isCleanScreen = true
+            } label: {
+                Label("清屏模式", systemImage: "rectangle.dashed")
+            }
+            Button {
+                vm.playback.isMuted.toggle()
+            } label: {
+                Label(vm.playback.isMuted ? "取消静音" : "静音", systemImage: vm.playback.isMuted ? "speaker.slash" : "speaker")
+            }
+        } label: {
+            OverlayMoreGlyph(size: CGSize(width: 20, height: 20), color: DWColor.overlayInk)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("更多")
+    }
+
     @ViewBuilder
     private func card(for slot: PlayableEpisode) -> some View {
         DramaPlayerView(
@@ -189,16 +290,10 @@ struct PlayerFeedView: View {
                             total: vm.totalEpisodes),
             playback: vm.playback,
             isActive: vm.currentSort == slot.sort,
-            onClose: onClose,
             hasNextEpisode: vm.hasNext(after: slot.sort),
             isEpisodeAvailable: slot.isAvailable,
             nextEpisodeAvailable: vm.nextIsAvailable(after: slot.sort),
             toastText: vm.currentSort == slot.sort ? vm.toastText : nil,
-            onRequestRatePanel: {
-                print("PLAYER_DBG [FeedView] open rate panel rate=\(vm.playback.playbackRate)×")
-                showEpisodePanel = false
-                showRatePanel = true
-            },
             onRequestEpisodePanel: {
                 print("PLAYER_DBG [FeedView] open episode panel current=\(currentEpisodeIndex)")
                 showRatePanel = false

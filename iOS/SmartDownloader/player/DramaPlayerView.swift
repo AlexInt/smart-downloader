@@ -26,13 +26,10 @@ struct DramaPlayerView: View {
     let episode: DramaEpisode
     @ObservedObject var playback: DramaPlayerViewModel
     let isActive: Bool
-    var onClose: () -> Void = {}
     var hasNextEpisode = false
     var isEpisodeAvailable = true
     var nextEpisodeAvailable = true
     var toastText: String? = nil
-    /// 打开倍速面板（竖屏是半屏底部弹层，由 `PlayerFeedView` 承载）
-    var onRequestRatePanel: () -> Void = {}
     /// 打开选集面板（画布 19:62 是完整的上墨下纸面板，本轮先给简单版）
     var onRequestEpisodePanel: () -> Void = {}
     /// 长按松手后 250ms 内到达的单击 = 同一次抬手的误触，吞掉。
@@ -50,11 +47,6 @@ struct DramaPlayerView: View {
     /// 用户要求「选集自动变长」——不再写死数字，按钮位一改这里自动跟着变
     static var episodePillWidth: CGFloat { muteSlotX - 12 - 16 }
 
-    /// 顶部标题：与全屏顶栏同一条文案（剧集名 + 第n集，两个空格分隔）
-    private var topTitle: String {
-        let name = playback.seriesName.isEmpty ? "" : "\(playback.seriesName)  "
-        return "\(name)第\(episode.episodeIndex)集"
-    }
 
     /// 抬手时吞松手误触；未起 2x 的触摸（快速滑动/普通点按）抬手不动作
     @State private var longPressOwnedTouch = false
@@ -312,33 +304,9 @@ struct DramaPlayerView: View {
                 progressHud
             }
 
-            // ── 常驻控件：清屏模式下保留 ──────────────────────────────
-
-            // 返回（画布 2:91 22×22 @(16,70)，无底色，箭头 6.5×13）
-            backButton
-                .designFrame(16, 70, 22, 22)
-                .frame(width: 22, height: 22)
-                .zIndex(10)
-
-            // 标题（2026-11-15 用户要求与全屏一致）：剧集名 + 第n集。
-            // 格式与 `PlayerFullscreenControlsView.updateTitle` 逐字相同（两个空格分隔、第n集不空格），
-            // 两处不要各写一套文案。宽度到 264（倍速钮左缘前 8），长剧名截断
-            Text(topTitle)
-                .font(DWFont.serif(15, .medium))
-                .foregroundStyle(DWColor.overlayInk)
-                .lineLimit(1)
-                .designFrame(44, 71, 220, 22, alignment: .leading)
-                .allowsHitTesting(false)
-
-            // 倍速（画布 2:94 54×26 @(272,68)：16 表盘 + 5 间距 + 12px「倍速」）
-            // 2026-11-15 用户要求「更多左边增加倍速」：清屏态下 返回/标题/更多 都还在，
-            // 唯独这里被藏起来 → 清屏态就没有倍速入口了，故取消清屏态隐藏，常驻
-            rateButton
-                .designFrame(272, 68, 54, 26)
-
-            // 更多（画布 2:99 20×20 @(344,72)，三点 2.8 圆点，竖向 gap 6）
-            moreButton
-                .designFrame(344, 72, 20, 20)
+            // ── 顶部控件（返回/标题/倍速/更多）已抽离为 PlayerFeedView 的页面级悬浮
+            //    条（2026-11-16 用户拍板：顶栏固定不随卡片滚，停稳换数据）——卡片不再
+            //    渲染顶部行；清屏常驻语义由悬浮条继承
 
             // 播放/暂停大按钮（画布 19:57 56×56 @(167,392)）
             // 只在暂停时出现：播放中盖一个大三角会挡住画面（设计稿是静帧，故画了实心三角）
@@ -514,75 +482,8 @@ struct DramaPlayerView: View {
 
     // MARK: - 控件
 
-    /// 返回（画布 2:91：22×22 无底色，箭头 6.5×13 描边 1.8 纸白）
-    /// 命中区仍是 44×44（贴在 22 的视觉框上向外扩），不动观感但好点
-    private var backButton: some View {
-        Button { onClose() } label: {
-            Image("ic_back")
-                .renderingMode(.template)
-                .resizable().scaledToFit()
-                .foregroundStyle(DWColor.overlayInk)
-                .frame(width: 13, height: 13)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("返回")
-    }
 
-    /// 倍速（画布 2:94：54×26，HORIZONTAL gap 5，表盘 16 + 「倍速」12px 纸白）
-    /// 点按打开倍速面板（横竖屏共用一套档位）
-    private var rateButton: some View {
-        Button {
-            guard isActive else { return }
-            print("PLAYER_DBG [CHECK] rate button tap → open rate panel")
-            onRequestRatePanel()
-        } label: {
-            HStack(spacing: 5) {
-                OverlayRateGlyph(size: 16, color: DWColor.overlayInk)
-                Text(playback.playbackRate == 1.0 ? "倍速" : playback.rateShortText)
-                    .font(DWFont.cn(12, .regular))
-                    .foregroundStyle(DWColor.overlayInk)
-                    .lineLimit(1)
-            }
-            .frame(width: 54, height: 26)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("倍速，当前 \(playback.playbackRateText) 倍速")
-    }
 
-    /// 更多（画布 2:99：20×20 三点）。收容清屏以外的次要入口。
-    /// 目前承载「清屏模式的另一处入口」不需要——清屏已在右下角常驻；
-    /// 这里只做「重看本集」「上滑下一集提示」这类补充操作，避免成为死按钮。
-    private var moreButton: some View {
-        Menu {
-            Button {
-                guard isActive else { return }
-                playback.seek(fraction: 0)
-                print("PLAYER_DBG [CHECK] more menu → replay from start")
-            } label: {
-                Label("从头播放", systemImage: "arrow.counterclockwise")
-            }
-            Button {
-                guard isActive else { return }
-                playback.isCleanScreen = true
-            } label: {
-                Label("清屏模式", systemImage: "rectangle.dashed")
-            }
-            Button {
-                guard isActive else { return }
-                playback.isMuted.toggle()
-            } label: {
-                Label(playback.isMuted ? "取消静音" : "静音", systemImage: playback.isMuted ? "speaker.slash" : "speaker")
-            }
-        } label: {
-            OverlayMoreGlyph(size: CGSize(width: 20, height: 20), color: DWColor.overlayInk)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel("更多")
-    }
 
     /// 播放/暂停大按钮（画布 19:57：56×56 实心白三角 27.7×26.4 @(13,14.8)）
     private var playButton: some View {
