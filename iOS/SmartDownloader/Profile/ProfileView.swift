@@ -64,7 +64,9 @@ struct ProfileView: View {
                 print("PROFILE_DBG category → \(new.rawValue) items=\(viewModel.items(for: new).count)")
             }
         }
-        .preferredColorScheme(.light)   // 纸本轨锁浅色：域级分工，不影响其它页
+        // 不设 .preferredColorScheme（审查 P1-⑤ 删）：环境值会沿 navigationDestination
+        // / fullScreenCover 传进播放页（墨本轨），「不影响其它页」的旧注释与事实不符；
+        // 纸本页色值全部写死十六进制，无需锁外观——AGENTS 纸本轨第 1 条同型警示。
         // 二级页进出 → App 隐藏/恢复自定义 tab bar（push 动画期间同步，避免 bar 压在新页上）
         .onChange(of: path.isEmpty) { _, empty in
             print("PROFILE_DBG path \(empty ? "回到根页" : "进入二级页 depth=\(path.count)") → tabBar \(empty ? "shown" : "hidden")")
