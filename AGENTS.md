@@ -111,7 +111,7 @@ View → ViewModel → Service → 系统能力 / Model
    - **整页设计页**（横纵都按画布整体呈现、不可滚动）→ **min 双轴**：`scale = min(w/390, h/840)`（范本 `DramaPlayerView.swift:93`，用户文件）；小屏整页等比缩小、UI 完整为先。
    - **流式内容**（列表/网格/弹层）→ **容器现算**：`PosterGrid` `.flexible()`、`EpisodeGridMetrics.cell(availableWidth:)`、`GeometryReader` 现量；禁 `UIScreen.main`（既有约定）。
    - 全屏控制层沿用画布单位 × `sx`（`PlayerFullscreenControlsView.M.edge`），与 width-scale 同性质。
-3. **机型适配的验收 = 三机型快照，不靠推理**：布局相关改动（designFrame 数值、缩放策略、安全区处理）必须在**小屏（375pt 级，如 iPhone SE 或等效）/ 标准（iPhone 17 Pro 402×874）/ Max（iPhone 17 Pro Max）**三档模拟器各截关键态（详情页顶部+页底、播放页竖屏+全屏、下载页）。已实证安全区差异会咬人（下拉刷新阈值踩过灵动岛坑），这类问题只能跑出来看，模拟器命令见「模拟器视觉验收」节。
+3. **机型适配的验收 = 三机型快照，不靠推理**：布局相关改动（designFrame 数值、缩放策略、安全区处理）必须在**小屏（375pt 级，如 iPhone SE 或等效）/ 标准（iPhone 17 Pro 402×874）/ Max（iPhone 17 Pro Max）**三档模拟器各截关键态（详情页顶部+页底、播放页竖屏+全屏、下载页）。已实证安全区差异会咬人（下拉刷新阈值踩过灵动岛坑），这类问题只能跑出来看，模拟器命令见「模拟器视觉验收」节。**首跑已过（2026-11-16，全 PASS）**——SE 上播放页 0.79 缩放与详情页安全区从推理值变成了实证值；矩阵截图命令 `iOS/smoke/snapshot3.sh`。
 4. **布局体系按 surface 归属选择（2026-11-16 二次修订，替代早先「不引入 AutoLayout」的过死表述，与用户讨论后确认）**：
    - **SwiftUI 页面**维持流式（flexible frame / `layout protocol` / size class 是它的对应物）；画布逐像素对齐是产品主张，等比缩放画布正是它在多机型上的实现手段——SwiftUI 页不引约束体系（也没法引）。
    - **UIKit 岛屿的新代码一律用 UIStackView / NSLayoutConstraint**，不再手算 frame 摆放——存量手调的代价已有实证：横屏进度行四连修（`9396af7` 左右留白 → `950de44` 整体左移 → `089a884` 时间贴两端 → `4475b74` 轨道右缘 819→762）+ 被迫引入 `sizeThatFits` 实测宽度回推（「具体约定」12），一次 Stack/约束就能收敛的行式布局手调了四轮。
@@ -204,7 +204,7 @@ View → ViewModel → Service → 系统能力 / Model
 
 纸本轨对齐画布需要「改一版、截一张、量一次」，真机往返太慢。以下是实测可用的链路与踩过的死路。
 
-**多机型验收（2026-11-16 起，见「布局缩放与机型适配」第 3 条）**：布局相关改动换 `-destination 'platform=iOS Simulator,name=<机型>'` 分别截小屏（375pt 级）/ 标准（iPhone 17 Pro）/ Max 三档；`xcrun simctl list devices available` 现查可用机型名。
+**多机型验收（2026-11-16 起，见「布局缩放与机型适配」第 3 条）**：布局相关改动换 `-destination 'platform=iOS Simulator,name=<机型>'` 分别截小屏（375pt 级）/ 标准（iPhone 17 Pro）/ Max 三档；`xcrun simctl list devices available` 现查可用机型名。**iOS 26.5 无预置 SE**，已 `simctl create` 一台 SE 3 代（名「SE3-快照」，375×667；首次自建：`xcrun simctl create "SE3-快照" "iPhone SE (3rd generation)" com.apple.CoreSimulator.SimRuntime.iOS-26-5`）。**5 态 × 3 机型一条命令跑完**：`bash iOS/smoke/snapshot3.sh`（自动发现「横屏样张」样张源、每台先灌样张再截——重装 App 会换数据容器清掉样张，首轮就踩过：源容器路径在 install 后失效，播放页/下载页全截成空态）。首跑 2026-11-16 全 PASS：SE 播放页 0.79 contain 缩放控件完整、详情页安全区三档正确、下载页 3 列网格 103/112.7/125pt 全命中 (宽−44−20)/3。
 
 **构建**（约 4 分钟）：
 

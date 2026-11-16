@@ -42,6 +42,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 - **P1-⑬ 「已下完」口径**（`9a0410e`）：「我的」筛选按审查选项 B 改名「已下完/未下完」（判定 = 最后一集已下载，命名即口径）；播放口径「已看完」（距片尾 5s）保留在下载页逐集显示，两个词各管各的。
 - **P1-⑭ 去重冒烟固化**（`c18a245`）：`iOS/smoke/deduptest.swift`（@main 包装），5 断言全 PASS（同集双目录只列一条+选无后缀 / 列表落点==preferredEpisodeFolder 判读 / 重试摘旧+不夺走能播的 done / keeper done 落盘后只留一条 / 散装不去重）；分册验收段引用具体文件名与编译命令，`pruneSupersededAttempts`/`loadLibrary`/`preferredEpisodeFolder`/`registerEpisode` 改动后必须重跑。
 - **P1-⑪ DWUIColor 镜像收口**（`46b9e8c`）：DesignTokens 新增 `DWUIColor`（每 token 镜像 DWColor 同名同值），`UIColor(hex:)` 解析器全库唯一（删全屏控制层私设拷贝）；30 处裸 hex 收口（Drawers 17 / ControlsView 8 / Controller 2 / LaunchSplash 1）+ 新 token `drawerDim`；**漂移实证修复**：全屏选集描边 `#A04D42` → `episodeCellStroke`（#A05142）。DramaPlayerView 2 处属用户文件暂缓（待用户拍板）。
+- **三机型快照首跑**（`docs` 提交，2026-11-16）：新建 SE 3 代 iOS 26.5 模拟器「SE3-快照」（iOS 26.5 无预置 SE，`simctl create`），矩阵脚本固化 `iOS/smoke/snapshot3.sh`（样张源自动发现 + install 后灌样张——重装 App 换数据容器清样张的坑写在脚本头），5 态 × 3 机型 15 张全 PASS、零布局问题，明细见 §5 第 5 项。
 
 ## 3. `player/` 模块架构地图
 
@@ -59,7 +60,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 2 | ~~手势 A 档~~ → **已完成**（2026-11-16 提交，**待真机回归**：拖动手感 / 竖滑灵敏度 / 锁轴阈值，锚点见 §2 末） | ✅ |
 | 3 | 手势 B 档待拍板：竖屏全屏按钮（推翻「无按钮入口」）、edgePan 改交互式跟随（推翻「越阈即退」） | 中（等用户拍板） |
 | 4 | ~~审查第二批（7 条）~~ → **已完成**（2026-11-16 逐条提交：④`27ce095` ⑤`ec66f32` ⑧`c6b125b` ⑨`9b7211f` ⑬`9a0410e` ⑭`c18a245` ⑪`46b9e8c`，全量构建 0 error / 0 warning；明细见 §2 第二批小节） | ✅ |
-| 5 | 三机型快照首跑（**下一项开工**；SE 上播放页 0.79 缩放与详情页安全区表现，AGENTS「布局缩放与机型适配」第 3 条） | 中 |
+| 5 | ~~三机型快照首跑~~ → **已完成**（2026-11-16：`simctl create` 新建 SE 3 代 iOS 26.5 模拟器「SE3-快照」375×667，5 态 × 3 机型 15 张全 PASS——SE 播放页 0.79 contain 缩放控件完整无裁切（画布 310×667 水平居中留 ~33pt）、详情页安全区三档正确（顶部让出状态栏/灵动岛、页底无溢出）、下载页 3 列网格 103 / 112.7 / 125pt 全命中 (宽−44−20)/3；**零布局问题**。矩阵脚本固化 `iOS/smoke/snapshot3.sh`；坑：重装 App 换数据容器清样张，须 install 后再灌） | ✅ |
 | 6 | 播放器视图壳 UIKit 化包 B：竖屏卡片 UIKit 化（**DramaPlayerView 是用户文件，等用户发起**；VM/Service 零改动路线已在包 A 验证） | 中（依赖用户） |
 | 7 | 中期：无障碍第一遍（标签/命中区）、SQLite WAL+withConnection、千行文件拆分、AGENTS 简介块行号改锚定符号名 | 低 |
 | 8 | 本地推荐算法（接入点 = `PlaybackQueueService.resolveNext/Previous`） | 按需 |
