@@ -69,6 +69,10 @@ smart-downloader/
 │   └── realesrgan/        # Real-ESRGAN 增强工具
 │       ├── realesrgan-ncnn-vulkan  # Mac 可执行文件
 │       └── models/        # 预训练模型
+├── iOS/                   # iOS App（iPhone 客户端，Swift——详见第 10 章）
+│   ├── SmartDownloader.xcodeproj
+│   ├── SmartDownloader/   # App 源码（9 个功能域 + 全局组件，folder-sync 自动编译）
+│   └── smoke/             # macOS 冒烟工具（不需要手机即可验证下载核心）
 ├── specs/                 # 需求与设计文档
 │   ├── m3u8_downloader/   # 下载核心模块设计文档
 │   └── web_m3u8_downloader/# 网页解析模块设计文档
@@ -450,3 +454,138 @@ python3 enhance_video.py ~/Downloads/tx/video.mp4 -s 2 -m realesrgan-x4plus
 2. **处理时间**: 视频增强是计算密集型任务，长视频可能需要数小时
 3. **效果限制**: AI 无法无中生有，如果原视频质量极差，增强效果有限
 4. **音频保留**: 增强过程会保留原始音频轨道
+
+## 10. iOS App（SmartDownloader）
+
+iPhone 客户端：WKWebView 嗅探 → 原生剧集页 → 选集下载 → 本地 HLS 离线播放。语言 Swift，界面 SwiftUI + UIKit 混合（Xcode 26 folder-sync 工程：`SmartDownloader/` 目录内文件自动参与编译）。四个 tab：浏览 / 下载 / 我的 / 设置；浏览页点剧集链接推入原生剧集页；沉浸式竖屏播放（上下滑切集）+ 横屏全屏（转手机或点全屏按钮）。
+
+### 10.1 代码结构
+
+按「功能域」分组（同功能一个目录），域内按 Model → Service → ViewModel → View 分层。
+
+```text
+iOS/
+├── SmartDownloader.xcodeproj        # Xcode 工程
+├── SmartDownloader/                 # App 源码（9 个功能域 + 全局组件）
+│   ├── App.swift                    # 入口：保活容器 + 自定义 tab bar + 主线程卡顿探针
+│   ├── Shared/                      # 跨域纯数据 + 设计系统（不放业务逻辑）
+│   │   ├── DramaModels.swift        #   DramaTarget/MediaIdentity/ApiDramaEpisode/DramaInfo/DramaError
+│   │   ├── DownloadModels.swift     #   TaskState/DownloadError
+│   │   ├── DesignTokens.swift       #   DWColor/DWFont/DWLayout/designFrame（纸本视觉 token）
+│   │   ├── PaperGlyphs.swift        #   纸本轨 1pt 线稿图元库
+│   │   ├── MainTab.swift            #   tab 条目与顺序的唯一来源
+│   │   ├── QuickLink.swift          #   快捷站点模型
+│   │   └── PlaybackProgress.swift   #   播放进度纯数据
+│   ├── Components/                  # 全局通用 UI（不依赖业务域）
+│   │   ├── PosterGrid.swift         #   纸本海报卡+网格（详情推荐/我的/下载页三处共用）
+│   │   └── ToastView.swift          #   通用 toast
+│   ├── Drama/                       # 剧集域（详情页 + 站点数据）
+│   │   ├── DramaAPI.swift           #   站点接口（详情/下载链接，含加密参数）
+│   │   ├── DramaDetailData.swift    #   详情响应 DTO 整包（35+ 字段逐字段落库）
+│   │   ├── RecommendedDrama.swift   #   推荐卡片纯数据
+│   │   ├── DramaArchive.swift       #   详情「档案区」展示行派生（纯函数）
+│   │   ├── DramaDatabase.swift      #   SQLite 统一连接与迁移（WAL）
+│   │   ├── DramaCache.swift         #   drama_cache/drama_related 缓存读写 + 批量读
+│   │   ├── EpisodeActionsStore.swift#   episode_actions 集级行为数据（点赞/收藏/播放进度）
+│   │   ├── DramaFavorites.swift     #   drama_favorites 剧级收藏
+│   │   ├── DramaCoverCache.swift    #   封面本地缓存（密文 CDN → WebView 解密落盘）
+│   │   ├── DramaMetaHarvester.swift #   收割 WebView（封面解密/推荐/简介/tags 采集）
+│   │   ├── DramaPageViewModel.swift #   详情页 VM：SWR 缓存优先编排 + 下载阶段映射
+│   │   ├── DramaDetailView.swift    #   详情页主体（海报/简介/下拉刷新，1134 行）
+│   │   ├── DramaDetailEpisodeGrid.swift # 选集网格 + 批量下载工具条
+│   │   ├── DramaDetailSections.swift    # 为你推荐 + 剧集档案区
+│   │   ├── DramaDetailStates.swift      # 加载/错误态
+│   │   ├── DramaDetailPreview.swift     # Debug 样张入口（#if DEBUG）
+│   │   └── DramaNativePage.swift    #   浏览页推入的原生剧集页组装根
+│   ├── Downloads/                   # 下载域（纸本轨自绘界面）
+│   │   ├── Downloader.swift         #   下载核心：6 并发切片/AES 解密/同集去重/磁盘账本
+│   │   ├── DownloadsViewModel.swift #   列表 VM（磁盘占用缓存/封面后台解析）
+│   │   ├── PlaybackProgressViewModel.swift # 播放进度列表 VM
+│   │   ├── DownloadsView.swift      #   下载页（下载中/已下载双 tab/排序/批量编辑）
+│   │   ├── DiskUsageService.swift   #   磁盘占用计算（三级缓存增量重算）
+│   │   └── DownloadsSortPreferences.swift # 排序偏好持久化
+│   ├── Browser/                     # 浏览域（WKWebView + 注入 JS）
+│   │   ├── BrowserView.swift        #   浏览页 + WebViewContainer（嗅探注册/底部工具条）
+│   │   ├── WebViewStore.swift       #   浏览页 VM（导航/剧集链接检测路由）
+│   │   ├── BrowserStartPage.swift   #   起始页决策（默认站点 > 上次访问页）
+│   │   ├── SnifferScript.swift      #   m3u8 嗅探注入 JS
+│   │   ├── AdCleanerScript.swift    #   广告弹窗清理 JS（连带解锁站点滚动锁）
+│   │   ├── AgeGateScript.swift      #   年龄确认门自动点击 JS（每页最多 4 次）
+│   │   ├── KeyboardDismissScript.swift # 滑动网页收键盘 JS
+│   │   ├── ScrollCollapseScript.swift   # 滚动方向上报 JS
+│   │   └── ScrollCollapsePolicy.swift   # 顶栏/工具条收起联动纯判定
+│   ├── Profile/                     # 「我的」域（纸本轨）
+│   │   ├── ProfileViewModel.swift   #   四分类装配（历史/收藏/追更/点赞，后台串行队列）
+│   │   └── ProfileView.swift        #   我的页（分页容器 + 封面墙 + 二级页路由）
+│   ├── Settings/                    # 设置域（画布全自绘）
+│   │   ├── QuickLinkStore.swift     #   快捷站点持久化 + 默认站点决策
+│   │   ├── AppLaunchPreferences.swift # 启动 tab 偏好
+│   │   ├── DramaRoutePreferences.swift# 「打开 Web 剧集页」路由偏好
+│   │   ├── SettingsViewModel.swift  #   设置 VM（恢复默认收口）
+│   │   ├── SettingsView.swift       #   设置页
+│   │   └── QuickLinkEditorSheet.swift # 站点编辑弹层
+│   ├── Infra/                       # 基础设施（系统能力）
+│   │   ├── LocalMediaServer.swift   #   本地回环 HTTP 服务（HLS 播放源）
+│   │   ├── WebKitFetcher.swift      #   WKDownload 下载兜底（URLSession 失败后）
+│   │   ├── AppHaptics.swift         #   触觉反馈唯一入口
+│   │   ├── KeyboardObserver.swift   #   键盘显隐观察
+│   │   └── SwipeBackSupport.swift   #   导航页右滑返回桥件
+│   └── player/                      # 播放域（沉浸式竖屏 + 横屏全屏）
+│       ├── PlaybackModels.swift     #   播放纯数据
+│       ├── DramaEpisode.swift       #   播放卡片数据模型
+│       ├── PlaybackQueueService.swift   # 上下滑资源调度唯一入口（推荐算法接入点）
+│       ├── PlaybackPlayerService.swift  # 单 AVPlayer 常驻 + 预热池（秒开）
+│       ├── PlaybackProgressTracker.swift# 进度落库与续播（1Hz 攒内存 + 关键时机落盘）
+│       ├── PlayerPreferences.swift  #   静音/清屏/剩余时间显示偏好
+│       ├── PlayerGesturePolicy.swift    # 横滑快进换算纯函数
+│       ├── PlayerBrightnessVolume.swift # 横屏左亮度/右音量手势 Service
+│       ├── PlayerOrientationTrigger.swift# 重力姿态判稳自动进/出全屏
+│       ├── PlayerFullscreenController.swift # 全屏动画核心（视频层搬运+旋转）
+│       ├── EpisodePanelService.swift    # 选集面板数据装配 + 单集下载
+│       ├── DramaPlayerViewModel.swift   # 单集播放状态机（加载/快进/代际令牌）
+│       ├── PlayerFeedViewModel.swift    # 分页数据源/停稳防抖/边界提示
+│       ├── DramaPlayerView.swift    #   竖屏播放卡片
+│       ├── PlayerFeedView.swift     #   播放页容器（顶栏悬浮条/倍速与选集浮层）
+│       ├── PlayerPagingScrollView.swift # UIKit 分页滚动 + 快进/边缘返回手势
+│       ├── PlayerSurfaceContainer.swift # 单例视频容器（AVPlayerLayer 宿主）
+│       ├── PlayerFullscreenControlsView.swift # 横屏全屏控制层
+│       ├── EpisodePanel.swift       #   选集面板（竖屏底部弹层）
+│       ├── PlaybackRatePanel.swift  #   倍速面板
+│       ├── FullscreenDrawers.swift  #   全屏抽屉（选集/清晰度）
+│       ├── PlaybackFreezeFrame.swift#   切集冻帧（换集不黑闪）
+│       ├── PlayerOverlayGlyphs.swift#   播放页自绘图元库
+│       ├── PlayerPreviewEntry.swift #   Debug 定帧入口（#if DEBUG）
+│       └── DramaPlayerContainer.swift   # fullScreenCover 组装根
+├── LaunchSplashView.swift          # 启动屏（Logo 淡入）
+└── smoke/                           # macOS 冒烟工具（不需要手机即可验证下载核心）
+    ├── main.swift                   #   冒烟总入口（跑真实流端到端）
+    ├── deduptest.swift              #   同集去重 5 断言（改动去重逻辑后必跑）
+    ├── playtest.swift / fetchtest.swift / videocli.swift # 播放/站点连通/命令行工具
+    ├── snapshot3.sh                 # 三机型视觉快照矩阵（5 态 × 3 机型自动截图）
+    └── WebKitFetcher.swift          #   冒烟所需的下载兜底实现
+```
+
+### 10.2 构建与验证
+
+```bash
+# 模拟器构建（无需签名，约 4 分钟）
+cd iOS && xcodebuild -project SmartDownloader.xcodeproj -scheme SmartDownloader \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DD ONLY_ACTIVE_ARCH=YES build
+
+# 三机型视觉快照（小屏/标准/Max 三档模拟器，5 态 × 3 机型自动截图比对）
+APP=<构建产物>/SmartDownloader.app bash iOS/smoke/snapshot3.sh
+
+# macOS 冒烟（验证 Swift 下载核心，不需要手机）
+cd iOS/smoke && swiftc -O -o coretest main.swift \
+  ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Shared/DramaModels.swift \
+  ../SmartDownloader/Shared/PlaybackProgress.swift ../SmartDownloader/Downloads/Downloader.swift \
+  ../SmartDownloader/Drama/DramaCache.swift ../SmartDownloader/Drama/DramaDatabase.swift \
+  ../SmartDownloader/Drama/DramaDetailData.swift ../SmartDownloader/Drama/EpisodeActionsStore.swift \
+  ../SmartDownloader/Infra/WebKitFetcher.swift
+SMARTDOWNLOADER_DIR="$PWD/out" ./coretest
+
+# 真机日志（Debug 构建卡顿探针自动开启）
+xcrun devicectl device process launch --console --device <设备id> com.firefish.smartdownloader
+```
+
+关键机制说明与开发约定见 `AGENTS.md`（数据层迁移/WAL、蜂窝网络 IP 直连降级链、单播放器常驻与预热池秒开、上下滑资源调度与推荐算法接入点、纸本单轨视觉体系等），分域细节在 `docs/agents/`。
