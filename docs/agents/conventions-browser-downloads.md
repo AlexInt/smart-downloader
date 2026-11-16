@@ -24,4 +24,15 @@
      ③ **重下同一集**会在剧目录里并出「第01集」+「第01集(1)」两个目录（`uniqueFolderName` 只给目录加后缀），列表两条、播放却只能落到其中一份。
    - 规则：`DownloadManager.pruneSupersededAttempts(series:sort:keeper:)` 按**集号**（不是标题）收口，登记新尝试与落盘成功两处调用；`keeper` 为 done 时摘掉该集其余已结束记录，`keeper` 仍在下载时只摘已结束**且非 done** 的旧尝试（重下失败也不能丢掉能播的那份）。只摘列表条目、不动磁盘。
    - 目录层面：`DownloadEngine` 保存时对**选集**先删掉同集号的旧目录再落新目录（切片此时已全在 tempDir，替换窗口只有 move 那几毫秒），不再生成 `(1)`；`loadLibrary` 对同集号目录去重，`downloadEpisodeFolders` 与它共用 `DownloadManager.preferredEpisodeFolder`（**无后缀的「第NN集」优先**，否则取最新创建的一份）——列表与播放必须落到同一份，否则就是「点 A 播 B」。散装条目不参与去重（同名不同目录是两条不同视频）。
-   - 验收：`iOS/smoke` 式独立冒烟（`swiftc` 编 `Downloader.swift` + `DownloadManager` 依赖，`SMARTDOWNLOADER_DIR` 指到 fixture）已覆盖「同集双目录只列一条 / 播放目录与列表一致 / 重试摘旧 / 落盘后只留一条 / 散装不去重」；模拟器看列表用 `-downloadsSeries <剧名>` 直接推入剧详情（点不了卡片），磁盘造 `第01集` + `第01集(1)` 时详情页只应有一行。
+   - 验收：**回归网 = `iOS/smoke/deduptest.swift`**（审查 P1-⑭ 固化入库，2026-11-16；此前冒烟只在排障会话跑过、源码不在仓库不可复现）。编译与运行（`SMARTDOWNLOADER_DIR` 指到 fixture 根，`DownloadEngine.downloadsDir` 会重定向过去）：
+     ```bash
+     cd iOS/smoke && swiftc -O -o deduptest deduptest.swift \
+       ../SmartDownloader/Shared/DownloadModels.swift ../SmartDownloader/Shared/DramaModels.swift \
+       ../SmartDownloader/Shared/PlaybackProgress.swift ../SmartDownloader/Downloads/Downloader.swift \
+       ../SmartDownloader/Drama/DramaCache.swift ../SmartDownloader/Drama/DramaDatabase.swift \
+       ../SmartDownloader/Drama/DramaDetailData.swift ../SmartDownloader/Drama/EpisodeActionsStore.swift \
+       ../SmartDownloader/Drama/RecommendedDrama.swift <DramaCoverCache 桩> \
+       ../SmartDownloader/Infra/WebKitFetcher.swift
+     SMARTDOWNLOADER_DIR="$PWD/out/dedup-fixture" ./deduptest   # 5 断言 PASS/FAIL 逐条打印
+     ```
+     覆盖「同集双目录只列一条 / 播放目录与列表一致（preferredEpisodeFolder 两侧共用）/ 重试摘旧（含不夺走能播的 done）/ 落盘后只留一条 / 散装不去重」；改 `pruneSupersededAttempts` / `loadLibrary` / `preferredEpisodeFolder` / `registerEpisode` 后必须重跑。模拟器看列表用 `-downloadsSeries <剧名>` 直接推入剧详情（点不了卡片），磁盘造 `第01集` + `第01集(1)` 时详情页只应有一行。
