@@ -219,6 +219,28 @@ enum DramaCache {
     static func load(site: String, dramaID: String) -> Entry? {
         guard let db = openDB() else { return nil }
         defer { sqlite3_close(db) }
+        return readEntry(db, site: site, dramaID: dramaID)
+    }
+
+    /// 批量读取（审查 P1-④ 配套）：**一次连接**读多部剧——「我的」三分类装配此前
+    /// 逐条 load，每条各开各关一次连接（上百部剧就是几百次开关，读放大）。
+    /// 返回按 "site#dramaID" 键的字典；读不到的键缺席（与 load 返 nil 同语义）。
+    static func rows(for keys: [(site: String, dramaID: String)]) -> [String: Entry] {
+        guard !keys.isEmpty, let db = openDB() else { return [:] }
+        defer { sqlite3_close(db) }
+        var result: [String: Entry] = [:]
+        for key in keys {
+            let id = "\(key.site)#\(key.dramaID)"
+            guard result[id] == nil else { continue }   // 同剧重复键只读一次
+            if let entry = readEntry(db, site: key.site, dramaID: key.dramaID) {
+                result[id] = entry
+            }
+        }
+        return result
+    }
+
+    /// load 的逐剧读取体（连接由调用方开关）：load 单读与 rows 批量读共用一份 SQL
+    private static func readEntry(_ db: OpaquePointer?, site: String, dramaID: String) -> Entry? {
         let infoSQL = "SELECT name, update_status, cover, intro, tags, fetched_at, page_meta FROM drama_cache WHERE site=? AND drama_id=?;"
         let epSQL = """
         SELECT episode_id, sort, playable, downloaded, folder, can_play, access_state
@@ -274,6 +296,50 @@ enum DramaCache {
         }
         return Entry(name: name, updateStatus: status, cover: cover, intro: intro, tags: tags,
                      tagsSource: tagsSource, episodes: episodes, fetchedAt: fetchedAt)
+    }
+
+    /// 追更行（审查 P1-④ 从 ProfileViewModel 下沉，AGENTS 5/7：VM 不写裸 SQL）：
+    /// 「连载中」的剧（update_status 非完结），按最近抓取倒序，每剧附
+    /// 「最后一集是否已下载」子查询——「已看完」筛选需要它，VM 只装配。
+    struct ChasingRow {
+        let site: String
+        let dramaID: String
+        let name: String
+        let status: String
+        let cover: String?
+        /// 最后一集（sort 最大）是否已下载；无剧集行 → false
+        let lastEpisodeDownloaded: Bool
+    }
+
+    static func chasingRows() -> [ChasingRow] {
+        guard let db = openDB() else { return [] }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT site, drama_id, name, update_status, cover, fetched_at,
+               (SELECT e.downloaded FROM drama_episodes e
+                 WHERE e.site = drama_cache.site AND e.drama_id = drama_cache.drama_id
+                 ORDER BY e.sort DESC LIMIT 1) AS last_downloaded
+        FROM drama_cache
+        WHERE update_status IS NOT NULL AND update_status != ''
+          AND update_status NOT LIKE '%完结%' AND update_status NOT LIKE '%全%'
+        ORDER BY fetched_at DESC;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            DramaDatabase.fail(db, "chasingRows prepare"); return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        var rows: [ChasingRow] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append(ChasingRow(site: DramaDatabase.text(stmt, 0) ?? "",
+                                   dramaID: DramaDatabase.text(stmt, 1) ?? "",
+                                   name: DramaDatabase.text(stmt, 2) ?? "",
+                                   status: DramaDatabase.text(stmt, 3) ?? "",
+                                   cover: DramaDatabase.text(stmt, 4),
+                                   // 无剧集行时 last_downloaded 为 NULL → 0 → 未看完，符合口径
+                                   lastEpisodeDownloaded: sqlite3_column_int(stmt, 6) != 0))
+        }
+        return rows
     }
 
     /// 详情整包最近一次抓取时间（detail_fetched_at 列，ISO8601）；从未抓过/列为空返回 nil。

@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import Combine
 
 /// 「我的」页 ViewModel：聚合 SQLite 三张表的关系查询，产出封面墙数据。
@@ -112,19 +111,22 @@ final class ProfileViewModel: ObservableObject {
 
     // MARK: - 各分类的数据口径
 
-    /// 历史：有播放进度的剧，按最近观看倒序。「x集 / 总集数」= 看过的最大集号 / 缓存总集数
+    /// 历史：有播放进度的剧，按最近观看倒序。「x集 / 总集数」= 看过的最大集号 / 缓存总集数。
+    /// 剧条目用 DramaCache.rows(for:) 批量读（一次连接，审查 P1-④）——此前逐条
+    /// load 每条各开各关一次连接，封面兜底还会再 load 一遍（双重读放大）。
     private func historyItems() -> LoadResult {
         let watches = EpisodeActionsStore.watchedDramas()
+        let entries = DramaCache.rows(for: watches.map { ($0.site, $0.dramaID) })
         var finished: [String: Bool] = [:]
         let items: [Item] = watches.compactMap { watch in
-            guard let entry = DramaCache.load(site: watch.site, dramaID: watch.dramaID),
-                  let name = entry.name, let total = entry.episodes.map(\.sort).max() else { return nil }
             let id = "\(watch.site)#\(watch.dramaID)"
+            guard let entry = entries[id], let name = entry.name,
+                  let total = entry.episodes.map(\.sort).max() else { return nil }
             finished[id] = Self.lastEpisodeFinished(entry)
             return Item(id: id,
                         target: DramaTarget(site: watch.site, dramaID: watch.dramaID),
                         name: name,
-                        coverURL: coverURL(site: watch.site, dramaID: watch.dramaID),
+                        coverURL: coverURL(site: watch.site, dramaID: watch.dramaID, remote: entry.cover),
                         progress: "\(watch.lastSort)集 / \(total)集")
         }
         return LoadResult(items: items, finished: finished)
@@ -133,17 +135,17 @@ final class ProfileViewModel: ObservableObject {
     /// 收藏：drama_favorites 按收藏时间倒序。文案 = 缓存总集数（「127集」）
     private func favoriteItems() -> LoadResult {
         let favs = DramaFavorites().favoriteDramas()
+        let entries = DramaCache.rows(for: favs.map { ($0.site, $0.dramaID) })
         var finished: [String: Bool] = [:]
         let items: [Item] = favs.compactMap { fav in
-            guard let entry = DramaCache.load(site: fav.site, dramaID: fav.dramaID),
-                  let name = entry.name else { return nil }
-            let total = entry.episodes.map(\.sort).max() ?? 0
             let id = "\(fav.site)#\(fav.dramaID)"
+            guard let entry = entries[id], let name = entry.name else { return nil }
+            let total = entry.episodes.map(\.sort).max() ?? 0
             finished[id] = Self.lastEpisodeFinished(entry)
             return Item(id: id,
                         target: DramaTarget(site: fav.site, dramaID: fav.dramaID),
                         name: name,
-                        coverURL: coverURL(site: fav.site, dramaID: fav.dramaID),
+                        coverURL: coverURL(site: fav.site, dramaID: fav.dramaID, remote: entry.cover),
                         progress: total > 0 ? "\(total)集" : "")
         }
         return LoadResult(items: items, finished: finished)
@@ -151,43 +153,20 @@ final class ProfileViewModel: ObservableObject {
 
     /// 追更：缓存里「连载中」的剧（update_status 非完结），按最近抓取倒序。
     /// 口径如实：追更意图目前只有站点的连载状态可依，用户自建的追更列表还不存在。
-    /// 「已看完」用子查询取每剧最大 sort 集的 downloaded——不再逐剧 DramaCache.load
-    /// （追更 97 部曾为此在装配后整整多跑 97 次全量 load）。
+    /// SQL 已下沉 DramaCache.chasingRows()（审查 P1-④，AGENTS 5/7：VM 不写裸 SQL、
+    /// 建表与查询收口 Drama 域）；「已看完」= 该行自带的最后一集已下载子查询。
     private func chasingItems() -> LoadResult {
-        guard let db = DramaDatabase.open() else { return LoadResult(items: [], finished: [:]) }
-        defer { sqlite3_close(db) }
-        var stmt: OpaquePointer?
-        let sql = """
-        SELECT site, drama_id, name, update_status, cover, fetched_at,
-               (SELECT e.downloaded FROM drama_episodes e
-                 WHERE e.site = drama_cache.site AND e.drama_id = drama_cache.drama_id
-                 ORDER BY e.sort DESC LIMIT 1) AS last_downloaded
-        FROM drama_cache
-        WHERE update_status IS NOT NULL AND update_status != ''
-          AND update_status NOT LIKE '%完结%' AND update_status NOT LIKE '%全%'
-        ORDER BY fetched_at DESC;
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            DramaDatabase.fail(db, "chasing read"); return LoadResult(items: [], finished: [:])
-        }
-        defer { sqlite3_finalize(stmt) }
-        var items: [Item] = []
+        let rows = DramaCache.chasingRows()
         var finished: [String: Bool] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let site = DramaDatabase.text(stmt, 0) ?? ""
-            let dramaID = DramaDatabase.text(stmt, 1) ?? ""
-            let name = DramaDatabase.text(stmt, 2) ?? ""
-            let status = DramaDatabase.text(stmt, 3) ?? ""
-            // 无剧集行时 last_downloaded 为 NULL → 0 → 未看完，符合口径
-            let lastDownloaded = sqlite3_column_int(stmt, 6) != 0
-            let target = DramaTarget(site: site, dramaID: dramaID)
-            let id = "\(site)#\(dramaID)"
-            finished[id] = lastDownloaded
+        var items: [Item] = []
+        for row in rows {
+            let id = "\(row.site)#\(row.dramaID)"
+            finished[id] = row.lastEpisodeDownloaded
             items.append(Item(id: id,
-                              target: target,
-                              name: name,
-                              coverURL: coverURL(site: site, dramaID: dramaID),
-                              progress: status))
+                              target: DramaTarget(site: row.site, dramaID: row.dramaID),
+                              name: row.name,
+                              coverURL: coverURL(site: row.site, dramaID: row.dramaID, remote: row.cover),
+                              progress: row.status))
         }
         return LoadResult(items: items, finished: finished)
     }
@@ -195,17 +174,17 @@ final class ProfileViewModel: ObservableObject {
     /// 点赞：episode_actions 里点过赞的剧，按最近点赞倒序。文案 = 缓存总集数
     private func likedItems() -> LoadResult {
         let likes = EpisodeActionsStore.likedDramas()
+        let entries = DramaCache.rows(for: likes.map { ($0.site, $0.dramaID) })
         var finished: [String: Bool] = [:]
         let items: [Item] = likes.compactMap { like in
-            guard let entry = DramaCache.load(site: like.site, dramaID: like.dramaID),
-                  let name = entry.name else { return nil }
-            let total = entry.episodes.map(\.sort).max() ?? 0
             let id = "\(like.site)#\(like.dramaID)"
+            guard let entry = entries[id], let name = entry.name else { return nil }
+            let total = entry.episodes.map(\.sort).max() ?? 0
             finished[id] = Self.lastEpisodeFinished(entry)
             return Item(id: id,
                         target: DramaTarget(site: like.site, dramaID: like.dramaID),
                         name: name,
-                        coverURL: coverURL(site: like.site, dramaID: like.dramaID),
+                        coverURL: coverURL(site: like.site, dramaID: like.dramaID, remote: entry.cover),
                         progress: total > 0 ? "\(total)集" : "")
         }
         return LoadResult(items: items, finished: finished)
@@ -225,13 +204,14 @@ final class ProfileViewModel: ObservableObject {
 
     // MARK: - 封面
 
-    /// 封面展示路径：本地缓存（≤15 天）优先，远程 URL 兜底（与 DramaPageViewModel 同口径）
-    private func coverURL(site: String, dramaID: String) -> URL? {
+    /// 封面展示路径：本地缓存（≤15 天）优先，远程 URL 兜底（与 DramaPageViewModel 同口径）。
+    /// remote 由调用方从已读条目带入（审查 P1-④：旧签名在这里还会再 load 一遍整剧，
+    /// 纯粹为了拿 cover——批量读重构后不再发生）
+    private func coverURL(site: String, dramaID: String, remote: String?) -> URL? {
         if let local = DramaCoverCache.validLocalURL(site: site, dramaID: dramaID) {
             return local
         }
-        guard let entry = DramaCache.load(site: site, dramaID: dramaID),
-              let remote = entry.cover, !remote.isEmpty else { return nil }
+        guard let remote, !remote.isEmpty else { return nil }
         return URL(string: remote)
     }
 
