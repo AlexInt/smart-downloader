@@ -33,7 +33,10 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         let scroll = PagingScrollView()
         scroll.isPagingEnabled = true
         scroll.showsVerticalScrollIndicator = false
-        scroll.backgroundColor = .clear
+        // 背景墨色（与加载渐变底 videoBottom/background 同色）：2026-11-16 起 surface
+        // 只铺到选集区顶部（画面与选集区上下排布，见 updateSurfaceContainer），底部带
+        // 靠这里垫墨，全屏宽、翻页连续；曾经 .clear 是因为 surface 铺满整页看不到它
+        scroll.backgroundColor = UIColor(DWColor.background)
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.delegate = context.coordinator
         scroll.onLayout = { [weak coordinator = context.coordinator] in
@@ -429,6 +432,11 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         }
 
         /// 视频容器对位活跃卡 + gravity 跟随片源方向（updateUIView 与几何变化后都会调）。
+        /// 2026-11-16 布局改版：画面只铺到**选集胶囊顶部**（画布 y=770），底部带（70 画布
+        /// 单位）独立墨色 —— 画面与选集区上下排布，不再铺到屏幕底（用户实报「画面底部拉到
+        /// 屏幕底部」）。胶囊 y 在 DramaPlayerView 画布里，胶囊挪位这里要跟。
+        /// 画布纵向居中（scaleEffect 默认 center）：带顶屏幕 y = (页高−840×scale)/2 + 770×scale。
+        /// 全屏不受影响：videoLayer 搬运的「视频显示带」基于 surface bounds，自动适配。
         func updateSurfaceContainer(in scroll: PagingScrollView) {
             guard let surface = surfaceView else { return }
             surface.videoGravity = PlayerPagingScrollView.videoGravity(for: parent.playback)
@@ -436,12 +444,22 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             let height = scroll.bounds.height
             guard width > 0, height > 0, let current = parent.currentSort,
                   let index = parent.slots.firstIndex(where: { $0.sort == current }) else { return }
-            let frame = CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
+            let frame = CGRect(x: 0, y: CGFloat(index) * height, width: width, height: Self.surfaceHeight(in: scroll))
             if surface.frame != frame {
                 print("PLAYER_DBG [CHECK] surface frame → \(frame)")
                 surface.frame = frame
             }
         }
+
+    /// 画面区高度（页内）：选集胶囊顶部（画布 y=770）以上 + 画布纵向居中偏移。
+    static func surfaceHeight(in scroll: UIScrollView) -> CGFloat {
+        let width = scroll.bounds.width
+        let height = scroll.bounds.height
+        guard width > 0, height > 0 else { return height }
+        let scale = min(width / DWLayout.designWidth, height / DWLayout.designHeight)
+        let canvasTop = (height - DWLayout.designHeight * scale) / 2
+        return canvasTop + 770 * scale
+    }
 
         /// 几何变化后把 currentSort 那一页同步顶对齐视口。
         /// 参数放宽为 UIScrollView：panLock 归位也从这里走（didSeekPan 手里只有 UIScrollView 类型）
