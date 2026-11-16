@@ -38,9 +38,14 @@ enum DramaDatabase {
             fail(db, "open")
             return nil
         }
-        // 后台批量读（列表刷新/磁盘占用重算）与主线程写（进度落库）可能同时进行：
-        // 忙等上限 100ms，锁冲突不再立刻报 SQLITE_BUSY 错
-        sqlite3_busy_timeout(db, 100)
+        // 后台批量读（列表刷新/磁盘占用重算）与主线程写（进度落库）可能同时进行。
+        // 2026-11-16 审查 P2-3 两改：① 开 WAL —— 读不阻塞写、写不阻塞读，回滚日志
+        // 模式下「主线程写大事务时后台读撞锁 → busy 超时 → 静默返空列表」的根因
+        // （journal_mode 是文件级持久属性，重复设置幂等；首转换若遇并发失败也不
+        // 影响开库，下次自动再试）；② busy_timeout 100→1000ms，大事务期间后台读
+        // 等待而非静默返空。BUSY 若仍发生会走 fail() 的 [BUSY #n] 计数日志
+        sqlite3_busy_timeout(db, 1000)
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil)
         migrationLock.lock()
         defer { migrationLock.unlock() }
         if !migrated {
@@ -371,7 +376,17 @@ enum DramaDatabase {
 
     // MARK: 共用低层助手（两个 Service 都用这里的，不再各自复制一份）
 
+    /// BUSY/LOCKED 观测计数（审查 P2-3：WAL 上线后压测锁冲突是否仍发生）。
+    /// 只用于日志，计数精度可容忍轻微竞争，不必上锁
+    private nonisolated(unsafe) static var busyCount = 0
+
     static func fail(_ db: OpaquePointer?, _ what: String) {
+        let code = db.map { sqlite3_errcode($0) } ?? 0
+        if code == SQLITE_BUSY || code == SQLITE_LOCKED {
+            busyCount += 1
+            print("CACHE FAIL[\(what)]: \(String(cString: sqlite3_errmsg(db))) [BUSY #\(busyCount)]")
+            return
+        }
         print("CACHE FAIL[\(what)]: \(String(cString: sqlite3_errmsg(db)))")
     }
 
