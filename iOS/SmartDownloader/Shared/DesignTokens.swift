@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Hex 颜色
 
@@ -145,6 +146,63 @@ extension DWColor {
     /// 选集当前集格子底（画布 22:98 #2A2422）与描边（#A05142）
     static let episodeCellCurrent = Color(hex: "#2A2422")
     static let episodeCellStroke  = Color(hex: "#A05142")
+    /// 抽屉压暗层（画布 22:75 #0B0C0E a0.28；全屏控制器镜像用 DWUIColor.drawerDim）
+    static let drawerDim          = Color(hex: "#0B0C0E")
+}
+
+// MARK: - DWUIColor · UIKit 侧镜像（审查 P1-⑪ 收口，2026-11-16）
+//
+// UIKit 文件（全屏控制层 / 抽屉 / 控制器）不能直接引用 SwiftUI 的 DWColor，
+// 此前各自写裸 hex、全屏控制层还私设了第二个 UIColor(hex:) 解析器——已经兑现为
+// 真实漂移：全屏选集描边 #A04D42 vs 竖屏面板 token #A05142。收口规则：
+//   ① 色值单一来源仍是本文件——DWUIColor 每个 token 都镜像某个 DWColor token
+//     （同名同值），改色先改 DWColor 再同步这里，两处不同值 = 违反单源；
+//   ② UIKit 代码禁止再写裸 hex，一律 `DWUIColor.<token>`；
+//   ③ UIColor(hex:) 解析器全库唯一，就在下面这个 extension（全屏控制层那份
+//     私设拷贝已删）。DramaPlayerView 的 2 处裸 hex 属用户文件暂缓（待用户拍板）。
+
+extension UIColor {
+    /// 唯一的 UIColor hex 解析器（与 Color(hex:) 同口径）
+    convenience init(hex: String) {
+        let raw = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        var value: UInt64 = 0
+        Scanner(string: raw).scanHexInt64(&value)
+        self.init(red: Double((value >> 16) & 0xFF) / 255,
+                  green: Double((value >> 8) & 0xFF) / 255,
+                  blue: Double(value & 0xFF) / 255, alpha: 1)
+    }
+}
+
+enum DWUIColor {
+    /// 叠层主文字 / 图标（镜像 DWColor.overlayInk）
+    static let overlayInk         = UIColor(hex: "#E8E6DF")
+    /// 叠层弱文字（镜像 DWColor.overlayInkSub）
+    static let overlayInkSub      = UIColor(hex: "#C4C7C3")
+    /// 朱砂（当前点 / 已播段 / 选中态，镜像 DWColor.overlayCinnabar）
+    static let overlayCinnabar    = UIColor(hex: "#A05243")
+    /// 未播轨道（镜像 DWColor.overlayTrack）
+    static let overlayTrack       = UIColor(hex: "#E8E6DF")
+    /// 半透明圆角方钮底（画布 22:31 #8C9190 @0.42，镜像 DWColor.overlayButton）
+    static let overlayButton      = UIColor(hex: "#8C9190")
+    /// 倍速抽屉底（画布 22:77 #1C1E1F，镜像 DWColor.ratePanel）
+    static let ratePanel          = UIColor(hex: "#1C1E1F")
+    /// 倍速抽屉选项文字（镜像 DWColor.rateText）
+    static let rateText           = UIColor(hex: "#E8E6DF")
+    /// 倍速抽屉选中项文字（镜像 DWColor.rateTextSelected）
+    static let rateTextSelected   = UIColor(hex: "#F2F0EA")
+    /// 倍速抽屉选中行底（镜像 DWColor.rateRowSelected）
+    static let rateRowSelected    = UIColor(hex: "#35393B")
+    /// 选集抽屉底（画布 22:78 #101214，镜像 DWColor.episodePanel）
+    static let episodePanel       = UIColor(hex: "#101214")
+    /// 选集格子底（画布 22:92 #25282B，镜像 DWColor.episodeCell）
+    static let episodeCell        = UIColor(hex: "#25282B")
+    /// 选集当前集格子底（画布 22:98 #2A2422，镜像 DWColor.episodeCellCurrent）
+    static let episodeCellCurrent = UIColor(hex: "#2A2422")
+    /// 选集当前集描边（#A05142，镜像 DWColor.episodeCellStroke——
+    /// 全屏侧曾是 #A04D42，与竖屏 token 漂移，P1-⑪ 已对齐）
+    static let episodeCellStroke  = UIColor(hex: "#A05142")
+    /// 抽屉压暗层（画布 22:75 #0B0C0E a0.28，镜像 DWColor.drawerDim）
+    static let drawerDim          = UIColor(hex: "#0B0C0E")
 }
 
 // MARK: - Design Tokens · 底部标签栏（画布 19:225 / 22:157）

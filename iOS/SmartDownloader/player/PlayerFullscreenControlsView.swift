@@ -23,17 +23,9 @@ import AVFoundation
 // 可见性 = 手动呼出（点按/进入全屏，3s 自动收起）或 scrubbing（seek 中常驻）。
 // insets 为容器本地坐标的安全区（由控制器按旋转方向从窗口安全区映射，避灵动岛）。
 
-/// 全屏容器本地坐标的 UIColor 便捷初始化（与 Shared/DesignTokens 同色值口径）
-extension UIColor {
-    convenience init(hex: String) {
-        let raw = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        var value: UInt64 = 0
-        Scanner(string: raw).scanHexInt64(&value)
-        self.init(red: Double((value >> 16) & 0xFF) / 255,
-                  green: Double((value >> 8) & 0xFF) / 255,
-                  blue: Double(value & 0xFF) / 255, alpha: 1)
-    }
-}
+// 全屏容器本地坐标的 UIColor hex 解析器已收口到 Shared/DesignTokens.swift 的
+// DWUIColor（审查 P1-⑪）：这里不再私设第二个 UIColor(hex:)，裸 hex 也一并
+// 换成 DWUIColor token——色值单一来源与漂移说明见 DesignTokens 的收口注释。
 
 final class PlayerFullscreenControlsView: UIView {
     private let playback: DramaPlayerViewModel
@@ -244,12 +236,12 @@ final class PlayerFullscreenControlsView: UIView {
 
         // 进度轨道：与竖屏卡片同一套色（DramaPlayerView.progressHud）
         //   未播 #E8E6DF @0.30 / 已播 #E8E6DF / 当前点朱砂 #A05243
-        progressTrack.backgroundColor = UIColor(hex: "#E8E6DF").withAlphaComponent(0.30)
+        progressTrack.backgroundColor = DWUIColor.overlayTrack.withAlphaComponent(0.30)
         addSubview(progressTrack)
-        progressFill.backgroundColor = UIColor(hex: "#E8E6DF")
+        progressFill.backgroundColor = DWUIColor.overlayTrack
         progressTrack.addSubview(progressFill)
         // 进度圆点：竖屏（画布 2:129）与横屏（画布 22:47）都是朱砂，别再用纯白
-        progressDot.backgroundColor = UIColor(hex: "#A05243")
+        progressDot.backgroundColor = DWUIColor.overlayCinnabar
         progressDot.layer.cornerRadius = 4
         addSubview(progressDot)
 
@@ -368,13 +360,13 @@ final class PlayerFullscreenControlsView: UIView {
         playback.$liked
             .removeDuplicates()
             .sink { [weak self] liked in
-                self?.likeGlyph.tintColor = liked ? UIColor(hex: "#A05243") : .white
+                self?.likeGlyph.tintColor = liked ? DWUIColor.overlayCinnabar : .white
             }
             .store(in: &cancellables)
         playback.$saved
             .removeDuplicates()
             .sink { [weak self] saved in
-                self?.saveGlyph.tintColor = saved ? UIColor(hex: "#A05243") : .white
+                self?.saveGlyph.tintColor = saved ? DWUIColor.overlayCinnabar : .white
             }
             .store(in: &cancellables)
         // 倍速文案：默认档显示「倍速」，选过档位显示「1.5×」。
@@ -980,7 +972,7 @@ class FullscreenGlyphView: UIView {
         // （这里不翻译 CTM：翻一次会把整枚图标上下颠倒）
         if drawsBackground {
             let radius = 11 * (bounds.width / 44)
-            UIColor(hex: "#8C9190").withAlphaComponent(0.42).setFill()
+            DWUIColor.overlayButton.withAlphaComponent(0.42).setFill()
             UIBezierPath(roundedRect: bounds, cornerRadius: radius).fill()
         }
         draw(ctx, bounds.size, tintColor)
@@ -1126,8 +1118,8 @@ final class LockGlyphView: FullscreenGlyphView {
 
         // 底（画布 a0.42 灰；锁定态换朱砂）
         let bg = isLocked
-            ? UIColor(hex: "#A05243").withAlphaComponent(0.55)
-            : UIColor(hex: "#8C9190").withAlphaComponent(0.42)
+            ? DWUIColor.overlayCinnabar.withAlphaComponent(0.55)
+            : DWUIColor.overlayButton.withAlphaComponent(0.42)
         bg.setFill()
         UIBezierPath(roundedRect: bounds, cornerRadius: 11 * s).fill()
 

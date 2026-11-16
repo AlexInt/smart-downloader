@@ -544,7 +544,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         case .rate:
             // 画布 22:72：视频满屏 + 22:75 压暗层 #0B0C0E a0.28
             let dim = UIView(frame: container.bounds)
-            dim.backgroundColor = UIColor(hex: "#0B0C0E").withAlphaComponent(0.28)
+            dim.backgroundColor = DWUIColor.drawerDim.withAlphaComponent(0.28)
             dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             dim.alpha = 0
             // 压暗层在视频之上、面板之下：点它只关抽屉，不穿透去暂停
@@ -739,7 +739,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         label.textColor = .white
         label.textAlignment = .center
         label.numberOfLines = 0
-        label.backgroundColor = UIColor(hex: "#1C1E1F").withAlphaComponent(0.92)
+        label.backgroundColor = DWUIColor.ratePanel.withAlphaComponent(0.92)
         label.layer.cornerRadius = 8
         label.layer.masksToBounds = true
         label.alpha = 0

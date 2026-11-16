@@ -11,7 +11,8 @@ import UIKit
 //               选中行 r10 #35393B + 文字 #F2F0EA Medium。
 //   22:78 选集  300×390 r36 底 #101214，pad18。标题行 @(18,18) 216×32（关闭 20×20 内 12×12 叉，
 //               描边 1.8）；网格 @(18,64) 228×321 —— 4 列 46×46 r9 gap9，底 #25282B、
-//               数字 14px Inter #E8E6DF；当前集底 #2A2422 + 描边 #A04D42 a0.5 + 数字 #A05243
+//               数字 14px Inter #E8E6DF；当前集底 #2A2422 + 描边 #A05142 a0.5（P1-⑪ 前
+//               实现写的是 #A04D42，与竖屏 token 漂移，已对齐 episodeCellStroke）+ 数字 #A05243
 //               Medium + 右侧 4×4 r2 播放点（gap 3）。
 //
 // 面板右缘比画布右缘再出血 36（画布 x 580…880 vs 844）：右侧 36 被容器裁掉，
@@ -130,8 +131,8 @@ final class RateDrawerPanel: FullscreenDrawerPanel {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor(hex: "#1C1E1F")
-        selectedRow.backgroundColor = UIColor(hex: "#35393B")
+        backgroundColor = DWUIColor.ratePanel
+        selectedRow.backgroundColor = DWUIColor.rateRowSelected
         selectedRow.isUserInteractionEnabled = false
         addSubview(selectedRow)
 
@@ -176,7 +177,7 @@ final class RateDrawerPanel: FullscreenDrawerPanel {
         for (index, button) in rows.enumerated() {
             let rate = DramaPlayerViewModel.rateOptions[index]
             let selected = abs(rate - currentRate) < 0.001
-            button.setTitleColor(selected ? UIColor(hex: "#F2F0EA") : UIColor(hex: "#E8E6DF"),
+            button.setTitleColor(selected ? DWUIColor.rateTextSelected : DWUIColor.rateText,
                                  for: .normal)
             button.accessibilityTraits = selected ? [.button, .selected] : [.button]
         }
@@ -238,7 +239,7 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor(hex: "#101214")
+        backgroundColor = DWUIColor.episodePanel
 
         titleLabel.text = "选集"
         titleLabel.textColor = .white
@@ -271,7 +272,7 @@ final class EpisodeDrawerPanel: FullscreenDrawerPanel {
         if let hint {
             titleLabel.text = hint
             titleLabel.font = .systemFont(ofSize: L.hintFont * s, weight: .medium)
-            titleLabel.textColor = UIColor(hex: "#A05243")
+            titleLabel.textColor = DWUIColor.overlayCinnabar
         } else {
             titleLabel.text = "选集"
             titleLabel.font = PlayerFullscreenControlsView.serifFont(L.titleFont * s, weight: .medium)
@@ -459,28 +460,28 @@ final class EpisodeCellView: UIView {
     }
 
     private func applyStyle() {
-        backgroundColor = UIColor(hex: isCurrent ? "#2A2422" : "#25282B")
+        backgroundColor = isCurrent ? DWUIColor.episodeCellCurrent : DWUIColor.episodeCell
         layer.cornerRadius = 9 * designScale
         layer.borderWidth = isCurrent ? 1 : 0
         layer.borderColor = isCurrent
-            ? UIColor(hex: "#A04D42").withAlphaComponent(0.5).cgColor
+            ? DWUIColor.episodeCellStroke.withAlphaComponent(0.5).cgColor   /* P1-⑪ 对齐：原裸值 #A04D42 与竖屏 token 漂移 */
             : UIColor.clear.cgColor
         numberLabel.textColor = numberColor
-        dot.backgroundColor = UIColor(hex: "#A05243")
+        dot.backgroundColor = DWUIColor.overlayCinnabar
         dot.layer.cornerRadius = 2 * designScale
         dot.isHidden = !isCurrent
         todoGlyph.isHidden = !(item.phase == .idle && !isCurrent && item.playable)
-        todoGlyph.color = UIColor(hex: "#C4C7C3")
+        todoGlyph.color = DWUIColor.overlayInkSub
         applyRing()
         setNeedsLayout()
     }
 
     private var numberColor: UIColor {
-        if isCurrent { return UIColor(hex: "#A05243") }
-        if item.isDownloaded { return UIColor(hex: "#E8E6DF") }
+        if isCurrent { return DWUIColor.overlayCinnabar }
+        if item.isDownloaded { return DWUIColor.overlayInk }
         return item.playable
-            ? UIColor(hex: "#C4C7C3")
-            : UIColor(hex: "#C4C7C3").withAlphaComponent(0.45)
+            ? DWUIColor.overlayInkSub
+            : DWUIColor.overlayInkSub.withAlphaComponent(0.45)
     }
 
     private func applyRing() {
@@ -489,15 +490,15 @@ final class EpisodeCellView: UIView {
             ringLayer.isHidden = true
         case .queued:
             ringLayer.isHidden = false
-            ringLayer.strokeColor = UIColor(hex: "#C4C7C3").withAlphaComponent(0.32).cgColor
+            ringLayer.strokeColor = DWUIColor.overlayInkSub.withAlphaComponent(0.32).cgColor
             ringLayer.strokeEnd = 1
         case .active(let progress):
             ringLayer.isHidden = false
-            ringLayer.strokeColor = UIColor(hex: "#A05243").cgColor
+            ringLayer.strokeColor = DWUIColor.overlayCinnabar.cgColor
             ringLayer.strokeEnd = CGFloat(min(max(progress, 0.03), 1))
         case .failed:
             ringLayer.isHidden = false
-            ringLayer.strokeColor = UIColor(hex: "#A05243").cgColor
+            ringLayer.strokeColor = DWUIColor.overlayCinnabar.cgColor
             ringLayer.strokeEnd = 1
         }
     }
@@ -510,7 +511,7 @@ final class EpisodeCellView: UIView {
 
 /// 未下载格右下角的小下箭头（与竖屏弹层的 `EpisodeTodoGlyph` 同一形状）
 final class EpisodeTodoGlyphView: UIView {
-    var color: UIColor = UIColor(hex: "#C4C7C3") {
+    var color: UIColor = DWUIColor.overlayInkSub {
         didSet { setNeedsDisplay() }
     }
 

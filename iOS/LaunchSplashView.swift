@@ -45,7 +45,7 @@ struct LaunchSplashView: View {
         .overlay(alignment: .bottom) {
             Text("智能下载")
                 .font(DWFont.cn(11))
-                .foregroundStyle(Color(hex: "#C4C7C3"))
+                .foregroundStyle(DWColor.overlayInkSub)   /* P1-⑪：裸 hex 收口到 token（同值） */
                 .padding(.bottom, 6)
                 .opacity(risen ? 1.0 : 0.0)
         }
