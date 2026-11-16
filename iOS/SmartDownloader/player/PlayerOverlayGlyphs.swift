@@ -92,6 +92,37 @@ struct OverlayFitGlyph: View {
     }
 }
 
+// MARK: 全屏进入（斜向双箭头 ↖↘：指向外放大；与「画面适配」四角框拉开形态距离防混淆）
+/// 2026-11-16 用户拍板：竖屏横屏片源的画面下方加全屏入口（爱优腾/B站竖屏详情页
+/// 全屏钮的变体；位置在画面下方而非控制行，避免与右下角画面适配钮混淆）
+struct OverlayFullscreenGlyph: View {
+    var size: CGFloat = 26
+    var color: Color = .white
+
+    var body: some View {
+        Canvas { ctx, canvasSize in
+            let s = canvasSize.width / 26
+            let stroke = 1.6 * s
+            var path = Path()
+            // 左上箭头：斜线 + 角（尖 (6,6)，角线到 (6,11.5) / (11.5,6)）
+            path.move(to: CGPoint(x: 11 * s, y: 11 * s))
+            path.addLine(to: CGPoint(x: 6 * s, y: 6 * s))
+            path.move(to: CGPoint(x: 6 * s, y: 11.5 * s))
+            path.addLine(to: CGPoint(x: 6 * s, y: 6 * s))
+            path.addLine(to: CGPoint(x: 11.5 * s, y: 6 * s))
+            // 右下箭头：斜线 + 角（尖 (20,20)，角线到 (20,14.5) / (14.5,20)）
+            path.move(to: CGPoint(x: 15 * s, y: 15 * s))
+            path.addLine(to: CGPoint(x: 20 * s, y: 20 * s))
+            path.move(to: CGPoint(x: 20 * s, y: 14.5 * s))
+            path.addLine(to: CGPoint(x: 20 * s, y: 20 * s))
+            path.addLine(to: CGPoint(x: 14.5 * s, y: 20 * s))
+            ctx.stroke(path, with: .color(color),
+                       style: StrokeStyle(lineWidth: stroke, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 // MARK: 播放三角（画布 19:57：27.7×26.4 实心白三角 @(13,14.82)，容器 56×56）
 
 /// 饱满大圆角白三角：画布是纯三角（无圆角描边痕迹），直接用 Path 填充。

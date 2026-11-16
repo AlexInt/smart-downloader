@@ -469,8 +469,12 @@ struct PlayerPagingScrollView: UIViewRepresentable {
 
     /// 画面区高度（页内）：选集胶囊顶部（画布 y=770）以上 + 画布纵向居中偏移。
     static func surfaceHeight(in scroll: UIScrollView) -> CGFloat {
-        let width = scroll.bounds.width
-        let height = scroll.bounds.height
+        surfaceHeight(width: scroll.bounds.width, height: scroll.bounds.height)
+    }
+
+    /// 画面区高度（页内）：选集胶囊顶部（画布 y=770）以上 + 画布纵向居中偏移。
+    /// 纯函数版供 DramaPlayerView 的全屏按钮定位共用（同口径，勿复制公式）
+    static func surfaceHeight(width: CGFloat, height: CGFloat) -> CGFloat {
         guard width > 0, height > 0 else { return height }
         let scale = min(width / DWLayout.designWidth, height / DWLayout.designHeight)
         let canvasTop = (height - DWLayout.designHeight * scale) / 2
