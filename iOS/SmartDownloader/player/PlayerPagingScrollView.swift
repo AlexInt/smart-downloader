@@ -24,6 +24,10 @@ struct PlayerPagingScrollView: UIViewRepresentable {
     var onEdgeBack: () -> Void = {}
     /// 末页再往下滑一格（想看下一集但已无资源、翻不出去）——边界提示的触发点
     ///（用户拍板 2026-11-14：停稳末页不提示，滑出未果才提示）
+    /// 左缘返回跟手位移（pt）：edgePan .changed 实时回调（SwiftUI 整页 offset 跟随）；
+    /// 0 = 松手未达阈值弹回；onEdgeCommit(屏宽) = 过阈值松手，SwiftUI 动画移出后 dismiss
+    var onEdgeDrag: (CGFloat) -> Void = { _ in }
+    var onEdgeCommit: (CGFloat) -> Void = { _ in }
     var onPullBeyondEnd: () -> Void = {}
     let makeCard: (PlayableEpisode) -> AnyView
 
@@ -210,7 +214,7 @@ struct PlayerPagingScrollView: UIViewRepresentable {
         private var lastLoggedSeek: Double = -1
         /// 本次拖拽的 scrub 基准进度（.began 时捕获当前播放进度；左缘起手为 nil = 不 seek）
         private var scrubBaseFraction: Double?
-        private var edgeBackFired = false
+        private var edgeDragStarted = false
         /// 横向手势独占期间系统分页 pan 的锁定标志：幂等开关，防重复禁用/漏恢复
         ///（seekPan 与 edgePan 都会 lock，两者结束顺序不定，unlock 幂等保护）
         private var systemPanLocked = false
@@ -256,24 +260,36 @@ struct PlayerPagingScrollView: UIViewRepresentable {
             print("PLAYER_DBG [CHECK] panLock OFF by=\(reason) y=\(Int(scroll.contentOffset.y))")
         }
 
-        /// 左缘右滑返回：拖过 50pt 即触发（不必等抬手），每次手势只触发一次
+        /// 左缘右滑返回：交互式跟手（2026-11-16 用户拍板，替代旧「拖过 50pt 立即退出、
+        /// 反悔不了」）。拖动中实时回报位移 pt，SwiftUI 侧整页 offset 跟随；松手按位移与
+        /// 速度判定：过阈值（≈半屏或快速右甩）→ commit，页面动画移出全屏后 dismiss；
+        /// 未过 → 弹回 0。系统 pop 的同款判定口径。
         @objc func didEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
             guard let view = pan.view else { return }
             switch pan.state {
             case .began:
-                edgeBackFired = false
+                edgeDragStarted = false
                 // 左缘起手同样独占本次触摸：横滑返回期间系统 pan 的纵向响应同样会让页面上下晃
                 if let scroll = view as? UIScrollView { lockSystemPan(in: scroll, reason: "edgePan") }
                 print("PLAYER_DBG [CHECK] edgePan began")
             case .changed:
-                guard !edgeBackFired else { return }
-                let dx = pan.translation(in: view).x
-                if dx > 50 {
-                    edgeBackFired = true
-                    print("PLAYER_DBG [CHECK] edgePan dx=\(Int(dx)) > 50 → back")
-                    parent.onEdgeBack()
-                }
+                let dx = max(0, pan.translation(in: view).x)   // 往左拉回按 0 回报（页面贴回原位）
+                guard dx > 1 || edgeDragStarted else { return }
+                edgeDragStarted = true
+                parent.onEdgeDrag(min(dx, view.bounds.width))
             case .ended, .cancelled, .failed:
+                let dx = max(0, pan.translation(in: view).x)
+                let vx = pan.velocity(in: view).x
+                let shouldCommit = pan.state == .ended
+                    && (dx > view.bounds.width * 0.42 || vx > 900)
+                if shouldCommit {
+                    print("PLAYER_DBG [CHECK] edgePan commit dx=\(Int(dx)) vx=\(Int(vx))")
+                    parent.onEdgeCommit(view.bounds.width)     // 动画移出全屏后 dismiss（SwiftUI 侧）
+                } else {
+                    print("PLAYER_DBG [CHECK] edgePan 弹回 dx=\(Int(dx)) vx=\(Int(vx))")
+                    parent.onEdgeDrag(0)
+                }
+                edgeDragStarted = false
                 // 结束分支必须恢复系统 pan：漏恢复 = 播放页永久无法滑动（泄漏 lock）
                 if let scroll = view as? UIScrollView { unlockSystemPan(scroll, reason: "edgePan") }
             default: break

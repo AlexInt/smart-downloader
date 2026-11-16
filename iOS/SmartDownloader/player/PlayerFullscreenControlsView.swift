@@ -713,11 +713,10 @@ final class PlayerFullscreenControlsView: UIView {
     }
 
     @objc private func brightnessTapped() {
-        // 一键最亮 ↔ 还原（2026-11-16 手势 A 档接真；原先只打日志是死钮）。
-        // 目标亮度由 Service 返回，指示浮层给百分比反馈
+        // 2026-11-16 用户拍板：删掉「一键最亮 ↔ 还原」——行业无此交互（亮度靠左半屏
+        // 竖滑渐变，已实现），按钮点击回归原语义：只续期控制层显示。icon 与按钮保留，
+        // 用户另有用途；后续接什么行为由用户定
         keepVisible()
-        let target = PlayerBrightnessVolume.shared.toggleMaxBrightness(in: window)
-        showAdjustFeedback("亮度 \(Int(target * 100))%")
     }
 
     @objc private func playPauseTapped() {

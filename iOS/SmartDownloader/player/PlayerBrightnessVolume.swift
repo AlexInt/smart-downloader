@@ -20,7 +20,6 @@ final class PlayerBrightnessVolume {
     private var volumeView: MPVolumeView?
     private var volumeSliderMissingLogged = false
     /// 亮度按钮「一键最亮」的还原点：按最亮前记下当时的亮度，再按还原
-    private(set) var restoreBrightness: CGFloat?
 
     // MARK: 音量
 
@@ -71,20 +70,4 @@ final class PlayerBrightnessVolume {
         print("PLAYER_DBG [Service] brightness → \(Int(screen.brightness * 100))%")
     }
 
-    /// 亮度按钮的「一键最亮 ↔ 还原」：已是（接近）最亮且有还原点 → 回还原点并清掉它；
-    /// 否则记下当前亮度作为还原点、拉到最亮。返回目标亮度供指示浮层显示。
-    @discardableResult
-    func toggleMaxBrightness(in window: UIWindow?) -> CGFloat {
-        let current = brightness(in: window)
-        if current >= 0.985, let restore = restoreBrightness {
-            restoreBrightness = nil
-            setBrightness(restore, in: window)
-            print("PLAYER_DBG [Fullscreen] brightness toggle → restore \(Int(restore * 100))%")
-            return restore
-        }
-        restoreBrightness = current < 0.985 ? current : restoreBrightness
-        setBrightness(1.0, in: window)
-        print("PLAYER_DBG [Fullscreen] brightness toggle → max (restore=\(restoreBrightness.map { Int($0 * 100) } ?? 100)%)")
-        return 1.0
-    }
 }
