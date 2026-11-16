@@ -45,6 +45,12 @@ final class DramaPlayerViewModel: ObservableObject {
     @Published private(set) var showRemainingTime = false
     @Published private(set) var remainingTimeText = "-00:00"
     @Published private(set) var progress: Double = 0
+    /// seek 在飞目标锁（2026-11-16 用户实报「向右滑时圆点先向左再向右」）：A 档改松手
+    /// 才 seek 后，performSeek 异步落地前 periodic tick 回调的还是旧 media time，会把
+    /// progress 拉回旧值——HUD 圆点向左回跳、下一次拖动 base 起点偏旧。pending 非 nil
+    /// 期间 syncTime 显示锁定在目标位置，seek 完成回调清锁、真实时钟无缝接管；
+    /// load/stop（切集/退页）也清，防止锁遗留到新 item
+    private var pendingSeekFraction: Double?
     /// 是否正在播（驱动竖屏中央播放/暂停大按钮，画布 19:57）。
     /// 周期回调 0.25s 刷新一次足够（按钮只做显示，动作走 togglePlayback）；
     /// togglePlayback 与 load 里另即时刷新一次，避免点按后按钮要等一个周期才翻面。
@@ -278,6 +284,7 @@ final class DramaPlayerViewModel: ObservableObject {
         statusWatch = nil
         endFastForward()
         cancelScrubThenEndGesture()   // 切集打断拖动：丢预览 + 手势收尾（不 seek）
+        pendingSeekFraction = nil     // 切集丢弃在飞 seek 的目标锁（新 item 进度从零算）
         hideScrubHudNow()
         loadError = nil
         // 切集前先冻住当前画面：此刻 player.currentItem 还是旧 item（已 ready、正在显示），
@@ -547,6 +554,7 @@ final class DramaPlayerViewModel: ObservableObject {
             return
         }
         let ratio = min(max(fraction, 0), 1)
+        pendingSeekFraction = ratio   // 在飞期间显示锁定目标（syncTime 里的钳制）
         if abs(ratio - lastLoggedSeek) > 0.05 {
             lastLoggedSeek = ratio
             print("PLAYER_DBG [CHECK] seek fraction=\(String(format: "%.2f", ratio)) total=\(Int(total))")
@@ -556,10 +564,18 @@ final class DramaPlayerViewModel: ObservableObject {
         if let completion {
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                 // seek 回调队列文档未承诺主线程；VM 状态只在主线程碰，显式回主队列
-                DispatchQueue.main.async { completion() }
+                DispatchQueue.main.async {
+                    self.pendingSeekFraction = nil   // 已落地，真实时钟接管显示
+                    completion()
+                }
             }
         } else {
-            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                // 无 completion 的调用方（菜单重播）也要清锁，否则进度冻结在目标
+                DispatchQueue.main.async { [weak self] in
+                    self?.pendingSeekFraction = nil
+                }
+            }
         }
         syncTime(target)
     }
@@ -649,6 +665,7 @@ final class DramaPlayerViewModel: ObservableObject {
 
     func stop() {
         print("PLAYER_DBG [Playback] stop")
+        pendingSeekFraction = nil     // 退页丢弃在飞 seek 的目标锁
         // 退出前把本集位置落盘（趁 item 还在），再拆观察器与播放器
         progressTracker?.detach()
         progressTracker = nil
@@ -928,13 +945,16 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     private func syncTime(_ time: CMTime) {
-        let seconds = CMTimeGetSeconds(time)
-        guard seconds.isFinite, seconds >= 0 else { return }
+        let raw = CMTimeGetSeconds(time)
+        guard raw.isFinite, raw >= 0 else { return }
+        let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
+        guard total.isFinite, total > 0 else { return }
+        // seek 在飞期间显示锁定在目标位置：tick 回调的旧 media time 不回落
+        //（2026-11-16 用户实报「圆点先向左再向右」的根因）
+        let seconds = pendingSeekFraction.map { $0 * total } ?? raw
         currentTimeText = Self.format(seconds)
         // 播放/暂停态跟着周期回调走：中央大按钮（画布 19:57）与横屏暂停双竖条靠它驱动
         refreshIsPlaying()
-        let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
-        guard total.isFinite, total > 0 else { return }
         durationText = Self.format(total)
         remainingTimeText = "-" + Self.format(max(0, total - seconds))
         progress = min(max(seconds / total, 0), 1)
