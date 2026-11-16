@@ -24,7 +24,7 @@ import UIKit
 
 // MARK: - 布局常量与滚动画布尺寸
 
-private enum DetailLayout {
+enum DetailLayout {
     /// 海报高 470 → 376（用户要求降低 20%）；文字层坐标保持不动
     static let posterHeight: CGFloat = 376
     /// 内容组相对设计稿整体上移，收紧「简介 → 选集」空白
@@ -64,7 +64,7 @@ private enum DetailLayout {
 }
 
 /// 一张推荐卡片带全局序号（左/右列分流用）。封面尺寸已统一，序号不再决定高度。
-private struct RecoCardItem: Identifiable {
+struct RecoCardItem: Identifiable {
     let index: Int
     let drama: RecommendedDrama
     var id: Int { drama.id }
@@ -91,7 +91,7 @@ private enum PaperRefreshPhase {
 
 /// 滚动画布的尺寸预算。设计坐标是固定的，但推荐/档案条数随真实数据变化，
 /// 必须算出总高才能让 ScrollView 的 contentSize 正确（缩放后的 frame 也依赖它）。
-private struct PageLayout {
+struct PageLayout {
     let leftItems: [RecoCardItem]
     let rightItems: [RecoCardItem]
     let recoGridHeight: CGFloat
@@ -170,9 +170,9 @@ struct DramaDetailView: View {
             let scale = geo.size.width / DWLayout.designWidth
             ZStack {
                 if vm.loading {
-                    loadingState
+                    DramaDetailStates(vm: vm).loadingState
                 } else if let error = vm.loadError {
-                    errorState(error)
+                    DramaDetailStates(vm: vm).errorState(error)
                 } else if let info = vm.info {
                     let layout = pageLayout(info)
                     ScrollView(.vertical, showsIndicators: false) {
@@ -429,13 +429,19 @@ struct DramaDetailView: View {
             coverLayer
             titleAndTags(info)
             descriptionBlock
-            contentGroup(info)
+            DramaDetailEpisodeGrid(
+                vm: vm, motion: motion, descShift: descShift,
+                cellBackground: CellColorFn { cellBackground(isSelected: $0, isDownloaded: $1, playable: $2) },
+                cellForeground: CellColorFn { cellForeground(isSelected: $0, isDownloaded: $1, playable: $2) })
+                .contentGroup(info)
             if layout.recoHeight > 0 {
-                recommendationSection(layout: layout)
+                DramaDetailSections(vm: vm, archiveExpanded: $archiveExpanded, motion: motion)
+                    .recommendationSection(layout: layout)
                     .designFrame(0, layout.recoY, DWLayout.designWidth, layout.recoHeight)
             }
             if layout.archiveHeight > 0 {
-                archiveSection(layout: layout)
+                DramaDetailSections(vm: vm, archiveExpanded: $archiveExpanded, motion: motion)
+                    .archiveSection(layout: layout)
                     .designFrame(0, layout.archiveY, DWLayout.designWidth, layout.archiveHeight)
             }
         }
@@ -1107,501 +1113,6 @@ struct DramaDetailView: View {
         print("PLAYER_DBG [Entry] introGeo pill=(\(Int(introPillX)),\(Int(introPillY)),w\(Int(introPillWidth))) collapse=(\(Int(collapseX)),\(Int(collapseY)),w\(Int(collapseWidth))) inline=\(collapseFitsInline)")
     }
 
-    // MARK: ④ 内容组（唯一位移 translateY(--desc-shift)）
-
-    private func contentGroup(_ info: DramaInfo) -> some View {
-        ZStack(alignment: .topLeading) {
-            Text("选集")
-                .font(DWFont.serif(16, .medium))
-                .foregroundStyle(DWColor.paperInk)
-                .designFrame(20, 490, 64, 24, alignment: .leading)
-
-            // 「共 N 集」已按用户要求移除（2026-11-14）：集数在下方格子里一眼可数，
-            // 这行小字只是噪音。原来空出的位置就留给行尾两个动作按钮（2026-11-15 右移）。
-
-            // 「下载全部」紧挨「查看全部」排在行尾（用户 2026-11-15 要求右移）。
-            // 可播集全部落盘后置灰禁用（同用户要求）：再点也只会得到「没有可下载的剧集」，
-            // 按钮状态应该先说话。排队中的集不算已下载，按钮仍可点（downloadAll 会如实提示）。
-            Button { vm.downloadAll() } label: {
-                Text("下载全部")
-                    .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(vm.allPlayableDownloaded
-                                     ? DWColor.paperFaint : DWColor.paperCinnabar)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(width: 64, height: 44, alignment: .trailing)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(vm.allPlayableDownloaded)
-            .accessibilityLabel("下载全部")
-            .accessibilityHint(vm.allPlayableDownloaded
-                               ? "所有可下载剧集均已下载"
-                               : "把全部可下载剧集加入下载队列")
-            .designFrame(228, 481, 64, 44, alignment: .trailing)
-
-            // 「查看全部 ›」= 内联展开（设计稿 all-open），不再是 sheet。
-            // ≤12 集没有额外集可展开：保留版面、置灰禁用，文案如实说明。
-            Button {
-                withAnimation(motion) { vm.showAllEpisodesInline.toggle() }
-            } label: {
-                Text(vm.hasExtraEpisodes
-                     ? (vm.showAllEpisodesInline ? "收起 ›" : "查看全部 ›")
-                     : "已显示全部")
-                    .font(DWFont.cn(12, .medium))
-                    .foregroundStyle(vm.hasExtraEpisodes
-                                     ? DWColor.paperCinnabar : DWColor.paperFaint)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(width: 70, height: 44, alignment: .trailing)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!vm.hasExtraEpisodes)
-            .designFrame(300, 481, 70, 44, alignment: .trailing)
-
-            episodeGrid(info)
-
-            let hintY: CGFloat = vm.showAllEpisodesInline && vm.extraEpisodeRows > 0
-                ? 702 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep
-                : 650
-            Text(vm.hintText)
-                .font(DWFont.cn(12))
-                .foregroundStyle(DWColor.paperFaint)
-                .lineLimit(1)
-                .designFrame(20, hintY, 350, 18, alignment: .leading)
-        }
-        .frame(width: 390, height: vm.showAllEpisodesInline
-               ? max(840, 720 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep + 40)
-               : 840)
-        // 整体上移收紧「简介 → 选集」空白 + 展开态的 54pt 位移，两者叠加
-        .offset(y: descShift - DetailLayout.sectionLift)
-        .animation(motion, value: vm.isDescriptionExpanded)
-    }
-
-    /// 选集区：前 12 集固定 6×2（直点）；「查看全部」内联展开 13 集以后的集
-    /// （6 列 × 56pt 步进，设计稿 all-open 语义），底部接一条批量工具条，
-    /// 推荐区 / 档案区由 pageLayout 按 extraEpisodeRows 一起下推。
-    /// 展开集用 `vm.tapEpisode`（多选勾选 / 已下载直接播），主屏 12 格用 `tapEpisodeDirect`。
-    @ViewBuilder
-    private func episodeGrid(_ info: DramaInfo) -> some View {
-        ForEach(Array(info.episodes.prefix(12).enumerated()), id: \.element.id) { index, ep in
-            let col = CGFloat(index % 6)
-            let row = CGFloat(index / 6)
-            episodeCellButton(ep, multiSelect: false)
-                .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
-        }
-
-        if vm.showAllEpisodesInline && vm.hasExtraEpisodes {
-            ForEach(Array(info.episodes.dropFirst(12).enumerated()), id: \.element.id) { index, ep in
-                let slot = index + 12
-                let col = CGFloat(slot % 6)
-                let row = CGFloat(slot / 6)
-                episodeCellButton(ep, multiSelect: true)
-                    .designFrame(20 + col * 60, 530 + row * 56, 50, 44)
-            }
-            inlineBatchToolbar
-                .designFrame(20, 650 + CGFloat(vm.extraEpisodeRows) * DetailLayout.inlineRowStep,
-                             350, DetailLayout.inlineToolbarHeight)
-        }
-    }
-
-    /// 内联展开区的批量工具条：原 sheet 的「全选 / 清空 / 下载所选」搬到这里，
-    /// 刷新已改为页面下拉刷新，所以 sheet 可以整块删掉，功能不丢。
-    private var inlineBatchToolbar: some View {
-        HStack(spacing: 8) {
-            // 纸本轨的次级按钮 = 纸块胶囊 + 墨字（下载页编辑工具条 34:84 同一做法），
-            // 主操作 = 朱砂胶囊 + 纸白字。深色轨的「深底 + 金字」在宣纸上没有对应物。
-            Button { vm.selectAll() } label: {
-                Text("全选")
-                    .font(DWFont.cn(11, .medium))
-                    .foregroundStyle(DWColor.paperInkSub)
-                    .frame(width: 52, height: 32)
-                    .background(Capsule().fill(DWColor.paperChipIdle))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(vm.selectableEpisodes.isEmpty)
-
-            Button { vm.clearSelection() } label: {
-                Text("清空")
-                    .font(DWFont.cn(11, .medium))
-                    .foregroundStyle(DWColor.paperInkSub)
-                    .frame(width: 52, height: 32)
-                    .background(Capsule().fill(DWColor.paperChipIdle))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(vm.selected.isEmpty)
-
-            Button { vm.startDownload() } label: {
-                Text("下载所选 (\(vm.selected.count))")
-                    .font(DWFont.cn(11, .semibold))
-                    .foregroundStyle(DWColor.paper)
-                    .frame(height: 32)
-                    .padding(.horizontal, 12)
-                    .background(Capsule().fill(vm.selected.isEmpty
-                                               ? DWColor.paperLineIdle
-                                               : DWColor.paperCinnabar))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(vm.selected.isEmpty)
-
-            Spacer(minLength: 0)
-        }
-        .frame(width: 350, height: DetailLayout.inlineToolbarHeight, alignment: .leading)
-    }
-
-    /// 单个集格子：底色 = 可播性、边缘环 = 下载进度、选中红底优先。
-    /// 右下角小角标按设计稿 `.dl-play` / `.dl-todo`：已下载金色播放三角、未下载灰色下载箭头；
-    /// 下载中让位给金色环 + n/100，当前选中集不叠加角标与环（同 `[aria-checked=true]` 规则）。
-    private func episodeCellButton(_ ep: ApiDramaEpisode, multiSelect: Bool) -> some View {
-        let isSelected = multiSelect ? vm.selected.contains(ep.id) : (vm.selectedSort == ep.sort)
-        let isDownloaded = vm.downloadedSorts.contains(ep.sort)
-        let phase = vm.downloadPhase(for: ep.sort)
-        return Button {
-            if multiSelect { vm.tapEpisode(ep) } else { vm.tapEpisodeDirect(ep) }
-        } label: {
-            ZStack(alignment: .topLeading) {
-                VStack(spacing: 0) {
-                    Text("\(ep.sort)")
-                    if case .active(let progress) = phase {
-                        Text("\(Int(progress * 100))/100")
-                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                            // 选中格是朱砂底：数字必须转纸白，朱砂压朱砂就没了
-                            .foregroundStyle(isSelected ? DWColor.paper : DWColor.paperCinnabar)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
-                }
-                .font(DWFont.en(13, .medium))
-                .frame(width: 50, height: 44, alignment: .center)
-
-                if !isSelected {
-                    episodeStatusBadge(phase: phase)
-                        .designFrame(27, 23, 18, 18)
-                }
-            }
-            .frame(width: 50, height: 44)
-            .foregroundStyle(cellForeground(isSelected: isSelected,
-                                            isDownloaded: isDownloaded,
-                                            playable: ep.playable))
-            .background(cellBackground(isSelected: isSelected,
-                                       isDownloaded: isDownloaded,
-                                       playable: ep.playable))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay {
-                // 选中态也要画环：用户 2026-11-15 拍板「选中 + 下载两种状态叠加时，
-                // 下载边缘进度颜色应该是白色的」——朱砂底上的墨环看不见，等于进度丢了
-                progressRing(phase, onCinnabar: isSelected)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("第 \(ep.sort) 集")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// 设计稿右下角 18×18 状态角标（left 27 / top 23 相对 50×44 格子）。
-    /// 纸本轨：已下载 = 墨实心三角（= 纸上已落定），待下载 = 最弱的灰箭头；
-    /// downloading / queued / failed 不叠加。
-    @ViewBuilder
-    private func episodeStatusBadge(phase: EpisodeDownloadPhase) -> some View {
-        switch phase {
-        case .idle:
-            VStack(spacing: 1) {
-                Image(systemName: "arrow.down")
-                    .font(.system(size: 8, weight: .medium))
-                Rectangle()
-                    .frame(width: 10, height: 1)
-            }
-            .foregroundStyle(DWColor.paperFaint)
-        case .done:
-            Path { p in
-                p.move(to: CGPoint(x: 3, y: 2))
-                p.addLine(to: CGPoint(x: 10, y: 6))
-                p.addLine(to: CGPoint(x: 3, y: 10))
-                p.closeSubpath()
-            }
-            .fill(DWColor.paperInk)
-            .frame(width: 12, height: 12)
-        default:
-            EmptyView()
-        }
-    }
-
-    /// 剧集按钮边缘进度环。纸本轨一套三档：轨道用最淡的纸线、进度用墨
-    /// （与下载页 `PaperProgressBar` 的 轨道 #C4C7C3 + 完成段 #35393B 同一套）；
-    /// **红色只留给失败**——深色轨那套「金色代表一切进度」搬到纸面上会散成一片。
-    /// 不旋转形状（50×44 非正方形，rotationEffect 会让它歪）。
-    /// `onCinnabar` = 这一格是选中态（朱砂底）：墨色环在朱砂上等于消失，整套换纸白
-    /// （用户 2026-11-15 拍板：选中 + 下载叠加时，下载边缘进度必须是白的）。
-    @ViewBuilder
-    private func progressRing(_ phase: EpisodeDownloadPhase, onCinnabar: Bool = false) -> some View {
-        let track = onCinnabar ? DWColor.paper.opacity(0.45) : DWColor.paperTrack.opacity(0.55)
-        let bar = onCinnabar ? DWColor.paper : DWColor.paperTrackFill
-        let done = onCinnabar ? DWColor.paper.opacity(0.9) : DWColor.paperInkSub
-        // 失败态在朱砂底上不能再用朱砂，换墨：仍然是最重的一条线，语义不丢
-        let failed = onCinnabar ? DWColor.paperInk : DWColor.paperCinnabar
-        switch phase {
-        case .idle:
-            EmptyView()
-        case .queued:
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(track, lineWidth: 2)
-                .padding(1)
-        case .active(let progress):
-            RoundedRectangle(cornerRadius: 10)
-                .trim(from: 0, to: progress)
-                .stroke(bar, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .padding(1)
-        case .done:
-            // 完成态用半档墨：2pt 实墨闭环在纸面上会和「选中」抢同一份重量，
-            // 而已下载本来就有淡朱砂底 + 墨三角角标，闭环只需"看起来是合上的"。
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(done, lineWidth: 1.5)
-                .padding(1)
-        case .failed:
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(failed, lineWidth: 2)
-                .padding(1)
-        }
-    }
-
-    // MARK: ⑤ 为你推荐（设计稿 .reco 双列瀑布流）
-
-    private func recommendationSection(layout: PageLayout) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("为你推荐")
-                    .font(DWFont.serif(15, .medium))
-                    .foregroundStyle(DWColor.paperInk)
-                Spacer()
-                Text("\(vm.recommendations.count) 部 · 详情接口")
-                    .font(DWFont.cn(10))
-                    .foregroundStyle(DWColor.paperFaint)
-            }
-            .frame(height: DetailLayout.recoTitleBlock - 12, alignment: .topLeading)
-
-            HStack(alignment: .top, spacing: DetailLayout.recoColumnGap) {
-                recoColumn(layout.leftItems)
-                recoColumn(layout.rightItems)
-            }
-            .frame(height: layout.recoGridHeight, alignment: .topLeading)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, DetailLayout.recoTopPadding)
-        .padding(.bottom, DetailLayout.recoBottomPadding)
-        .frame(width: 390, height: layout.recoHeight, alignment: .topLeading)
-        // 分节细线（纸本轨）：深色轨靠「黑底留白」分段，纸面必须有线才分得开。
-        // 走 overlay 画在顶上，不占布局高度，推荐区高度预算不受影响。
-        .overlay(alignment: .top) {
-            DWColor.paperRule
-                .frame(height: 0.5)
-                .padding(.horizontal, 20)
-        }
-    }
-
-    private func recoColumn(_ items: [RecoCardItem]) -> some View {
-        VStack(alignment: .leading, spacing: DetailLayout.recoCardGap) {
-            ForEach(items) { item in
-                recoCard(item)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(width: DetailLayout.recoColumnWidth, alignment: .topLeading)
-    }
-
-    /// 一张推荐卡。2026-11-15 用户拍板：所有封面统一「列宽 3:4」+ 固定文字块，
-    /// 不再按序号取三档高度——原来 `scaledToFit` 会把窄卡裁成两侧露纸底的小图，
-    /// 一眼看过去大小不齐。现在 `scaledToFill` 等比铺满、超出部分居中裁掉。
-    /// 卡片视觉与「我的」封面墙、下载页「已下载」共用 `PosterCardView`（Components/PosterGrid.swift），
-    /// 这里只负责把推荐数据翻成展示模型 + 点击意图，几何沿用画布 170 宽。
-    private func recoCard(_ item: RecoCardItem) -> some View {
-        Button { vm.openRecommendation(item.drama) } label: {
-            PosterCardView(model: recoModel(item.drama))
-                .frame(width: DetailLayout.recoColumnWidth)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("推荐：\(item.drama.displayTitle)")
-    }
-
-    /// 推荐剧 → 共享海报卡数据（纯映射，不碰 IO）
-    private func recoModel(_ drama: RecommendedDrama) -> PosterCardModel {
-        PosterCardModel(
-            id: "reco:\(drama.id)",
-            title: drama.displayTitle,
-            subtitle: drama.tags.isEmpty ? "—" : drama.tags.joined(separator: " / "),
-            stat: drama.displayPlayCount,
-            statIcon: .play,
-            statTrailing: drama.serializeStatusText,
-            badge: drama.displayBadge,
-            cover: drama.cover.flatMap { URL(string: $0) }.map { PosterCoverSource.remote($0) } ?? .none
-        )
-    }
-
-    // MARK: ⑥ 剧集档案（详情接口整包字段，尽量全展示）
-
-    /// 档案区默认折叠（用户 2026-11-15 要求）：这是给排障/取证看的低频信息，
-    /// 不该把一整屏高度固定占着。标题行整行可点，右侧「展开/收起 + 尖角」指示状态；
-    /// 折叠态的高度预算只留标题行（pageLayout 跟着 `archiveExpanded` 走）。
-    private func archiveSection(layout: PageLayout) -> some View {
-        VStack(alignment: .leading, spacing: DetailLayout.archiveSectionGap) {
-            Button {
-                withAnimation(motion) { archiveExpanded.toggle() }
-                AppHaptics.light()
-                print("PLAYER_DBG [Entry] archive fold=\(archiveExpanded ? "expanded" : "collapsed") sections=\(vm.archiveSections.count)")
-            } label: {
-                HStack(alignment: .center, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("剧集档案")
-                            .font(DWFont.serif(15, .medium))
-                            .foregroundStyle(DWColor.paperInk)
-                            .frame(height: 24, alignment: .leading)
-                        Text("详情接口原始字段 · 本地留存，离线可读")
-                            .font(DWFont.cn(10))
-                            .foregroundStyle(DWColor.paperFaint)
-                            .frame(height: 16, alignment: .leading)
-                    }
-                    Spacer(minLength: 8)
-                    HStack(spacing: 3) {
-                        Text(archiveExpanded ? "收起" : "展开")
-                            .font(DWFont.cn(12))
-                            .foregroundStyle(DWColor.paperInkSub)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                        // 行尾尖角：折叠朝下（› 转 90°）、展开朝上（-90°），语义与
-                        // 设置页行尾箭头同一套（PaperChevronShape 默认朝右）
-                        PaperChevronShape(pointsLeft: false)
-                            .stroke(DWColor.paperLineIdle,
-                                    style: StrokeStyle(lineWidth: 1.2,
-                                                       lineCap: .round, lineJoin: .round))
-                            .frame(width: 6, height: 11)
-                            .rotationEffect(.degrees(archiveExpanded ? -90 : 90))
-                    }
-                }
-                .frame(height: DetailLayout.archiveTitleBlock, alignment: .center)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(archiveExpanded ? "收起剧集档案" : "展开剧集档案")
-
-            if archiveExpanded {
-                ForEach(vm.archiveSections) { section in
-                    VStack(alignment: .leading, spacing: 0) {
-                        // 分组名用朱砂：纸本轨里"标题/落款"都用这一档（设置页分组标同款）
-                        Text(section.title)
-                            .font(DWFont.cn(12, .bold))
-                            .foregroundStyle(DWColor.paperCinnabar)
-                            .frame(height: DetailLayout.archiveSectionTitle, alignment: .leading)
-                        ForEach(section.rows) { row in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(row.label)
-                                    .font(DWFont.cn(10))
-                                    .foregroundStyle(DWColor.paperFaint)
-                                    .lineLimit(1)
-                                    .frame(width: 108, alignment: .leading)
-                                Text(row.value)
-                                    .font(DWFont.cn(10))
-                                    .foregroundStyle(DWColor.paperInk)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(height: DetailLayout.archiveRowHeight)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    // 纸本卡：比纸底深一档的纸块 + 0.5 细边（不是深色轨那种浮在黑上的实心块）
-                    .background(DWColor.paperCanvas, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(DWColor.paperRule, lineWidth: 0.5)
-                    }
-                }
-                .transition(.opacity)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, DetailLayout.archiveTopPadding)
-        .padding(.bottom, DetailLayout.archiveBottomPadding)
-        .frame(width: 390, height: layout.archiveHeight, alignment: .topLeading)
-    }
-
-    // MARK: - 加载 / 错误态
-
-    private var loadingState: some View {
-        VStack(spacing: 12) {
-            ProgressView().tint(DWColor.paperCinnabar)
-            Text("正在获取剧集列表…")
-                .font(DWFont.cn(13))
-                .foregroundStyle(DWColor.paperInkSub)
-        }
-    }
-
-    private func errorState(_ message: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
-                .foregroundStyle(DWColor.paperCinnabar)
-            Text(message)
-                .font(DWFont.cn(13))
-                .foregroundStyle(DWColor.paperInk)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            // 错误详情（用户要求 2026-11-15「把错误信息爆出来」）：
-            // 系统那句「未能读取数据，因为它的格式不正确」只说现象，
-            // 这里把 HTTP 状态 / Content-Type / 响应片段 / 站点身份原样摊开，
-            // 并且可整段复制（真机排障时直接粘出来）
-            if let detail = vm.loadErrorDetail {
-                ScrollView {
-                    Text(detail)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(DWColor.paperInkSub)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .frame(maxHeight: 132)
-                .background(DWColor.paperChipIdle,
-                            in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 24)
-            }
-            HStack(spacing: 10) {
-                if let detail = vm.loadErrorDetail {
-                    Button {
-                        UIPasteboard.general.string = detail
-                        print("PLAYER_DBG [Entry] errorDetail copied chars=\(detail.count)")
-                        vm.showToast("错误信息已复制")
-                    } label: {
-                        Text("复制错误信息")
-                            .font(DWFont.cn(12, .medium))
-                            .foregroundStyle(DWColor.paperInk)
-                            .padding(.horizontal, 18)
-                            .frame(height: 32)
-                            .background(Capsule().fill(DWColor.paperChipSel))
-                    }
-                    .buttonStyle(.plain)
-                }
-                // 系统 borderedProminent 会有自己的强调色底，纸本轨用自己的胶囊（同下载页删除所选）
-                Button {
-                    vm.reload()
-                } label: {
-                    Text("重试")
-                        .font(DWFont.cn(12, .medium))
-                        .foregroundStyle(DWColor.paper)
-                        .padding(.horizontal, 22)
-                        .frame(height: 32)
-                        .background(Capsule().fill(DWColor.paperCinnabar))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.top, 4)
-        }
-    }
-
     // MARK: - 共用配色
 
     /// 主屏 12 格与内联展开集共用：底色表达「能不能播」，选中态朱砂底优先。
@@ -1621,62 +1132,3 @@ struct DramaDetailView: View {
         return playable ? DWColor.paperInk : DWColor.paperFaint
     }
 }
-
-#if DEBUG
-// MARK: - 纸本样张容器（仅模拟器截图用）
-
-/// 样张专用开关。模拟器点不了、滑不了，纸本轨又必须"改一版、看一张"。
-enum DramaDebugFlags {
-    /// 启动即落到内容页底，用于查看档案区与「滚过海报后的顶栏」
-    static var bottomAnchor: Bool {
-        ProcessInfo.processInfo.arguments.contains("-dramaPreviewBottom")
-    }
-
-    /// 下拉刷新三态定帧：`-refreshPreview pull|ready|refreshing|done`。
-    /// 下拉刷新靠手指，模拟器既滑不了也不好定帧，只能让页面自己停在某一态上截。
-    static var refreshPreview: String? {
-        let args = ProcessInfo.processInfo.arguments
-        guard let i = args.firstIndex(of: "-refreshPreview"), i + 1 < args.count else { return nil }
-        return args[i + 1]
-    }
-
-    /// 档案区展开定帧（`-archiveExpandedPreview`）：模拟器点不了，展开态的高度预算
-    /// 只能靠启动参数直接落到目标状态来截。
-    static var archiveExpandedPreview: Bool {
-        ProcessInfo.processInfo.arguments.contains("-archiveExpandedPreview")
-    }
-
-    /// 自动跑一遍下拉刷新（`-refreshAuto`）：验证「刷新 → 已更新 → 收起」整条链路
-    /// 会不会自己走回来。手势本身进不了模拟器，但状态机与 VM 调用可以这样验证。
-    static var refreshAuto: Bool {
-        ProcessInfo.processInfo.arguments.contains("-refreshAuto")
-    }
-
-    /// 错误态定帧（`-dramaErrorPreview`）：看错误详情块与复制按钮的排布
-    static var errorPreview: Bool {
-        ProcessInfo.processInfo.arguments.contains("-dramaErrorPreview")
-    }
-}
-
-/// 启动参数 `-dramaPreview` 打开：注入固定样本后直接渲染剧集页。
-/// 存在的理由——模拟器点不了、滑不了，纸本轨又必须"改一版、看一张"；
-/// 没有这个入口就只能盲改。Release 不编译。
-struct DramaPreviewHost: View {
-    @StateObject private var vm: DramaPageViewModel
-
-    init(manager: DownloadManager) {
-        let vm = DramaPageViewModel(target: DramaTarget(site: "https://preview.local", dramaID: "9001"),
-                                    manager: manager)
-        if DramaDebugFlags.errorPreview {
-            vm.injectPreviewError()
-        } else {
-            vm.injectPreviewData()
-        }
-        _vm = StateObject(wrappedValue: vm)
-    }
-
-    var body: some View {
-        NavigationStack { DramaDetailView(vm: vm) }
-    }
-}
-#endif
