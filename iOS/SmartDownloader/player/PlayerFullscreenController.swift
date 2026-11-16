@@ -777,7 +777,12 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
 
         let long = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         long.minimumPressDuration = 0.15
-        long.allowableMovement = 10_000   // 2x 不靠位移距离撚断（同卡片 maximumDistance 10_000）
+        long.allowableMovement = 44
+        // 识别前最大位移 44pt（2026-11-16 真机实证：放开到 10_000 时，连续横滑「松手
+        // commit → 再按住」之间 >0.15s 的自然停顿必起 2x——旧闸门已关、新 pan 未达 10pt
+        // 阈值，无拦截。收紧后：起步快（0.15s 内滑出 >44pt）长按 fail、横滑接管；起步慢
+        // （按住不动）正常起 2x；allowableMovement 只约束识别前，2x 起来后指头漂移照样
+        // 不中断，旧语义保留
         long.delegate = self
         container.addGestureRecognizer(long)
 

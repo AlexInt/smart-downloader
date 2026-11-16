@@ -162,8 +162,11 @@ struct DramaPlayerView: View {
         //      横滑起点常落在带外（识别器曾按带内过滤 begin，收不到事件），斜起手
         //      转水平的快滑同理，0.15s 的 perform 会插进空窗误起 2x（2026-11-11 又修）
         //   ② 长按先起 → 2x 独占：2x 期间 seek 全跳过（VM.seek guard isFastForwarding）；
-        //      maximumDistance 放开到 10_000 —— 2x 不靠位移距离掐断（原 40pt：按住 2x
-        //      手一漂就掉回 1x），漂移中的误 seek 由 ①② 闸门挡住
+        //      maximumDistance 历史两段：原 40pt（按住 2x 手一漂就掉回 1x）→ 放开 10_000
+        //      保漂移 → 2026-11-16 收紧回 44pt：真机实证放开时「连续横滑松手 commit →
+        //      再按住」之间 >0.15s 的自然停顿必起 2x（旧闸门已关、新 pan 未达 10pt 阈值，
+        //      无拦截）。44pt 下起步快（0.15s 内滑出 >44pt）长按 fail，而漂移超限掉回 1x
+        //      后 pan .changed 不再被 2x 独占挡，自然转为拖动 seek 预览，旧痛点闭环
         //   ③ 短按 2x 快速松手 → 同一次抬手还会被认成单击，误暂停（250ms 抑制窗吞掉）
         //   ④ 2x 只能在 perform（按满 0.15s）里起，勿放 pressing(true)：pressing 在触摸
         //      落下瞬间即回调（先于任何位移判定），放那里每次快速滑动都误触 2x（2026-11-11 修）
@@ -186,7 +189,7 @@ struct DramaPlayerView: View {
             print("PLAYER_DBG [CHECK] TAP → togglePlayback")
             playback.togglePlayback()
         }
-        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 10_000, pressing: { pressing in
+        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 44, pressing: { pressing in
             // pressing 只做收尾；起 2x 在 perform（按满 0.15s 才回调）。
             // pressing(true) 在触摸落下瞬间即回调，曾把起 2x 放在这里，
             // 导致所有快速滑动（含纵向翻页）都被误判成长按 → 闪 2x。
