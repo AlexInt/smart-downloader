@@ -15,9 +15,6 @@ struct PlayerFeedView: View {
     @State private var showRatePanel = false
     /// 竖屏浮层：选集面板（先做简单版，画布完整版 19:62 留待后续）
     @State private var showEpisodePanel = false
-    /// 左缘返回跟手位移（pt，0…屏宽）：PlayerPagingScrollView 的 edgePan 实时回调。
-    /// 拖动中无动画跟随；commit 时带动画移出全屏后 dismiss（延迟 0.2s 等动画完成）
-    @State private var edgeOffsetPt: CGFloat = 0
 
     var body: some View {
         Group {
@@ -33,22 +30,6 @@ struct PlayerFeedView: View {
                         isReady: vm.playbackReady,
                         activeToast: vm.toastText,
                         onEdgeBack: onClose,
-                        onEdgeDrag: { pt in
-                            if pt == 0 {
-                                // 未达阈值弹回（回弹动画）；拖动跟随本身无动画（跟手）
-                                withAnimation(.easeOut(duration: 0.25)) { edgeOffsetPt = 0 }
-                            } else {
-                                edgeOffsetPt = pt
-                            }
-                        },
-                        onEdgeCommit: { width in
-                            // 过阈值松手：页面动画移出全屏，cover 的系统下滑 dismiss
-                            // 作用在已空屏的内容上（无二次动画感）；0.2s 后再关绑定
-                            withAnimation(.easeIn(duration: 0.2)) { edgeOffsetPt = width }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                onClose()
-                            }
-                        },
                         onPullBeyondEnd: { vm.pulledBeyondEnd() },
                         makeCard: { slot in AnyView(card(for: slot)) }
                     )
@@ -73,7 +54,6 @@ struct PlayerFeedView: View {
                 }
             }
         }
-        .offset(x: edgeOffsetPt)   // 左缘跟手返回：整页平移，背景在 offset 外层不动（露同色墨底）
         .background(DWColor.background.ignoresSafeArea())
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             // 进后台是落库的关键时机之一（用户可能直接划掉 App，内存值不落盘就丢），
