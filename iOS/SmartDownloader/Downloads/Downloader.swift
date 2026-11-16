@@ -45,8 +45,11 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var foundURLs: [String] = []
     /// 转发每个任务的状态变化，驱动下载页分区实时重算（否则完成任务要重启才换区）
     private var stateCancellables: Set<AnyCancellable> = []
-    /// 同集去重的合批标记（一集落盘会连发多次 objectWillChange，只跑一次收尾）
-    private var pruneScheduled = false
+    /// 同集去重的待处理队列（审查 P1-⑧：旧布尔合批标记在同 runloop 两个 done 时
+    /// 会把第二个的去重请求整个丢弃——AGENTS 24 的「并列两条同名」窄窗口就此复现）。
+    /// 队列与排水标志只在主线程访问（observeTaskState 的 sink 已 receive(on: main)）。
+    private var pendingPrunes: [(series: String, sort: Int, keeper: DownloadTask)] = []
+    private var pruneDraining = false
 
     init() { loadLibrary() }
 
@@ -92,15 +95,31 @@ final class DownloadManager: ObservableObject {
                 // 放在下一个 runloop：在 objectWillChange 里改 tasks 会嵌套发布。
                 guard case .done = task.state, let series = task.seriesName,
                       let sort = Self.episodeSort(fromFolderName: task.title) else { return }
-                guard !self.pruneScheduled else { return }
-                self.pruneScheduled = true
+                // 入队 + 排水（审查 P1-⑧）：同 runloop 后到的 done 也在队列里，
+                // 排水循环会把它一并处理，不再像布尔标记那样直接丢弃
+                self.pendingPrunes.append((series, sort, task))
+                guard !self.pruneDraining else { return }
+                self.pruneDraining = true
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.pruneScheduled = false
-                    self.pruneSupersededAttempts(series: series, sort: sort, keeper: task)
+                    self.drainPrunes()
                 }
             }
             .store(in: &stateCancellables)
+    }
+
+    /// 排水：把挂起的 prune 逐条执行完（排水途中入队的新 done 也会被同轮清空），
+    /// 处理完才复位标志、允许下一次排水排队。仍在下一个 runloop 跑——
+    /// 在 objectWillChange 回调里直接改 tasks 会嵌套发布（沿用旧约束）。
+    private func drainPrunes() {
+        while !pendingPrunes.isEmpty {
+            let batch = pendingPrunes
+            pendingPrunes = []
+            for item in batch {
+                pruneSupersededAttempts(series: item.series, sort: item.sort, keeper: item.keeper)
+            }
+        }
+        pruneDraining = false
     }
 
     /// 同一剧同一集只保留一条可见记录（用户实报「两个同名文件，但只有一个可以播」）。
