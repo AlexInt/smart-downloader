@@ -135,7 +135,11 @@ View → ViewModel → Service → 系统能力 / Model
    - **流式内容**（列表/网格/弹层）→ **容器现算**：`PosterGrid` `.flexible()`、`EpisodeGridMetrics.cell(availableWidth:)`、`GeometryReader` 现量；禁 `UIScreen.main`（既有约定）。
    - 全屏控制层沿用画布单位 × `sx`（`PlayerFullscreenControlsView.M.edge`），与 width-scale 同性质。
 3. **机型适配的验收 = 三机型快照，不靠推理**：布局相关改动（designFrame 数值、缩放策略、安全区处理）必须在**小屏（375pt 级，如 iPhone SE 或等效）/ 标准（iPhone 17 Pro 402×874）/ Max（iPhone 17 Pro Max）**三档模拟器各截关键态（详情页顶部+页底、播放页竖屏+全屏、下载页）。已实证安全区差异会咬人（下拉刷新阈值踩过灵动岛坑），这类问题只能跑出来看，模拟器命令见「模拟器视觉验收」节。
-4. **不引入 AutoLayout**（2026-11-16 记录）：本项目 UI 主体是 SwiftUI，AutoLayout 是 UIKit 约束体系，SwiftUI 的对应物是 flexible frame / `layout protocol` / size class；画布逐像素对齐是产品主张，等比缩放画布正是它在多机型上的实现手段，二者不是对立面。**触发布局体系级重构（届时用 SwiftUI size class / layout protocol，仍不是 AutoLayout）的条件：上 iPad / 支持系统横屏 / Mac Catalyst**——三者任一立项时另开专项。
+4. **布局体系按 surface 归属选择（2026-11-16 二次修订，替代早先「不引入 AutoLayout」的过死表述，与用户讨论后确认）**：
+   - **SwiftUI 页面**维持流式（flexible frame / `layout protocol` / size class 是它的对应物）；画布逐像素对齐是产品主张，等比缩放画布正是它在多机型上的实现手段——SwiftUI 页不引约束体系（也没法引）。
+   - **UIKit 岛屿的新代码一律用 UIStackView / NSLayoutConstraint**，不再手算 frame 摆放——存量手调的代价已有实证：横屏进度行四连修（`9396af7` 左右留白 → `950de44` 整体左移 → `089a884` 时间贴两端 → `4475b74` 轨道右缘 819→762）+ 被迫引入 `sizeThatFits` 实测宽度回推（「具体约定」12），一次 Stack/约束就能收敛的行式布局手调了四轮。
+   - **存量反复手调的行**（横屏进度行这类）：**再回归一次就转约束/Stack**，不继续手调系列——渐进触发，不做全库迁移。
+   - 项目级布局体系重构（届时用 SwiftUI size class / layout protocol）的触发条件不变：上 iPad / 支持系统横屏 / Mac Catalyst——任一立项另开专项。
 5. **Dynamic Type 与画布对齐的分工**：全库固定字号是画布对齐的一部分，不因多机型适配而整体放开；正文类长文本（错误详情/空态提示/简介）优先支持 `@ScaledMetric`，逐像素对齐的画布指标框除外。已记入审查报告 P1-⑫（`iOS-REVIEW.md`）。
 
 ### 具体约定
