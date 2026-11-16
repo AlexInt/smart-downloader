@@ -72,7 +72,7 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 5 | ~~三机型快照首跑~~ → **已完成**（2026-11-16：`simctl create` 新建 SE 3 代 iOS 26.5 模拟器「SE3-快照」375×667，5 态 × 3 机型 15 张全 PASS——SE 播放页 0.79 contain 缩放控件完整无裁切（画布 310×667 水平居中留 ~33pt）、详情页安全区三档正确（顶部让出状态栏/灵动岛、页底无溢出）、下载页 3 列网格 103 / 112.7 / 125pt 全命中 (宽−44−20)/3；**零布局问题**。矩阵脚本固化 `iOS/smoke/snapshot3.sh`；坑：重装 App 换数据容器清样张，须 install 后再灌） | ✅ |
 | 5b | **快照复验（画面/选集上下排布 d4de1eb）**：15 张全 PASS——17 Pro/SE 竖屏画面止于选集胶囊顶、底部墨带完整、控件无裁切；全屏铺满不受影响；顺手修脚本两 bug（无参数设备列表被并成串、样张源在待重装设备旧容器内须先拷中性位置） | ✅ |
 | 6 | 播放器视图壳 UIKit 化包 B：竖屏卡片 UIKit 化（**DramaPlayerView 是用户文件，等用户发起**；VM/Service 零改动路线已在包 A 验证） | 中（依赖用户） |
-| 7 | 千行文件拆分（审查建议，**待你拍板是否做**）；无障碍：你已决定不做，已移出待办 | 待拍板 |
+| 7 | ~~千行文件拆分~~ → **已完成**（2026-11-16 `b8be6e2`，执行者代理执行+主 agent 三重验证：构建过 / 简介禁区与下拉刷新 diff 零泄漏断言 / 三机型快照 15 张渲染一致）：DramaDetailView 1682 → 1134 行，拆出 DramaDetailPreview(63)/DramaDetailStates(81)/DramaDetailSections(173)/DramaDetailEpisodeGrid(287)；**下拉刷新整块未拆**（与 coverLayer.posterZoom 状态耦合，另轮处理）；建议真机抽测档案展开与下拉刷新。无障碍：你已决定不做，已移出待办 | ✅ |
 | 8 | 本地推荐算法（接入点 = `PlaybackQueueService.resolveNext/Previous`） | 按需 |
 
 ## 6. 待查 / 已知问题
