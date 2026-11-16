@@ -26,11 +26,15 @@ final class ProfileViewModel: ObservableObject {
         case liked = "点赞"
     }
 
-    /// 观看状态筛选（画布 19:190 胶囊）
+    /// 观看状态筛选（画布 19:190 胶囊）。
+    /// 命名即口径（审查 P1-⑬：旧名「已看完」与实际判定互斥——一集没看但下完全剧
+    /// 的剧会进筛选，与用户预期相悖）。这里的判定是「剧的最后一集已下载」= 下载口径，
+    /// 故叫「已下完」；播放口径的「已看完」（播放到距片尾 5s）只用于下载页逐集显示
+    /// （PlaybackProgress.isFinished），两个词各管各的，勿再混用。
     enum WatchFilter: String, CaseIterable {
         case all = "全部"
-        case finished = "已看完"
-        case unfinished = "未看完"
+        case finished = "已下完"
+        case unfinished = "未下完"
     }
 
     /// 每个分类各自的原始列表（历史/收藏/追更/点赞一次全读，供分页左右滑直接出内容）。
@@ -43,10 +47,10 @@ final class ProfileViewModel: ObservableObject {
         }
     }
 
-    /// 每个分类的「是否已看完」索引（筛选在各页独立生效）
+    /// 每个分类的「是否已下完」索引（筛选在各页独立生效）
     private var finishedIndex: [Category: [String: Bool]] = [:]
 
-    /// 单分类装配结果：列表 + 每部剧「已看完」索引（装配时顺手算，不再二次查库）
+    /// 单分类装配结果：列表 + 每部剧「已下完」索引（装配时顺手算，不再二次查库）
     private struct LoadResult {
         let items: [Item]
         let finished: [String: Bool]
@@ -154,7 +158,7 @@ final class ProfileViewModel: ObservableObject {
     /// 追更：缓存里「连载中」的剧（update_status 非完结），按最近抓取倒序。
     /// 口径如实：追更意图目前只有站点的连载状态可依，用户自建的追更列表还不存在。
     /// SQL 已下沉 DramaCache.chasingRows()（审查 P1-④，AGENTS 5/7：VM 不写裸 SQL、
-    /// 建表与查询收口 Drama 域）；「已看完」= 该行自带的最后一集已下载子查询。
+    /// 建表与查询收口 Drama 域）；「已下完」= 该行自带的最后一集已下载子查询。
     private func chasingItems() -> LoadResult {
         let rows = DramaCache.chasingRows()
         var finished: [String: Bool] = [:]
@@ -192,8 +196,8 @@ final class ProfileViewModel: ObservableObject {
 
     // MARK: - 观看状态过滤
 
-    /// 已看完 = 剧的最后一集已下载（sort 最大集 downloaded=1）。
-    /// 没下载任何集但看过结尾的情形这里判不了，如实归入「未看完」。
+    /// 已下完 = 剧的最后一集已下载（sort 最大集 downloaded=1）。
+    /// 没下载任何集但看过结尾的情形这里判不了，如实归入「未下完」。
     /// 装配函数在 load 出 entry 的当场调用本函数，不再像旧 isFinished 那样
     /// 对每部剧单独再 load 一遍（那是滑动返回卡顿的第二大来源）。
     private static func lastEpisodeFinished(_ entry: DramaCache.Entry) -> Bool {

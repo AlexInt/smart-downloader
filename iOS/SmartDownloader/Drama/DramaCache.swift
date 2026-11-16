@@ -300,7 +300,7 @@ enum DramaCache {
 
     /// 追更行（审查 P1-④ 从 ProfileViewModel 下沉，AGENTS 5/7：VM 不写裸 SQL）：
     /// 「连载中」的剧（update_status 非完结），按最近抓取倒序，每剧附
-    /// 「最后一集是否已下载」子查询——「已看完」筛选需要它，VM 只装配。
+    /// 「最后一集是否已下载」子查询——「已下完」筛选需要它，VM 只装配。
     struct ChasingRow {
         let site: String
         let dramaID: String
@@ -336,7 +336,7 @@ enum DramaCache {
                                    name: DramaDatabase.text(stmt, 2) ?? "",
                                    status: DramaDatabase.text(stmt, 3) ?? "",
                                    cover: DramaDatabase.text(stmt, 4),
-                                   // 无剧集行时 last_downloaded 为 NULL → 0 → 未看完，符合口径
+                                   // 无剧集行时 last_downloaded 为 NULL → 0 → 未下完，符合口径
                                    lastEpisodeDownloaded: sqlite3_column_int(stmt, 6) != 0))
         }
         return rows
