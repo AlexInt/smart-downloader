@@ -19,8 +19,8 @@ set -u
 APP="${APP:-/private/var/folders/bj/3nsy0tm55szbh76_dn499ghr0000gn/T/opencode/fix3-dd/Build/Products/Debug-iphonesimulator/SmartDownloader.app}"
 OUT="${OUT:-/tmp/snapshots}"
 BUNDLE=com.firefish.smartdownloader
-DEVICES=("${@:-SE3-快照 iPhone 17 Pro iPhone 17 Pro Max}")
-[ $# -gt 0 ] && DEVICES=("$@")
+# 无参数时三台默认设备；注意不能写 DEVICES=("${@:-a b c}")——那样会把三个名字并成一个串
+if [ $# -gt 0 ]; then DEVICES=("$@"); else DEVICES=("SE3-快照" "iPhone 17 Pro" "iPhone 17 Pro Max"); fi
 
 mkdir -p "$OUT"
 
@@ -29,6 +29,11 @@ SAMPLE_SRC=$(find ~/Library/Developer/CoreSimulator/Devices/*/data/Containers/Da
   -maxdepth 1 -name "横屏样张" -type d 2>/dev/null | head -1)
 [ -z "$SAMPLE_SRC" ] && { echo "没有发现样张源，先在任一模拟器上准备「横屏样张」"; exit 1; }
 echo "样张源: $SAMPLE_SRC"
+# 先拷到中性位置：源可能就在待 install 设备的旧容器里，install 换容器后旧路径失效
+#（首轮踩过：SE3 先跑成功、轮到源所在的 iPhone 17 Pro 时 cp 找不到旧容器）
+STAGING="$OUT/_sample_src"
+rm -rf "$STAGING" && mkdir -p "$(dirname "$STAGING")"
+cp -R "$SAMPLE_SRC" "$STAGING" || { echo "样张暂存失败"; exit 1; }
 
 find_udid() {  # 设备名 → UDID（行首缩进 + 名字 + 空格 + (UDID)；精确到名字后跟 (，避免 17 Pro 误中 17 Pro Max）
   xcrun simctl list devices available | grep -E "^[[:space:]]+$1 \([0-9A-F-]{36}\)" | tail -1 \
@@ -49,7 +54,7 @@ for name in "${DEVICES[@]}"; do
   container=$(xcrun simctl get_app_container "$udid" "$BUNDLE" data)
   mkdir -p "$container/Documents/Downloads"
   rm -rf "$container/Documents/Downloads/横屏样张"
-  cp -R "$SAMPLE_SRC" "$container/Documents/Downloads/横屏样张" || { echo "SEED FAILED: $name"; exit 1; }
+  cp -R "$STAGING" "$container/Documents/Downloads/横屏样张" || { echo "SEED FAILED: $name"; exit 1; }
 
   states=(
     "detail-top|-dramaPreview"
