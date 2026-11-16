@@ -176,7 +176,11 @@ struct DramaPlayerView: View {
                                 .font(DWFont.cn(12, .medium))
                         }
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        // 可辨识的按钮块面：墨底 + 浅色描边（Toast 同族胶囊语言）
+                        .background(Capsule().fill(Color.black.opacity(0.30)))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.45), lineWidth: 1))
                         .contentShape(Rectangle())
                     }
                     .frame(minWidth: 44, minHeight: 44)
