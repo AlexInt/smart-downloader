@@ -330,14 +330,23 @@ struct PlayerPagingScrollView: UIViewRepresentable {
                     lastLoggedSeek = fraction
                     print("PLAYER_DBG [CHECK] seekPan dx=\(Int(t.x)) dy=\(Int(t.y)) fraction=\(String(format: "%.2f", fraction)) base=\(String(format: "%.2f", base))")
                 }
-                parent.playback.seek(fraction: fraction)
+                // 2026-11-16 手势 A 档：拖动中不实时 seek（行业全如此），只挂目标预览；
+                // 松手才真正 seek（commitScrubThenEndGesture），拖动中目标时间由
+                // HUD 上的气泡跟随（DramaPlayerView.progressHud）
+                parent.playback.scrubPreview(fraction: fraction)
             case .ended, .cancelled, .failed:
-                // 抬手不补 seek：最后一次 .changed 已到位；
-                // 也避免「2x 长按抬手先清了 isFastForwarding → .ended 的 seek 反而穿过闸门」的竞态跳变。
-                // 只结束「拖动独占」标记，下一次长按可正常起 2x
+                // 结束分支分两路（2026-11-16 手势 A 档）：.ended 提交暂存目标（seek 落稳
+                // 后 flush 进度）；.cancelled/.failed 只丢弃不 seek（切集/来电打断）。
+                // 旧注释「抬手不补 seek」对应的实时 seek 路线已退役——现在抬手恰恰
+                // 是唯一一次 seek，且不再有「2x 抬手清 isFastForwarding → .ended 的
+                // seek 穿过闸门」的竞态：2x 独占期间预览根本不置位（scrubPreview guard）。
                 scrubBaseFraction = nil
+                if pan.state == .ended {
+                    parent.playback.commitScrubThenEndGesture()
+                } else {
+                    parent.playback.cancelScrubThenEndGesture()
+                }
                 unlockSystemPan(view, reason: "seekPan")
-                parent.playback.endSeekGesture()
             default: break
             }
         }

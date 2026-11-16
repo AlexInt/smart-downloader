@@ -68,7 +68,12 @@ struct DramaPlayerView: View {
         return playback.showRemainingTime ? playback.remainingTimeText : playback.durationText
     }
     private var progressValue: CGFloat {
-        CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
+        // 拖动中渲染预览目标（2026-11-16 手势 A 档：松手才 seek，拖动里 HUD
+        // 先行走到目标位；nil = 无拖动，照常渲染真实进度）
+        if isActive, playback.isReady, let preview = playback.scrubPreviewFraction {
+            return CGFloat(preview)
+        }
+        return CGFloat((isActive && playback.isReady) ? playback.progress : episode.previewProgress)
     }
     /// 播放/暂停图标：邻卡一律显示播放三角（不读共享的播放态）
     private var showPauseGlyph: Bool {
@@ -444,6 +449,21 @@ struct DramaPlayerView: View {
                 .foregroundStyle(DWColor.overlayInkSub)
                 .designFrame(310, 731, 60, 14, alignment: .trailing)
                 .allowsHitTesting(false)
+
+            // 拖动预览气泡（2026-11-16 手势 A 档）：松手才 seek（行业全如此），
+            // 拖动中把「这次会 seek 到哪」用目标时间气泡跟着进度位置走，
+            // 落位与 iOS 系统播放器同型（气泡悬在进度目标点上方）。钳在 45…345
+            // 防止贴边出屏；y 在时间行（731）上方留 4pt 空隙
+            if isActive, playback.isReady, playback.scrubPreviewFraction != nil {
+                Text(playback.scrubPreviewText)
+                    .font(DWFont.en(11, .medium))
+                    .foregroundStyle(DWColor.overlayInk)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
+                    .position(x: min(max(390 * progressValue, 45), 345), y: 712)
+                    .allowsHitTesting(false)
+            }
         }
         .opacity(isProgressVisible ? 1 : 0)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)

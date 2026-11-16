@@ -30,7 +30,12 @@ private final class PopGestureGate: NSObject, UIGestureRecognizerDelegate {
     static let shared = PopGestureGate()
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let nav = gestureRecognizer.view as? UINavigationController else { return false }
+        // interactivePopGestureRecognizer.view 的动态类型是 UINavigationController 本体
+        //（UIKit 非常规挂载：静态类型 UIView 与它无关，编译器报「cast always fails」，
+        // 运行时却成立——右滑返回一直靠这个判定工作）。经 AnyObject 跳板做同一动态
+        // 判定，只消警告不改行为。
+        guard let view = gestureRecognizer.view,
+              let nav = (view as AnyObject) as? UINavigationController else { return false }
         return nav.viewControllers.count > 1
     }
 }

@@ -81,6 +81,18 @@ final class PlayerFullscreenControlsView: UIView {
     // MARK: 字幕
     private let subtitleLabel = UILabel()
 
+    // MARK: 拖动预览气泡 + 亮度/音量指示（2026-11-16 手势 A 档）
+    /// 拖动预览的目标进度（nil = 无拖动）：布局时优先于 progress，
+    /// 松手提交前 HUD 先行走到目标位
+    private var previewFraction: Double?
+    /// 目标时间气泡：悬在轨道目标点上方（与竖屏 DramaPlayerView 同型）
+    private let previewBubble = UILabel()
+    /// 竖滑调亮度/音量 + 亮度按钮的反馈浮层（墨色胶囊，独立于控件显隐——
+    /// 控件收起时竖滑调节也要有反馈）
+    private let adjustPill = UIView()
+    private let adjustLabel = UILabel()
+    private var adjustHideWork: DispatchWorkItem?
+
     // MARK: 压暗
     private let topScrim = CAGradientLayer()
     private let bottomScrim = CAGradientLayer()
@@ -246,6 +258,31 @@ final class PlayerFullscreenControlsView: UIView {
         totalTimeLabel.textAlignment = .left    // 贴轨道右端（layoutSubviews 里落位）
         addSubview(totalTimeLabel)
 
+        // 拖动预览气泡：目标时间悬在轨道目标点上方（样式与竖屏同一口径：
+        // 墨底白字胶囊；墨底 = 黑 0.55，竖屏侧是 Color.black.opacity(0.55)）
+        previewBubble.font = Self.monoFont(11)
+        previewBubble.textColor = .white
+        previewBubble.textAlignment = .center
+        previewBubble.layer.cornerRadius = 11
+        previewBubble.layer.masksToBounds = true
+        previewBubble.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        previewBubble.isHidden = true
+        previewBubble.isUserInteractionEnabled = false
+        addSubview(previewBubble)
+
+        // 亮度/音量指示浮层：黑 0.55 胶囊 + 白字，居中（独立 alpha 管理，
+        // 不进 updateVisibility 的 controls 数组——控件收起时竖滑也要有反馈）
+        adjustPill.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        adjustPill.layer.cornerRadius = 14
+        adjustPill.layer.masksToBounds = true
+        adjustPill.isUserInteractionEnabled = false
+        adjustPill.alpha = 0
+        addSubview(adjustPill)
+        adjustLabel.font = Self.sansFont(12, weight: .regular)
+        adjustLabel.textColor = .white
+        adjustLabel.textAlignment = .center
+        adjustPill.addSubview(adjustLabel)
+
         // 点赞（画布 22:49：心形 18；数字已按用户要求移除，只记本地状态不报数）
         likeButton.addTarget(self, action: #selector(likeTapped), for: .touchUpInside)
         likeButton.addSubview(likeGlyph)
@@ -361,6 +398,40 @@ final class PlayerFullscreenControlsView: UIView {
         playback.$isScrubbing
             .sink { [weak self] _ in self?.updateVisibility(animated: true) }
             .store(in: &cancellables)
+        // 拖动预览（2026-11-16 手势 A 档）：目标进度驱动填充/圆点与气泡；
+        // 松手后 fraction 复位为 nil，布局回落真实进度
+        playback.$scrubPreviewFraction
+            .map { $0 ?? -1 }
+            .removeDuplicates()
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.previewFraction = value < 0 ? nil : value
+                self.previewBubble.isHidden = value < 0
+                self.setNeedsLayout()
+                if value < 0 {
+                    print("PLAYER_DBG [Fullscreen] scrubPreview cleared")
+                }
+            }
+            .store(in: &cancellables)
+        playback.$scrubPreviewText
+            .sink { [weak self] in self?.previewBubble.text = $0 }
+            .store(in: &cancellables)
+    }
+
+    // MARK: 亮度/音量指示浮层
+
+    /// 竖滑调节与亮度按钮的反馈：文字更新即出现，700ms 无新更新淡出。
+    /// 独立于控件显隐（updateVisibility 不碰 alpha）——控件收起时也有反馈。
+    func showAdjustFeedback(_ text: String) {
+        adjustLabel.text = text
+        adjustPill.alpha = 1
+        adjustHideWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            UIView.animate(withDuration: 0.25) { self.adjustPill.alpha = 0 }
+        }
+        adjustHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: work)
     }
 
     // MARK: 可见性
@@ -538,7 +609,9 @@ final class PlayerFullscreenControlsView: UIView {
         let trackH = max(2 * s, 2)
         progressTrack.frame = CGRect(x: trackX, y: Y(M.trackY), width: trackW, height: trackH)
         progressTrack.layer.cornerRadius = trackH / 2
-        let fillW = min(max(progress, 0), 1) * trackW
+        // 拖动预览（2026-11-16 手势 A 档）：松手才 seek，拖动中填充/圆点先走到目标位
+        let shownProgress = previewFraction ?? progress
+        let fillW = min(max(shownProgress, 0), 1) * trackW
         progressFill.frame = CGRect(x: 0, y: 0, width: fillW, height: trackH)
         progressFill.layer.cornerRadius = trackH / 2
         // 圆点 8×8：中心落在轨道中线上
@@ -547,6 +620,30 @@ final class PlayerFullscreenControlsView: UIView {
                                    y: Y(M.trackY) + trackH / 2 - dotSize / 2,
                                    width: dotSize, height: dotSize)
         progressDot.layer.cornerRadius = dotSize / 2
+
+        // 预览气泡：中心 x = 目标点在轨道上的位置（钳进屏幕带防出屏），
+        // 底缘在时间行（Y(311)）上方 4pt；宽按文字实测 + 16 内边距
+        if !previewBubble.isHidden {
+            let textW = ceil(previewBubble.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                               height: 16)).width)
+            let bubbleW = min(max(textW + 16, 44), trackW)
+            let bubbleH = 22 * s
+            let centerX = min(max(trackX + shownProgress * trackW, trackX + bubbleW / 2),
+                              trackRight - bubbleW / 2)
+            previewBubble.frame = CGRect(x: centerX - bubbleW / 2,
+                                         y: Y(M.trackY) - bubbleH - 6,
+                                         width: bubbleW, height: bubbleH)
+        }
+
+        // 亮度/音量指示浮层：屏幕带水平居中，y 挂在顶栏（Y(40)）与中部大钮（Y(174)）之间
+        adjustLabel.font = Self.sansFont(12 * s, weight: .regular)
+        previewBubble.font = Self.monoFont(11 * s)
+        let adjustTextW = ceil(adjustLabel.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                               height: 18)).width)
+        let pillW = min(max(adjustTextW + 24, 64), min(w - 40, 200))
+        let pillH = 28 * s
+        adjustPill.frame = CGRect(x: w / 2 - pillW / 2, y: Y(100) - pillH / 2, width: pillW, height: pillH)
+        adjustLabel.frame = CGRect(x: 12, y: (pillH - 18) / 2, width: pillW - 24, height: 18)
 
         // 点赞 / 收藏：只留图标（数字已移除）。左缘钉 X(edge)；
         // 点赞 × M.actionIconScale，收藏再 ×1.2（星形墨迹天生偏小）
@@ -624,8 +721,11 @@ final class PlayerFullscreenControlsView: UIView {
     }
 
     @objc private func brightnessTapped() {
-        print("PLAYER_DBG [Fullscreen] brightness tap")
+        // 一键最亮 ↔ 还原（2026-11-16 手势 A 档接真；原先只打日志是死钮）。
+        // 目标亮度由 Service 返回，指示浮层给百分比反馈
         keepVisible()
+        let target = PlayerBrightnessVolume.shared.toggleMaxBrightness(in: window)
+        showAdjustFeedback("亮度 \(Int(target * 100))%")
     }
 
     @objc private func playPauseTapped() {

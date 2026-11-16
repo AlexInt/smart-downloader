@@ -33,6 +33,12 @@ final class DramaPlayerViewModel: ObservableObject {
     /// 800ms 再淡出（新 seek 会取消旧的淡出任务）。与 isSeekGestureActive 分开——
     /// 那是手势仲裁闸门（非渲染），这是纯 UI 显示状态，必须 @Published 驱动视图。
     @Published private(set) var isScrubbing = false
+    /// 拖动预览（2026-11-16 手势 A 档）：seekPan 拖动中只挂「目标进度」不真正 seek
+    /// （松手才 seek，行业全如此），nil = 无拖动进行。两侧 HUD（竖屏 DramaPlayerView /
+    /// 全屏 PlayerFullscreenControlsView）用它渲染目标位置，气泡用 scrubPreviewText
+    /// 显示目标时间——两者同一刻同源更新，View 不要自己再拿 fraction 换算时间。
+    @Published private(set) var scrubPreviewFraction: Double?
+    @Published private(set) var scrubPreviewText = ""
     @Published private(set) var currentTimeText = "00:00"
     @Published private(set) var durationText = "00:00"
     /// 右侧时长 label 显示剩余时间（负值，如 -01:39）还是总时长；本地持久化（PlayerPreferences）
@@ -271,7 +277,7 @@ final class DramaPlayerViewModel: ObservableObject {
         statusWatch?.invalidate()
         statusWatch = nil
         endFastForward()
-        endSeekGesture()
+        cancelScrubThenEndGesture()   // 切集打断拖动：丢预览 + 手势收尾（不 seek）
         hideScrubHudNow()
         loadError = nil
         // 切集前先冻住当前画面：此刻 player.currentItem 还是旧 item（已 ready、正在显示），
@@ -516,7 +522,10 @@ final class DramaPlayerViewModel: ObservableObject {
         fullscreenRotationAngle = angle
     }
 
-    func seek(fraction: Double) {
+    /// 真正 seek 的唯一入口。completion 非空时用带回调的 seek 变体——
+    /// 「松手才 seek」的提交路径要在落稳后再落盘进度（flush 现读 currentTime，
+    /// seek 没落地就 flush 会把拖动前的旧位置写库，2026-11-14 同型坑）。
+    private func performSeek(fraction: Double, completion: (() -> Void)? = nil) {
         // 注意：这里不置 isSeekGestureActive——两条 pan 路径的 .began 已各自置位
         // （beginSeekGesture），菜单「从头播放」（DramaPlayerView）没有手势在跑，
         // 无条件置位会让闸门无人复位 → 之后点按暂停与长按 2x 静默失效（审查 P1-①）。
@@ -544,8 +553,43 @@ final class DramaPlayerViewModel: ObservableObject {
         }
         showScrubHud(reason: "seek")
         let target = CMTime(seconds: total * ratio, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        if let completion {
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                // seek 回调队列文档未承诺主线程；VM 状态只在主线程碰，显式回主队列
+                DispatchQueue.main.async { completion() }
+            }
+        } else {
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         syncTime(target)
+    }
+
+    func seek(fraction: Double) {
+        performSeek(fraction: fraction)
+    }
+
+    /// 拖动中预览（seekPan .changed 调）：只挂目标进度 + HUD，**不 seek**。
+    /// 2x 先起独占时漂移同样不得预览（与 performSeek 的 guard 同口径，
+    /// 否则按住 2x 期间 HUD 会挂一个永远不会提交的目标）。
+    func scrubPreview(fraction: Double) {
+        guard !isFastForwarding else {
+            if abs(fraction - lastLoggedSeek) > 0.05 {
+                lastLoggedSeek = fraction
+                print("PLAYER_DBG [Playback] scrubPreview SKIP reason=fastForwarding fraction=\(String(format: "%.2f", fraction))")
+            }
+            return
+        }
+        let ratio = min(max(fraction, 0), 1)
+        scrubPreviewFraction = ratio
+        if let item = player.currentItem {
+            let total = CMTimeGetSeconds(item.duration)
+            scrubPreviewText = (total.isFinite && total > 0) ? Self.format(total * ratio) : ""
+        }
+        showScrubHud(reason: "scrubPreview")
+        if abs(ratio - lastLoggedSeek) > 0.05 {
+            lastLoggedSeek = ratio
+            print("PLAYER_DBG [CHECK] scrubPreview fraction=\(String(format: "%.2f", ratio))")
+        }
     }
 
     /// seekPan 起手（约 10pt 位移）即翻转仲裁闸门：「拖动先起」的判定点不能等
@@ -553,21 +597,53 @@ final class DramaPlayerViewModel: ObservableObject {
     /// （识别器曾按带内过滤 begin，收不到任何事件），斜起手快速转水平同理；长按
     /// 0.15s 的 perform 会插进这个空窗误起 2x（闪倍速提示）。慢漂移起手慢于 0.15s，
     /// 长按仍先起，2x 不受影响。此时尚未真正 seek，不动 isScrubbing。
+    /// （2026-11-16 起竖滑也经此闸门：全屏竖滑 = 亮度/音量，同样独占本次触摸。）
     func beginSeekGesture() {
         guard !isSeekGestureActive else { return }
         isSeekGestureActive = true
     }
 
-    /// seekPan 抬手 / 被系统滚动抢占：结束「拖动独占」标记，下一次长按可正常起 2x
-    func endSeekGesture() {
+    /// 松手提交（seekPan .ended 调）：暂存目标落地 seek，落稳后 flush 进度。
+    /// 注意顺序：performSeek 先行、收尾最后——performSeek 里的 showScrubHud 会取消
+    /// 已排的 HUD 停留任务，若先收尾（schedule 800ms）再 seek，停留被取消且无人补排，
+    /// HUD 就永远不淡出（旧实时 seek 流程 schedule 天然在最后，改序时勿破坏这一点）。
+    func commitScrubThenEndGesture() {
+        let pending = scrubPreviewFraction
+        scrubPreviewFraction = nil
+        scrubPreviewText = ""
+        guard let fraction = pending else {
+            endSeekGestureBookkeeping()
+            print("PLAYER_DBG [Playback] scrubCommit SKIP reason=noPreview")
+            return
+        }
+        print("PLAYER_DBG [Playback] scrubCommit fraction=\(String(format: "%.2f", fraction))")
+        performSeek(fraction: fraction) { [weak self] in
+            self?.progressTracker?.flush()
+        }
+        endSeekGestureBookkeeping()
+    }
+
+    /// 拖动被打断（.cancelled/.failed，如切集/来电）：丢弃目标不 seek，
+    /// 位置未变，落盘交给 1Hz tick 与既有关键时机。
+    func cancelScrubThenEndGesture() {
+        let had = scrubPreviewFraction != nil
+        scrubPreviewFraction = nil
+        scrubPreviewText = ""
+        endSeekGestureBookkeeping()
+        if had {
+            print("PLAYER_DBG [Playback] scrubCancel reason=interrupted")
+        }
+    }
+
+    /// seekPan 抬手 / 被系统滚动抢占：结束「拖动独占」标记，下一次长按可正常起 2x。
+    /// 只做手势收尾，**不 flush**——落盘时机由提交路径（seek 落稳后）接管。
+    private func endSeekGestureBookkeeping() {
         guard isSeekGestureActive else { return }
         isSeekGestureActive = false
         // seek 独占过的触摸抬手：开吞单击窗，吞掉 SwiftUI tap 在横滑抬手时的误触发
         //（不设窗则每次横滑结束大概率误暂停，调查结论见 tapSuppressionDeadline 注释）
         tapSuppressionDeadline = Date().addingTimeInterval(0.25)
         scheduleScrubLinger()
-        // 拖完就落盘：拖到片尾直接退出也应当记住位置（未起手势时为空操作）
-        progressTracker?.flush()
         print("PLAYER_DBG [Playback] seekGesture end")
     }
 
@@ -581,7 +657,7 @@ final class DramaPlayerViewModel: ObservableObject {
         statusWatch = nil
         isFastForwarding = false
         isFullscreen = false   // 播放页销毁：全屏态复位（容器由 Coordinator.dismantle 显式还原）
-        endSeekGesture()
+        cancelScrubThenEndGesture()   // 退页打断拖动：丢预览 + 手势收尾（不 seek）
         isCleanScreenFlashActive = false
         hideScrubHudNow()
         cancelSpinnerDelay()
@@ -880,6 +956,10 @@ final class DramaPlayerViewModel: ObservableObject {
         remainingTimeText = "-00:00"
         progress = 0
         isPlaying = false
+        // 拖动预览是「本次手势」的状态，切集/重载必须清（正常路径 pan .cancelled 已清，
+        // 这里是兜底，防止残留目标在新集上渲染成假进度）
+        scrubPreviewFraction = nil
+        scrubPreviewText = ""
     }
 
     /// 播放/暂停态同步（@Published 只在真正翻转时赋值，避免每 0.25s 触发无意义刷新）

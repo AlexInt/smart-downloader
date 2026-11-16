@@ -2,7 +2,7 @@
 
 > 给接手的 AI 编码代理：**先读 `AGENTS.md`**（硬性禁止 + 架构/日志/网络/并发约定，最高优先级）。本文只讲「做到哪了 / 还剩什么 / 怎么验」。**实现细节与防回归约束在 AGENTS 与代码注释里，完整过程在 git 历史**，本文不重复每个 build 日志。
 > 
-> 最后更新：2026-11-16 · 全部「待真机验证」挂账销账（30 个验证点 82 处，用户逐一确认通过）· `feat/drama-page-paper` 已合并至 `main`，后续修复直接在 `main` 上提交 · 基准提交见 `git log -1`
+> 最后更新：2026-11-16 · 审查第一批止血 + 手势 A 档已提交，新增验证点待真机回归（见 §2 末）· 此前 30 个验证点 82 处已全部销账（用户逐一确认通过）· `feat/drama-page-paper` 已合并至 `main`，后续修复直接在 `main` 上提交 · 基准提交见 `git log -1`
 
 ## 1. 项目一览
 
@@ -22,6 +22,17 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 - **我的域**：四分类分页左右滑 · 海报网格（PosterGrid 三处共用）· 滑动返回不卡顿（后台装配 + 代际令牌）
 - **数据**：SQLite 三表 + DramaDatabase 单入口迁移 · 播放进度 / 剧级收藏入库 · 续播位置正确 · 同集只有一条记录
 
+### 已完成代码、待真机验证（2026-11-16 本批：审查第一批 + 手势 A 档）
+
+- **审查第一批止血 6 条**（`cbf0a6a`）：DownloadEngine `ipDirectHosts`/`dnsCache` 收敛进 `sharedStateLock`（外部一律走 `ipDirectContains/Insert` + `dnsCacheGet/Set` 四入口；`preferWebKit` 保持裸 Bool 良性竞争）· DramaFavorites 三方法补 `defer close`（此前每次调用泄漏一个连接）· `seek(fraction:)` 删 `isSeekGestureActive` 置位行（两条 pan 路径 `.began` 已各自置位；菜单「从头播放」无手势在跑，置位即泄漏 → 点按暂停与长按 2x 静默失效）· 全屏倍速文案走 `DramaPlayerViewModel.rateText`（删本地 `trimmed`，`"0$"` 字面量替换 bug 曾在这份拷贝复活成「2.00×」）· `detailFetchedAt` prepare 失败分支删显式 close（defer 已关，双 close）· 旧 UserDefaults 搬迁改「写失败保留源键不置迁移标记、下次启动幂等重试」（`execWrite`/`writeLegacy` 返回 Bool，`@discardableResult`）
+- **手势 A 档**（本轮，行业基线已核不推翻拍板）：
+  - **拖动中不实时 seek，松手才 seek**：`.changed` 只挂 `scrubPreview(fraction:)`（@Published `scrubPreviewFraction/Text`，目标时间由 VM 算好下发）；`.ended` → `commitScrubThenEndGesture()`（performSeek 带完成回调、落稳后 `flush()`）；`.cancelled/.failed` → `cancelScrubThenEndGesture()`（丢弃不 seek）。HUD 停留时序铁律：commit 里 performSeek 先行、收尾最后（showScrubHud 会 cancel 已排的 800ms 停留任务，反序 = HUD 永不淡出）。
+  - **目标时间气泡**：竖屏 DramaPlayerView 气泡 y712 钳 45…345 防出屏；全屏 previewBubble 悬轨道目标点上方。两侧填充/圆点渲染统一 `previewFraction ?? progress`。
+  - **全屏竖滑 = 左亮度右音量**（此前全屏竖滑完全空手）：容器旋转 ±90° 后本地 x = 视频横轴 = 用户感知左右、本地 ty 主导即竖滑；`PanAxis` 首个 ≥6pt 主导方向锁轴全程不换，锁轴那一刻定左右边中途不换；竖滑 branch guard `!isFastForwarding`（2x 先起独占）。
+  - **亮度/音量 Service `PlayerBrightnessVolume`**（VM 不 import UIKit）：音量走隐藏 `MPVolumeView` slider（挂全屏容器，随容器销毁下次重挂）；亮度 `window.screen.brightness`；亮度死钮接真 = `toggleMaxBrightness`（一键最亮 ↔ 还原点）。指示浮层 `adjustPill`/`showAdjustFeedback` 不进控件数组（控件收起时也有反馈）。
+  - 顺手清两个存量警告：SwipeBackSupport 的 `as? UINavigationController`（UIKit 动态挂载误报，`(view as AnyObject) as?` 跳板保持同一运行时判定）、EpisodeDrawerPanel 的 no-op `as?`（直接 `panel?.revealCurrent()`）。
+  - 真机回归锚点（PLAYER_DBG）：`scrubPreview` / `scrubCommit` / `scrubCancel` / `fullscreen seekPan axis=` / `fullscreen adjust side=` / `volumeBridge attached` / `brightness toggle`；约定全文见 `docs/agents/conventions-player.md` 第 2/4 条。
+
 ## 3. `player/` 模块架构地图
 
 → 已并入 `docs/agents/conventions-player.md` 顶部（改 player/ 前读那一个文件即可）。
@@ -34,10 +45,10 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 
 | # | 事项 | 优先级 |
 |---|---|---|
-| 1 | **审查第一批止血**（iOS-REVIEW.md）：P0 下载引擎静态 Set/Dict 加锁 + DramaFavorites 连接泄漏 + seek 闸门泄漏一行 + `0$` 倍速文案 + `detailFetchedAt` 双 close + 搬迁失败不删源键 | 高 |
-| 2 | **手势 A 档**（行业基线已核，不推翻拍板）：拖动中不实时 seek（松手才 seek）+ 目标时间跟随浮层；横屏竖滑 = 左亮度右音量 + 亮度死钮接真 | 高 |
+| 1 | ~~审查第一批止血~~ → **已完成**（`cbf0a6a`，2026-11-16，代码级验证通过，无真机专项） | ✅ |
+| 2 | ~~手势 A 档~~ → **已完成**（2026-11-16 提交，**待真机回归**：拖动手感 / 竖滑灵敏度 / 锁轴阈值，锚点见 §2 末） | ✅ |
 | 3 | 手势 B 档待拍板：竖屏全屏按钮（推翻「无按钮入口」）、edgePan 改交互式跟随（推翻「越阈即退」） | 中（等用户拍板） |
-| 4 | 审查第二批：追更 SQL 下沉 DramaCache、删 ProfileView `preferredColorScheme`、prune 合批改队列、playIfDone 下沉、「已看完」口径统一、同集去重冒烟固化入库、DWUIColor 镜像 | 中 |
+| 4 | 审查第二批（7 条，**下一项开工**）：追更 SQL 下沉 DramaCache、删 ProfileView `preferredColorScheme`、prune 合批改队列、playIfDone 下沉 VM、「已看完」口径统一、同集去重冒烟固化入库（`deduptest`）、DWUIColor 镜像收口 30 处裸 hex（含 `#A04D42`→token 对齐） | 中 |
 | 5 | 三机型快照首跑（SE 上播放页 0.79 缩放与详情页安全区表现，AGENTS「布局缩放与机型适配」第 3 条） | 中 |
 | 6 | 播放器视图壳 UIKit 化包 B：竖屏卡片 UIKit 化（**DramaPlayerView 是用户文件，等用户发起**；VM/Service 零改动路线已在包 A 验证） | 中（依赖用户） |
 | 7 | 中期：无障碍第一遍（标签/命中区）、SQLite WAL+withConnection、千行文件拆分、AGENTS 简介块行号改锚定符号名 | 低 |

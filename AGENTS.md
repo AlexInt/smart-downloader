@@ -126,7 +126,7 @@ View → ViewModel → Service → 系统能力 / Model
 1. 上下滑资源调度唯一入口是 `PlaybackQueueService` → 详见 `docs/agents/conventions-player.md`
 2. 播放页用 UIKit 原生分页 → 详见 `docs/agents/conventions-player.md`
 3. 播放器采用单播放器常驻 + 滚动停稳防抖后切 item（ZFPlayer / 开源抖音实践），禁止每次滑动新建 AVPlayer → 详见 `docs/agents/conventions-player.md`
-4. 全屏横向拖动 = 相对 scrub（拖动位移/屏宽换算进度，一屏宽≈全片时长），左缘 30pt 起手除外（保留给返回手势） → 详见 `docs/agents/conventions-player.md`
+4. 全屏 seekPan 全向 + 轴锁定：横向 = 相对 scrub（拖动位移/屏宽换算进度）**松手才 seek**（拖动中只挂预览），纵向 = 左亮度右音量（`PlayerBrightnessVolume`）；竖屏左缘 30pt 起手不 seek（保留 edgePan） → 详见 `docs/agents/conventions-player.md`
 5. 所有持久化统一走 Service，ViewModel 里不得出现 `UserDefaults.standard` / `FileManager` → 详见 `docs/agents/conventions-data.md`
 6. 每一集自己的行为数据（点赞 / 收藏 / 进度）一律进 SQLite 的 `episode_actions` 表，不许散进 UserDefaults → 详见 `docs/agents/conventions-data.md`
 7. 建表与迁移只有一个入口 `Drama/DramaDatabase.swift` → 详见 `docs/agents/conventions-data.md`

@@ -99,6 +99,11 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private var scrubBaseFraction: Double?
     /// seekPan .changed 的拒绝原因每次手势只打一次（降噪）
     private var seekChangedRejectLogged = false
+    /// 本手势的轴向锁定（2026-11-16 手势 A 档）：首个 ≥6pt 主导方向定轴，
+    /// 全程不换——横向 = seek 预览，纵向 = 左半亮度 / 右半音量。
+    /// nil = 还没定（起手 <6pt 的微动）
+    private var panAxisLocked: PanAxis?
+    enum PanAxis: String { case horizontal, vertical }
     /// 当前打开的右侧抽屉（画布 22:72 倍速 / 22:73 选集，同时只允许一个）
     private(set) var openDrawer: FullscreenDrawerKind?
     private var drawerPanel: FullscreenDrawerPanel?
@@ -351,6 +356,9 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         container.addSubview(controls)
         self.controls = controls
         installGestures(on: container)
+        // 音量桥挂进窗口树（2026-11-16 手势 A 档：竖滑右半调音量靠 MPVolumeView；
+        // 随容器销毁，下次进全屏重新挂）
+        PlayerBrightnessVolume.shared.attachVolumeBridge(to: container)
         // 顶栏剧名/集数与互动数值：进入时注入一次，切集时由 refreshEpisodeMeta 刷新
         refreshEpisodeMeta()
 
@@ -592,7 +600,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             }
             installDrawerPanel(panel, in: container, frame: geo.drawerFrame)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak panel] in
-                (panel as? EpisodeDrawerPanel)?.revealCurrent()
+                panel?.revealCurrent()   // panel 本就是 EpisodeDrawerPanel?，无需 as? 再包一层
             }
         }
     }
@@ -752,13 +760,15 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
-    // MARK: 全屏手势（点按暂停 / 长按 2x / 横向相对 seek）
+    // MARK: 全屏手势（点按暂停 / 长按 2x / 横向相对 seek / 纵向亮度音量）
     //
     // 竖屏卡片六条仲裁约束的全屏版（UIKit 原生实现）：
     // ① 拖动先起 → seek 独占：pan .began 即 VM.beginSeekGesture，长按 perform 查闸门；
     // ② 长按先起 → 2x 独占：perform（按满 0.15s）才起 2x，allowableMovement 放开；
+    //    2x 独占期间纵向漂移同样不调亮度/音量（handleSeekPan vertical 分支 guard）
     // ③ 长按松手 → 吞单击 250ms；④ 2x 只在 began（perform 等价态）里起；
-    // ⑤ seek 抬手不补 seek（VM.endSeekGesture 内含）；⑥ tap 查 VM.seek 闸门与抑制窗。
+    // ⑤ 松手才 seek（2026-11-16 手势 A 档）：拖动中只挂预览，.ended 提交（VM 内
+    //    seek 落稳后 flush 进度）、.cancelled/.failed 丢弃；⑥ tap 查 VM.seek 闸门与抑制窗。
 
     private func installGestures(on container: FullscreenPlayerView) {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
@@ -826,12 +836,14 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
             print("PLAYER_DBG [CHECK] fullscreen gesture REJECT reason=locked")
             return false
         }
-        // seek 只认横向/斜向主导（保持与卡片同规则；全屏无分页滚动可干扰）
+        // seekPan 全向接住（2026-11-16 手势 A 档）：横向主导 = seek 预览，
+        // 纵向主导 = 左半亮度 / 右半音量（此前纵向直接 REJECT，全屏竖滑完全空手）。
+        // 注意坐标口径：容器自转 ±90° 后本地 x = 视频横轴 = 持横屏用户的「左右」，
+        // 本地 y 主导即用户感知的「竖滑」。轴的归属在 .changed 里按主导方向锁定。
         guard gestureRecognizer === seekPan, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let t = pan.translation(in: pan.view)
-        let ok = abs(t.x) >= abs(t.y)
-        print("PLAYER_DBG [CHECK] fullscreen seekPan shouldBegin tx=\(Int(t.x)) ty=\(Int(t.y)) → \(ok ? "OK" : "REJECT vertical-dominant")")
-        return ok
+        print("PLAYER_DBG [CHECK] fullscreen seekPan shouldBegin tx=\(Int(t.x)) ty=\(Int(t.y)) → OK（轴向 .changed 锁定）")
+        return true
     }
 
     @objc private func handleTap(_ tap: UITapGestureRecognizer) {
@@ -901,24 +913,58 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         case .began:
             scrubBaseFraction = playback.progress
             seekChangedRejectLogged = false
+            panAxisLocked = nil            // 每次手势重新锁轴（首个 ≥6pt 主导方向定轴）
             playback.beginSeekGesture()
             print("PLAYER_DBG [CHECK] fullscreen seekPan began scrubBase=\(String(format: "%.2f", scrubBaseFraction ?? 0))")
         case .changed:
             let t = pan.translation(in: view)
-            guard abs(t.x) > abs(t.y), abs(t.x) > 6, let base = scrubBaseFraction else {
-                // 降噪：同一次手势里只打一次拒绝原因
-                if !seekChangedRejectLogged {
-                    seekChangedRejectLogged = true
-                    print("PLAYER_DBG [CHECK] fullscreen seekPan changed SKIP tx=\(Int(t.x)) ty=\(Int(t.y)) reason=notHorizontalDominant")
-                }
-                return
+            // 轴锁定（2026-11-16 手势 A 档）：首个 ≥6pt 的主导方向定轴，全程不换——
+            // 行业做法；不锁的话 seek 拖动稍微带点纵向就窜到亮度/音量，来回横跳
+            if panAxisLocked == nil {
+                guard abs(t.x) > 6 || abs(t.y) > 6 else { return }
+                panAxisLocked = abs(t.x) >= abs(t.y) ? .horizontal : .vertical
+                print("PLAYER_DBG [CHECK] fullscreen seekPan axis=\(panAxisLocked!.rawValue) tx=\(Int(t.x)) ty=\(Int(t.y))")
             }
-            let fraction = min(max(base + PlayerGesturePolicy.scrubDelta(translationX: t.x, screenWidth: view.bounds.width), 0), 1)
-            print("PLAYER_DBG [CHECK] fullscreen seekPan dx=\(Int(t.x)) fraction=\(String(format: "%.2f", fraction))")
-            playback.seek(fraction: fraction)
+            switch panAxisLocked! {
+            case .horizontal:
+                guard abs(t.x) > 6, let base = scrubBaseFraction else { return }
+                let fraction = min(max(base + PlayerGesturePolicy.scrubDelta(translationX: t.x, screenWidth: view.bounds.width), 0), 1)
+                print("PLAYER_DBG [CHECK] fullscreen seekPan dx=\(Int(t.x)) fraction=\(String(format: "%.2f", fraction))")
+                // 2026-11-16 手势 A 档：拖动中不实时 seek（行业全如此），只挂目标预览；
+                // 松手 commitScrubThenEndGesture 才真正 seek
+                playback.scrubPreview(fraction: fraction)
+            case .vertical:
+                // 2x 先起独占本次触摸（与 seek 同一条仲裁哲学）：按住 2x 期间的纵向
+                // 漂移不得调亮度/音量，否则「长按看片 + 手漂」会悄悄改系统亮度
+                guard !playback.isFastForwarding else { return }
+                // 左半亮度 / 右半音量：本地 x 即视频横轴（持横屏用户的左右），
+                // 锁轴那一刻定边，手势中途不换（防跨中线时亮度音量突然互换）
+                let sideLeft = pan.location(in: view).x < view.bounds.width / 2
+                let window = view.window
+                let total = max(view.bounds.height, 1)
+                if sideLeft {
+                    let current = PlayerBrightnessVolume.shared.brightness(in: window)
+                    let target = min(max(current - t.y / total, 0), 1)   // 上滑增亮、下滑减亮
+                    PlayerBrightnessVolume.shared.setBrightness(target, in: window)
+                    controls?.showAdjustFeedback("亮度 \(Int(target * 100))%")
+                } else {
+                    let current = CGFloat(PlayerBrightnessVolume.shared.volume)
+                    let target = min(max(current - t.y / total, 0), 1)   // 上滑增音、下滑减音
+                    PlayerBrightnessVolume.shared.setVolume(Float(target))
+                    controls?.showAdjustFeedback("音量 \(Int(target * 100))%")
+                }
+                print("PLAYER_DBG [CHECK] fullscreen adjust side=\(sideLeft ? "brightness" : "volume") ty=\(Int(t.y))")
+            }
         case .ended, .cancelled, .failed:
+            let wasEnded = pan.state == .ended
             scrubBaseFraction = nil
-            playback.endSeekGesture()   // 内含吞单击窗 + 进度落盘
+            panAxisLocked = nil
+            // .ended 提交暂存目标（seek 落稳后 flush）；打断路径只丢弃不 seek
+            if wasEnded {
+                playback.commitScrubThenEndGesture()
+            } else {
+                playback.cancelScrubThenEndGesture()
+            }
         default:
             break
         }
