@@ -150,11 +150,12 @@ struct DramaPlayerView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
 
                 // ── ⑥ 全屏入口（2026-11-16 用户拍板）：横屏片源时画面正下方居中、
-                //    距画面底边 5pt；点击走 enterFullscreen 现有链路（与转手机触发同路）。
-                //    画面显示矩形 = surface（0…画面区高）内 fit 居中；surfaceH 公式与
-                //    PlayerPagingScrollView.surfaceHeight 同口径（纯函数版共享，勿复制）
+                //    距画面底边 5pt；icon + 「点击全屏」文字引导；点击走 enterFullscreen
+                //    现有链路（与转手机触发同路）。清屏态保留（用户明确：全屏入口不该
+                //    被清掉）；画面显示矩形 = surface（0…画面区高）内 fit 居中，surfaceH
+                //    公式与 PlayerPagingScrollView.surfaceHeight 同口径（纯函数版共享）
                 if playback.videoIsLandscape, playback.isReady,
-                   playback.videoPixelSize.width > 0, !playback.isCleanScreen,
+                   playback.videoPixelSize.width > 0,
                    !playback.isFullscreen {   // 全屏中卡片被容器盖住，但进全屏动画的 0.3s 内
                     // 卡片短暂可见——排除，防按钮闪现在渐变上
                     let canvasTop = (geo.size.height - DWLayout.designHeight * scale) / 2
@@ -169,12 +170,18 @@ struct DramaPlayerView: View {
                         print("PLAYER_DBG [CHECK] fullscreenButton tap → enterFullscreen")
                         playback.enterFullscreen(rotationAngle: .pi / 2)
                     } label: {
-                        OverlayFullscreenGlyph()
-                            .frame(width: 26, height: 26)
-                            .contentShape(Rectangle())
+                        HStack(spacing: 6) {
+                            OverlayFullscreenGlyph(size: 20)
+                            Text("点击全屏")
+                                .font(DWFont.cn(12, .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .contentShape(Rectangle())
                     }
-                    .frame(width: 44, height: 44)
-                    .position(x: geo.size.width / 2, y: videoBottom + 5 + 13)
+                    .frame(minWidth: 44, minHeight: 44)
+                    // 视觉高 ~20（icon 20）：中心 = 画面底 + 5（间隙） + 10（半高）
+                    .position(x: geo.size.width / 2, y: videoBottom + 5 + 10)
                     .animation(.easeOut(duration: 0.2), value: playback.isReady)
                 }
             }
