@@ -99,6 +99,8 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
     private var scrubBaseFraction: Double?
     /// seekPan .changed 的拒绝原因每次手势只打一次（降噪）
     private var seekChangedRejectLogged = false
+    /// 静音期间音量手势的拒绝日志同样每次手势只打一条（同降噪口径）
+    private var mutedVolumeSkipLogged = false
     /// 本手势的轴向锁定（2026-11-16 手势 A 档）：首个 ≥6pt 主导方向定轴，
     /// 全程不换——横向 = seek 预览，纵向 = 左半亮度 / 右半音量。
     /// nil = 还没定（起手 <6pt 的微动）
@@ -918,6 +920,7 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
         case .began:
             scrubBaseFraction = playback.progress
             seekChangedRejectLogged = false
+            mutedVolumeSkipLogged = false
             panAxisLocked = nil            // 每次手势重新锁轴（首个 ≥6pt 主导方向定轴）
             playback.beginSeekGesture()
             print("PLAYER_DBG [CHECK] fullscreen seekPan began scrubBase=\(String(format: "%.2f", scrubBaseFraction ?? 0))")
@@ -953,6 +956,16 @@ final class PlayerFullscreenController: NSObject, UIGestureRecognizerDelegate {
                     PlayerBrightnessVolume.shared.setBrightness(target, in: window)
                     controls?.showAdjustFeedback("亮度 \(Int(target * 100))%")
                 } else {
+                    // 静音时不响应音量手势（2026-11-16 用户拍板）：系统音量变了也听不到，
+                    // 浮层刷新一个「听不见的值」反而困惑——先解除静音（静音钮/更多菜单）再调；
+                    // 同一条手势内只打一条拒绝日志
+                    guard !playback.isMuted else {
+                        if !mutedVolumeSkipLogged {
+                            mutedVolumeSkipLogged = true
+                            print("PLAYER_DBG [CHECK] fullscreen volume SKIP reason=muted")
+                        }
+                        return
+                    }
                     let current = CGFloat(PlayerBrightnessVolume.shared.volume)
                     let target = min(max(current - t.y / total, 0), 1)   // 上滑增音、下滑减音
                     PlayerBrightnessVolume.shared.setVolume(Float(target))
