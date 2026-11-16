@@ -33,6 +33,16 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
   - 顺手清两个存量警告：SwipeBackSupport 的 `as? UINavigationController`（UIKit 动态挂载误报，`(view as AnyObject) as?` 跳板保持同一运行时判定）、EpisodeDrawerPanel 的 no-op `as?`（直接 `panel?.revealCurrent()`）。
   - 真机回归锚点（PLAYER_DBG）：`scrubPreview` / `scrubCommit` / `scrubCancel` / `fullscreen seekPan axis=` / `fullscreen adjust side=` / `volumeBridge attached` / `brightness toggle`；约定全文见 `docs/agents/conventions-player.md` 第 2/4 条。
 
+### 已完成代码（2026-11-16 第二批：审查第二批 7 条，全量构建 0 error / 0 warning）
+
+- **P1-④ 追更 SQL 下沉**（`27ce095`）：ProfileViewModel 删 `import SQLite3` 与裸 SQL（AGENTS 5/7），追更查询原样搬入 `DramaCache.chasingRows()`（含「最后一集已下载」子查询，返回 `ChasingRow`）；`DramaCache.rows(for:)` 一次连接批量读多部剧——历史/收藏/点赞三分类此前逐条 load（每条各开各关连接）、`coverURL` 兜底还会再 load 一遍整剧（双重读放大），现 `load` 的逐剧读取体抽成私有 `readEntry(db:site:dramaID:)`、`coverURL(site:dramaID:remote:)` 由调用方带入远端 URL。
+- **P1-⑤ 删 preferredColorScheme**（`ec66f32`）：环境值会沿 `navigationDestination`/`fullScreenCover` 传进墨本轨播放页，旧注释「不影响其它页」与事实不符；纸本页色值全写死，无需锁。
+- **P1-⑧ prune 合批改队列**（`c6b125b`）：旧 `pruneScheduled` 布尔在同 runloop 两个 done 时丢弃第二个的去重请求（AGENTS 24 窄窗口复现路径）；改 `pendingPrunes` 队列 + 排水循环，排水途中入队的新 done 同轮处理。
+- **P1-⑨ playIfDone 下沉 VM**（`9b7211f`）：新增 `SeriesDetailViewModel`（与列表页 `handleTap` 同范式），done 守卫/失败重试/HLS 选型/集号解析全部出 View；View 只发意图 + 绑定两个出口。
+- **P1-⑬ 「已下完」口径**（`9a0410e`）：「我的」筛选按审查选项 B 改名「已下完/未下完」（判定 = 最后一集已下载，命名即口径）；播放口径「已看完」（距片尾 5s）保留在下载页逐集显示，两个词各管各的。
+- **P1-⑭ 去重冒烟固化**（`c18a245`）：`iOS/smoke/deduptest.swift`（@main 包装），5 断言全 PASS（同集双目录只列一条+选无后缀 / 列表落点==preferredEpisodeFolder 判读 / 重试摘旧+不夺走能播的 done / keeper done 落盘后只留一条 / 散装不去重）；分册验收段引用具体文件名与编译命令，`pruneSupersededAttempts`/`loadLibrary`/`preferredEpisodeFolder`/`registerEpisode` 改动后必须重跑。
+- **P1-⑪ DWUIColor 镜像收口**（`46b9e8c`）：DesignTokens 新增 `DWUIColor`（每 token 镜像 DWColor 同名同值），`UIColor(hex:)` 解析器全库唯一（删全屏控制层私设拷贝）；30 处裸 hex 收口（Drawers 17 / ControlsView 8 / Controller 2 / LaunchSplash 1）+ 新 token `drawerDim`；**漂移实证修复**：全屏选集描边 `#A04D42` → `episodeCellStroke`（#A05142）。DramaPlayerView 2 处属用户文件暂缓（待用户拍板）。
+
 ## 3. `player/` 模块架构地图
 
 → 已并入 `docs/agents/conventions-player.md` 顶部（改 player/ 前读那一个文件即可）。
@@ -48,8 +58,8 @@ iOS App：WKWebView 嗅探 + Swift 下载核心 + SQLite 剧集缓存 + 本地 H
 | 1 | ~~审查第一批止血~~ → **已完成**（`cbf0a6a`，2026-11-16，代码级验证通过，无真机专项） | ✅ |
 | 2 | ~~手势 A 档~~ → **已完成**（2026-11-16 提交，**待真机回归**：拖动手感 / 竖滑灵敏度 / 锁轴阈值，锚点见 §2 末） | ✅ |
 | 3 | 手势 B 档待拍板：竖屏全屏按钮（推翻「无按钮入口」）、edgePan 改交互式跟随（推翻「越阈即退」） | 中（等用户拍板） |
-| 4 | 审查第二批（7 条，**下一项开工**）：追更 SQL 下沉 DramaCache、删 ProfileView `preferredColorScheme`、prune 合批改队列、playIfDone 下沉 VM、「已看完」口径统一、同集去重冒烟固化入库（`deduptest`）、DWUIColor 镜像收口 30 处裸 hex（含 `#A04D42`→token 对齐） | 中 |
-| 5 | 三机型快照首跑（SE 上播放页 0.79 缩放与详情页安全区表现，AGENTS「布局缩放与机型适配」第 3 条） | 中 |
+| 4 | ~~审查第二批（7 条）~~ → **已完成**（2026-11-16 逐条提交：④`27ce095` ⑤`ec66f32` ⑧`c6b125b` ⑨`9b7211f` ⑬`9a0410e` ⑭`c18a245` ⑪`46b9e8c`，全量构建 0 error / 0 warning；明细见 §2 第二批小节） | ✅ |
+| 5 | 三机型快照首跑（**下一项开工**；SE 上播放页 0.79 缩放与详情页安全区表现，AGENTS「布局缩放与机型适配」第 3 条） | 中 |
 | 6 | 播放器视图壳 UIKit 化包 B：竖屏卡片 UIKit 化（**DramaPlayerView 是用户文件，等用户发起**；VM/Service 零改动路线已在包 A 验证） | 中（依赖用户） |
 | 7 | 中期：无障碍第一遍（标签/命中区）、SQLite WAL+withConnection、千行文件拆分、AGENTS 简介块行号改锚定符号名 | 低 |
 | 8 | 本地推荐算法（接入点 = `PlaybackQueueService.resolveNext/Previous`） | 按需 |
