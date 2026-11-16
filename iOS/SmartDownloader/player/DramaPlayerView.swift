@@ -170,22 +170,22 @@ struct DramaPlayerView: View {
                         print("PLAYER_DBG [CHECK] fullscreenButton tap → enterFullscreen")
                         playback.enterFullscreen(rotationAngle: .pi / 2)
                     } label: {
-                        HStack(spacing: 6) {
-                            OverlayFullscreenGlyph(size: 20)
+                        HStack(spacing: 5) {
+                            OverlayFullscreenGlyph(size: 18)
                             Text("点击全屏")
-                                .font(DWFont.cn(12, .medium))
+                                .font(DWFont.cn(11, .medium))
                         }
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
                         // 可辨识的按钮块面：墨底 + 浅色描边（Toast 同族胶囊语言）
                         .background(Capsule().fill(Color.black.opacity(0.30)))
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.45), lineWidth: 1))
                         .contentShape(Rectangle())
                     }
                     .frame(minWidth: 44, minHeight: 44)
-                    // 视觉高 ~20（icon 20）：中心 = 画面底 + 5（间隙） + 10（半高）
-                    .position(x: geo.size.width / 2, y: videoBottom + 5 + 10)
+                    // 2026-11-16 用户拍板：下移 10pt（间隙 ≈7pt）+ 高度收紧（块高 ~28）
+                    .position(x: geo.size.width / 2, y: videoBottom + 21)
                     .animation(.easeOut(duration: 0.2), value: playback.isReady)
                 }
             }
