@@ -284,7 +284,7 @@ enum DramaCache {
         var stmt: OpaquePointer?
         let sql = "SELECT detail_fetched_at FROM drama_cache WHERE site=? AND drama_id=?;"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            sqlite3_close(db)
+            // 关闭统一靠顶部 defer——这里再显式 close 是 double close（审查 P1-⑥）
             return nil
         }
         DramaDatabase.bind(stmt, 1, site)

@@ -708,7 +708,7 @@ final class DownloadEngine {
             return try fetchViaWebKit(url, byteRange: byteRange)
         }
         // 该域名已证实需 IP 直连（域名连接被网络侧 RST），直接走，省去每次必败的常规连接
-        if let host = url.host, ipDirectHosts.contains(host),
+        if let host = url.host, ipDirectContains(host),
            let data = try? fetchIPDirect(url, byteRange: byteRange) {
             return data
         }
@@ -728,7 +728,7 @@ final class DownloadEngine {
                     // 先试 IP 直连（域名 SNI 被网络侧 RST 时有效），再试 WebKit（客户端 TLS 指纹被拦时有效）
                     if let host = url.host,
                        let data = try? fetchIPDirect(url, byteRange: byteRange) {
-                        ipDirectHosts.insert(host)
+                        ipDirectInsert(host)
                         print("DL[\(host)]: ✅ IP 直连成功，该域名后续请求直接走 IP")
                         return data
                     }
@@ -782,10 +782,35 @@ final class DownloadEngine {
     // 证书与 IP 不匹配由 TrustAllSessionDelegate 兜底。
     // 若拦截是按目的 IP 进行的（而非域名），此法同样无效，自然降级到 WebKit/报错。
 
-    /// 已证实 IP 直连可用的域名（sticky；工作线程间共享，良性竞争不加锁）
+    /// 已证实 IP 直连可用的域名（sticky）+ 域名 -> [IP] 解析缓存（进程内）。
+    /// 并发约定（审查 P0-1，2026-11-16）：Swift Set/Dictionary 非线程安全，6 并发切片
+    /// 线程在蜂窝/WAF 整批连接层失败时会同时写（insert / dnsCache 赋值），并发写可损坏
+    /// 存储结构——现实可达的崩溃路径。读写一律经 `sharedStateLock`；
+    /// `preferWebKit` 保持裸 Bool（单字写，良性竞争最坏多走一次失败通道）。
+    private static let sharedStateLock = NSLock()
     static var ipDirectHosts: Set<String> = []
-    /// 域名 -> [IP] 解析缓存（进程内）
     static var dnsCache: [String: [String]] = [:]
+
+    /// 集合只在锁内读写；外部一律走这四个入口，不直接碰底下的 var
+    static func ipDirectContains(_ host: String) -> Bool {
+        sharedStateLock.lock(); defer { sharedStateLock.unlock() }
+        return ipDirectHosts.contains(host)
+    }
+
+    static func ipDirectInsert(_ host: String) {
+        sharedStateLock.lock(); defer { sharedStateLock.unlock() }
+        ipDirectHosts.insert(host)
+    }
+
+    static func dnsCacheGet(_ host: String) -> [String]? {
+        sharedStateLock.lock(); defer { sharedStateLock.unlock() }
+        return dnsCache[host]
+    }
+
+    static func dnsCacheSet(_ host: String, ips: [String]) {
+        sharedStateLock.lock(); defer { sharedStateLock.unlock() }
+        dnsCache[host] = ips
+    }
 
     private static func isLiteralIP(_ host: String) -> Bool {
         var v4 = in_addr(); var v6 = in6_addr()
@@ -794,7 +819,7 @@ final class DownloadEngine {
 
     /// 解析域名（getaddrinfo 为阻塞调用，本函数只在后台工作线程跑；优先 IPv4），成功后缓存
     static func resolveHost(_ host: String) -> [String] {
-        if let cached = dnsCache[host], !cached.isEmpty { return cached }
+        if let cached = dnsCacheGet(host), !cached.isEmpty { return cached }
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = SOCK_STREAM
@@ -823,7 +848,7 @@ final class DownloadEngine {
         }
         let ipv4 = all.filter { !$0.contains(":") }
         let ips = ipv4.isEmpty ? all : ipv4
-        if !ips.isEmpty { dnsCache[host] = ips }
+        if !ips.isEmpty { dnsCacheSet(host, ips: ips) }
         return ips
     }
 

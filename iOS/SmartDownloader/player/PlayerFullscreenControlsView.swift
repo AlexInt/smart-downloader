@@ -340,10 +340,12 @@ final class PlayerFullscreenControlsView: UIView {
                 self?.saveGlyph.tintColor = saved ? UIColor(hex: "#A05243") : .white
             }
             .store(in: &cancellables)
-        // 倍速文案：默认档显示「倍速」，选过档位显示「1.5×」
+        // 倍速文案：默认档显示「倍速」，选过档位显示「1.5×」。
+        // 数字格式化走 DramaPlayerViewModel.rateText——AGENTS 12 已定性修掉的
+        // "0$" 字面量替换 bug 曾在这份拷贝里复活成「2.00×」（审查 P1-②），勿再本地实现
         playback.$playbackRate
             .sink { [weak self] rate in
-                let title = abs(rate - 1.0) < 0.001 ? "倍速" : "\(Self.trimmed(rate))×"
+                let title = abs(rate - 1.0) < 0.001 ? "倍速" : "\(DramaPlayerViewModel.rateText(rate))×"
                 self?.rateButton.setTitle(title, for: .normal)
             }
             .store(in: &cancellables)
@@ -717,12 +719,6 @@ final class PlayerFullscreenControlsView: UIView {
 
     static func monoFont(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
         .monospacedDigitSystemFont(ofSize: size, weight: weight)
-    }
-
-    private static func trimmed(_ rate: Double) -> String {
-        String(format: "%.2f", rate)
-            .replacingOccurrences(of: "0$", with: "")
-            .replacingOccurrences(of: "\\.$", with: "")
     }
 
     // MARK: 图标构件（按画布几何绘制，尺寸随 glyphScale 缩放）

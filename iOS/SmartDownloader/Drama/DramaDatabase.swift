@@ -268,9 +268,6 @@ enum DramaDatabase {
     private static func migrateLegacyUserDefaultsIfNeeded(_ db: OpaquePointer?) {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: legacyMigratedKey) else { return }
-        defer {
-            defaults.set(true, forKey: legacyMigratedKey)
-        }
 
         var records: [String: LegacyRecord] = [:]
         for (key, value) in defaults.dictionaryRepresentation() {
@@ -299,14 +296,26 @@ enum DramaDatabase {
         }
 
         var moved = 0
+        var failed = 0
         for (path, record) in records where !record.isEmpty {
-            writeLegacy(db, identity: legacyIdentity(forResourcePath: path), record: record)
-            moved += 1
+            if writeLegacy(db, identity: legacyIdentity(forResourcePath: path), record: record) {
+                moved += 1
+            } else {
+                failed += 1
+            }
+        }
+        // 成功才准动源数据（审查 P1-⑦：旧实现标记无条件置位 + 源键无条件删，
+        // 任一条写库失败 = 旧点赞/收藏/进度一次性丢失）。搬迁是幂等的
+        // （MAX 合并 + 同值覆写），失败保留源键不置位，下次启动整体重试。
+        guard failed == 0 else {
+            print("CACHE RETRY[legacy migrate] reason=writeFail moved=\(moved) failed=\(failed) 源键保留，下次启动重试")
+            return
         }
         for key in defaults.dictionaryRepresentation().keys
         where key.hasPrefix(legacyLikedPrefix) || key.hasPrefix(legacySavedPrefix) || key.hasPrefix(legacyProgressPrefix) {
             defaults.removeObject(forKey: key)
         }
+        defaults.set(true, forKey: legacyMigratedKey)
         print("CACHE OK[legacy migrate] records=\(records.count) moved=\(moved)")
     }
 
@@ -322,11 +331,11 @@ enum DramaDatabase {
         return .episode(site: series.site, dramaID: series.dramaID, episodeID: episodeID)
     }
 
-    private static func writeLegacy(_ db: OpaquePointer?, identity: MediaIdentity, record: LegacyRecord) {
+    private static func writeLegacy(_ db: OpaquePointer?, identity: MediaIdentity, record: LegacyRecord) -> Bool {
         let now = ISO8601DateFormatter().string(from: Date())
         switch identity {
         case .episode(let site, let dramaID, let episodeID):
-            execWrite(db, """
+            return execWrite(db, """
             INSERT INTO episode_actions (site, drama_id, episode_id, liked, saved, position_seconds, position_total, updated_at)
             VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(site, drama_id, episode_id) DO UPDATE SET
@@ -343,7 +352,7 @@ enum DramaDatabase {
                 bind(stmt, 8, now)
             }
         case .localPath(let path):
-            execWrite(db, """
+            return execWrite(db, """
             INSERT INTO local_actions (media_path, liked, saved, position_seconds, position_total, updated_at)
             VALUES (?,?,?,?,?,?)
             ON CONFLICT(media_path) DO UPDATE SET
@@ -375,19 +384,24 @@ enum DramaDatabase {
         return String(cString: c)
     }
 
-    /// 执行一次性写语句（绑定后 step，失败打印不静默）
+    /// 执行一次性写语句（绑定后 step，失败打印不静默）。
+    /// 返回是否成功——搬迁这类「成功才准删源数据」的调用方需要判结果（审查 P1-⑦），
+    /// 其余调用方不管返回值（@discardableResult）。
+    @discardableResult
     static func execWrite(_ db: OpaquePointer?, _ sql: String, what: String,
-                          bindValues: (OpaquePointer?) -> Void) {
+                          bindValues: (OpaquePointer?) -> Void) -> Bool {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             fail(db, "\(what) prepare")
-            return
+            return false
         }
         defer { sqlite3_finalize(stmt) }
         bindValues(stmt)
         if sqlite3_step(stmt) != SQLITE_DONE {
             fail(db, "\(what) step")
+            return false
         }
+        return true
     }
 
     /// 把一批写语句包进一个事务（详情落库要写几十列 + N 集 + 推荐列表，逐条 autocommit 太碎）

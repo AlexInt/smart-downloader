@@ -12,6 +12,9 @@ struct DramaFavorites {
     /// 该剧是否已收藏
     func isFavorite(site: String, dramaID: String) -> Bool {
         guard let db = DramaDatabase.open() else { return false }
+        // 连接必须关（审查 P1-③：三方法此前全不关，每次调用泄漏一个连接，
+        // 长会话可致 fd 耗尽、收藏静默失效）；与 DramaCache 同款自开自关
+        defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_prepare_v2(db, "SELECT 1 FROM drama_favorites WHERE site=? AND drama_id=? LIMIT 1;",
@@ -27,6 +30,7 @@ struct DramaFavorites {
             print("PLAYER_DBG [Service] dramaFavorite FAIL reason=noDB site=\(site) id=\(dramaID)")
             return
         }
+        defer { sqlite3_close(db) }
         if value {
             let now = ISO8601DateFormatter().string(from: Date())
             DramaDatabase.execWrite(db, """
@@ -52,6 +56,7 @@ struct DramaFavorites {
     /// 剧名等展示字段用 (site, drama_id) JOIN drama_cache 获取，本表不冗余存
     func favoriteDramas() -> [(site: String, dramaID: String, createdAt: String?)] {
         guard let db = DramaDatabase.open() else { return [] }
+        defer { sqlite3_close(db) }   // 与 isFavorite 同款：连接用完即关
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_prepare_v2(db, """

@@ -517,7 +517,9 @@ final class DramaPlayerViewModel: ObservableObject {
     }
 
     func seek(fraction: Double) {
-        isSeekGestureActive = true
+        // 注意：这里不置 isSeekGestureActive——两条 pan 路径的 .began 已各自置位
+        // （beginSeekGesture），菜单「从头播放」（DramaPlayerView）没有手势在跑，
+        // 无条件置位会让闸门无人复位 → 之后点按暂停与长按 2x 静默失效（审查 P1-①）。
         guard !isFastForwarding else {
             // 「长按先起」的触摸由 2x 独占：按住 2x 期间指头在进度带内漂移不得 seek
             if abs(fraction - lastLoggedSeek) > 0.05 {
